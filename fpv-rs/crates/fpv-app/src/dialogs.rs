@@ -67,6 +67,10 @@ pub(crate) struct Dialog {
     do_not_show_splash: bool,
     editor_clip: usize,
     editor_loading: Option<String>,
+    /// The edge the nudge buttons move.
+    editor_edge: crate::boundary::Edge,
+    /// Each clip's boundaries as saved, for Reset.
+    editor_saved: Vec<(i64, i64)>,
     editor_source: Option<(String, fpv_library::NativeSegment)>,
     editor_preview: Option<crate::boundary::SourcePreview>,
 }
@@ -106,6 +110,8 @@ impl Dialog {
             do_not_show_splash: false,
             editor_clip: 0,
             editor_loading: None,
+            editor_edge: crate::boundary::Edge::Start,
+            editor_saved: vec![],
             editor_source: None,
             editor_preview: None,
         }
@@ -205,7 +211,14 @@ impl Dialog {
         Self::of_flight(Kind::Title, "Edit title", flight)
     }
     pub fn editor(flight: &FlightView) -> Self {
-        Self::of_flight(Kind::Editor, "Edit source boundaries", flight)
+        Self {
+            editor_saved: flight
+                .clips
+                .iter()
+                .map(|c| (c.start_frame, c.end_frame))
+                .collect(),
+            ..Self::of_flight(Kind::Editor, "Edit source boundaries", flight)
+        }
     }
     pub fn export(session: &str, flight: &FlightView) -> Self {
         let (name, extension) =
@@ -733,7 +746,7 @@ impl App {
                                     }
                                 });
                             let clip = &mut flight.clips[dialog.editor_clip];
-                            ui.small(format!("{} · {:.6} fps · source frames", clip.file_name, clip.fps));
+                            ui.small(format!("{} · {:.3} fps · source frames", clip.file_name, clip.fps));
                             if dialog.editor_loading.as_deref() != Some(&clip.id) {
                                 dialog.editor_preview = None;
                                 dialog.editor_source = None;
@@ -770,6 +783,12 @@ impl App {
                                 ui.ctx().request_repaint();
                             }
                             ui.small("Drag the left edge for start and the right edge for end. End is exclusive.");
+                            let saved = dialog.editor_saved.get(dialog.editor_clip).copied();
+                            if let Some(frame) = crate::boundary::nudge_controls(ui, clip, &mut dialog.editor_edge, saved)
+                                && let Some(preview) = &mut dialog.editor_preview {
+                                preview.seek_frame(frame);
+                                ui.ctx().request_repaint();
+                            }
                             if ui.button("Save this clip").clicked() {
                                 let (id, start, end) = (clip.id.clone(), clip.start_frame, clip.end_frame);
                                 dialog.saving = Some(self.submit("Save clip boundary", false, move |library, _| {

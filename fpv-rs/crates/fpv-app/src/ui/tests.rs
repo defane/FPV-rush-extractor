@@ -2315,3 +2315,76 @@ fn the_player_says_its_chapter_and_how_to_mark_a_figure() {
         "{texts:?}"
     );
 }
+
+#[test]
+fn the_boundary_editor_nudges_by_frame_and_resets_to_what_is_saved() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    let mut cut = flight();
+    cut.clips = vec![fpv_library::ClipView {
+        id: "clip".into(),
+        file_id: "file".into(),
+        file_name: "PICT0032.AVI".into(),
+        start_frame: 100,
+        end_frame: 200,
+        fps: 25.0,
+        last_frame: 999,
+        file_duration: 40.0,
+        entry: "unknown".into(),
+        exit: "nosignal".into(),
+        thumbnail: None,
+    }];
+    app.sessions = vec![session_of(vec![cut.clone()])];
+    app.dialog = Some(crate::dialogs::Dialog::editor(&cut));
+    // Tall enough to show the editor whole, below its preview.
+    let size = egui::vec2(1280.0, 1400.0);
+    let texts = |app: &mut App| {
+        let mut texts = vec![];
+        for _ in 0..3 {
+            let output = ctx.run(input(size), |ctx| app.dialog_window(ctx));
+            texts = text_positions(&output.shapes);
+        }
+        texts
+    };
+    let click = |app: &mut App, label: &str| {
+        let at = texts(app)
+            .into_iter()
+            .find(|(text, _)| text == label)
+            .unwrap_or_else(|| panic!("{label} is not on screen"))
+            .1
+            + egui::vec2(5.0, 5.0);
+        for pressed in [true, false] {
+            let mut raw = input(size);
+            raw.events = vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ];
+            let _ = ctx.run(raw, |ctx| app.dialog_window(ctx));
+        }
+    };
+    let shown = |app: &mut App, label: &str| texts(app).iter().any(|(text, _)| text == label);
+    for expected in [
+        "−1 s",
+        "+1 fr",
+        "4.000 s · frame 100",
+        "4.000 s → 8.000 s at 25.000 fps",
+        "Detected on a 0.25 s grid — nudge to the exact frame.",
+    ] {
+        assert!(shown(&mut app, expected), "{expected}");
+    }
+    assert!(!shown(&mut app, "changed — not saved"));
+    click(&mut app, "+1 fr");
+    assert!(shown(&mut app, "4.040 s · frame 101"));
+    assert!(shown(&mut app, "changed — not saved"));
+    click(&mut app, "Reset");
+    assert!(
+        shown(&mut app, "4.000 s · frame 100"),
+        "back to the saved start"
+    );
+    assert!(!shown(&mut app, "changed — not saved"));
+}

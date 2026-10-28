@@ -123,7 +123,10 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   parts; lossless exports keep the original video packets. Reduction preserves
   source audio and carries the policy onto its pieces.
 - `boundary.rs` edits source-frame ranges with left/start and right/exclusive-end
-  handles. Its bounded native source preview decodes at the recording's own
+  handles, and (2026-10-28, #11) the Tauri editor's nudges again: Start/End, −1 s, −¼ s,
+  −1 fr, +1 fr, +¼ s, +1 s at the recording's own rate (`nudge_steps`, `nudge`), the edge's
+  "x.xxx s · frame N", "start → end at fps", the 0.25 s-grid hint, and Reset to what is
+  saved while "changed — not saved". Its bounded native source preview decodes at the recording's own
   cadence without the player's normal display-rate conversion. Decoder restarts
   are coalesced while dragging; the final requested frame is retained. Only
   Save this clip persists the draft, through `Library::update_clip`.

@@ -27,6 +27,76 @@ fn set_edge(clip: &mut ClipView, edge: Edge, frame: i64) -> i64 {
     }
 }
 
+/// Moves one edge by `frames` (negative: earlier), within the recording and
+/// never across the other edge; returns the frame to preview.
+pub(crate) fn nudge(clip: &mut ClipView, edge: Edge, frames: i64) -> i64 {
+    let at = match edge {
+        Edge::Start => clip.start_frame,
+        Edge::End => clip.end_frame,
+    };
+    set_edge(clip, edge, at.saturating_add(frames))
+}
+
+/// The steps the nudge buttons take, in frames at the recording's own rate.
+pub(crate) fn nudge_steps(fps: f64) -> [(&'static str, i64); 6] {
+    let frames = |seconds: f64| ((seconds * fps).round() as i64).max(1);
+    [
+        ("−1 s", -frames(1.0)),
+        ("−¼ s", -frames(0.25)),
+        ("−1 fr", -1),
+        ("+1 fr", 1),
+        ("+¼ s", frames(0.25)),
+        ("+1 s", frames(1.0)),
+    ]
+}
+
+/// The edge being nudged, its exact time and frame, the buttons, and Reset to
+/// what is saved — the Tauri editor's controls. Returns a frame to preview.
+pub(crate) fn nudge_controls(
+    ui: &mut egui::Ui,
+    clip: &mut ClipView,
+    edge: &mut Edge,
+    saved: Option<(i64, i64)>,
+) -> Option<i64> {
+    let mut preview = None;
+    ui.horizontal(|ui| {
+        ui.selectable_value(edge, Edge::Start, "Start");
+        ui.selectable_value(edge, Edge::End, "End");
+        let frame = match edge {
+            Edge::Start => clip.start_frame,
+            Edge::End => clip.end_frame,
+        };
+        ui.label(format!("{:.3} s · frame {frame}", frame as f64 / clip.fps));
+    });
+    ui.horizontal(|ui| {
+        for (label, frames) in nudge_steps(clip.fps) {
+            if ui.button(label).clicked() {
+                preview = Some(nudge(clip, *edge, frames));
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.small(format!(
+            "{:.3} s → {:.3} s at {:.3} fps",
+            clip.start_frame as f64 / clip.fps,
+            clip.end_frame as f64 / clip.fps,
+            clip.fps
+        ));
+        if let Some((start, end)) = saved
+            && (start, end) != (clip.start_frame, clip.end_frame)
+        {
+            ui.colored_label(ACCENT, "changed — not saved");
+            if ui.small_button("Reset").clicked() {
+                clip.start_frame = start;
+                clip.end_frame = end;
+                preview = Some(start);
+            }
+        }
+    });
+    ui.small("Detected on a 0.25 s grid — nudge to the exact frame.");
+    preview
+}
+
 pub(crate) fn trim_timeline(ui: &mut egui::Ui, clip: &mut ClipView) -> Option<i64> {
     let mut preview = None;
     ui.horizontal(|ui| {
@@ -244,6 +314,46 @@ pub(crate) fn preview_canvas(
 
 #[cfg(test)]
 mod tests {
+
+    fn long_clip() -> ClipView {
+        ClipView {
+            id: "c".into(),
+            file_id: "f".into(),
+            file_name: "PICT0032.AVI".into(),
+            start_frame: 100,
+            end_frame: 200,
+            fps: 24.486,
+            last_frame: 1000,
+            file_duration: 40.8,
+            entry: "unknown".into(),
+            exit: "nosignal".into(),
+            thumbnail: None,
+        }
+    }
+
+    #[test]
+    fn nudges_an_edge_by_seconds_or_frames_at_the_recordings_own_rate() {
+        let steps = nudge_steps(24.486);
+        assert_eq!(steps.map(|(_, frames)| frames), [-24, -6, -1, 1, 6, 24]);
+        let mut cut = long_clip();
+        assert_eq!(nudge(&mut cut, Edge::Start, -1), 99);
+        assert_eq!(
+            nudge(&mut cut, Edge::End, 24),
+            223,
+            "the end previews its last frame"
+        );
+        assert_eq!(cut.end_frame, 224);
+        // Never past the recording, never across the other edge.
+        assert_eq!(nudge(&mut cut, Edge::Start, -10_000), 0);
+        cut.start_frame = 220;
+        assert_eq!(nudge(&mut cut, Edge::Start, 24), 223);
+        assert_eq!(nudge(&mut cut, Edge::End, 10_000), 1000);
+        assert_eq!(
+            cut.end_frame, 1001,
+            "end is exclusive: one past the last frame"
+        );
+    }
+
     use super::*;
     fn clip() -> ClipView {
         ClipView {
