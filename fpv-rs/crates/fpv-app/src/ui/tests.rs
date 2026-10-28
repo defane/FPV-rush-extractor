@@ -1957,3 +1957,33 @@ fn the_tag_filters_belong_to_all_flights_not_to_a_session() {
     assert!(texts.iter().any(|t| t == "Match all tags"), "{texts:?}");
     assert!(texts.iter().any(|t| t == "gates"), "{texts:?}");
 }
+
+#[test]
+fn escape_closes_a_dialog_then_the_player_then_the_panels() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    let press = |app: &mut App| {
+        let mut raw = input(egui::vec2(1280.0, 820.0));
+        raw.events = vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }];
+        let _ = ctx.run(raw, |ctx| app.escape(ctx));
+    };
+    app.sessions = vec![session_of(vec![flight()])];
+    app.viewer = Some(viewer_of(&ctx, flight()));
+    app.dialog = Some(crate::dialogs::Dialog::segment(&app.sessions[0]));
+    app.show_notices = true;
+    press(&mut app);
+    assert!(
+        app.dialog.is_none() && app.viewer.is_some(),
+        "the dialog first"
+    );
+    press(&mut app);
+    assert!(app.viewer.is_none() && app.show_notices, "then the player");
+    press(&mut app);
+    assert!(!app.show_notices, "then the lists");
+}

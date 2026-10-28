@@ -1216,7 +1216,10 @@ frame-exact boundary editor. Layout:
   session low in the list had its menu cut off (the pilot's report, 2026-10-24) — and never
   past the window's edges. Escape closes them. A dialog, though, closes only with ✕, Escape or its
   buttons — never on a click outside it (2026-10-25, the pilot's call), which lost what was
-  typed or the player at a stray click. **Flight tags**
+  typed or the player at a stray click. In the native app (2026-10-28, #5) Escape closes the topmost thing
+  open, one press at a time — a menu, full screen, the cloud wait (in the background), a
+  dialog, the player, then the task and notification lists (`escape_target`, tested); the
+  port only left full screen with it. **Flight tags**
   ("freestyle", "gates") are free labels on a whole flight, beside the figure tags that mark a
   moment: table `flightLabel` (schema `v5`), one label per flight whatever its case, the
   spelling first used naming it in suggestions; edited in the player. In the native player

@@ -33,6 +33,50 @@ pub(crate) enum Scope {
     Session(String),
 }
 
+/// What Escape closes: the topmost thing open, one press at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Escape {
+    /// A pop-up menu, which egui closes itself.
+    Menu,
+    /// Full screen, which the player leaves itself.
+    FullScreen,
+    /// The cloud wait: Continue in Background.
+    CloudWait,
+    Dialog,
+    Player,
+    /// The task and notification lists.
+    Panels,
+    Nothing,
+}
+
+#[derive(Default)]
+struct Open {
+    menu: bool,
+    full_screen: bool,
+    cloud_wait: bool,
+    dialog: bool,
+    player: bool,
+    panels: bool,
+}
+
+fn escape_target(open: Open) -> Escape {
+    if open.menu {
+        Escape::Menu
+    } else if open.full_screen {
+        Escape::FullScreen
+    } else if open.cloud_wait {
+        Escape::CloudWait
+    } else if open.dialog {
+        Escape::Dialog
+    } else if open.player {
+        Escape::Player
+    } else if open.panels {
+        Escape::Panels
+    } else {
+        Escape::Nothing
+    }
+}
+
 struct Task {
     id: u64,
     scope: Scope,
@@ -477,6 +521,39 @@ impl App {
             });
         }
     }
+    /// Escape closes the topmost thing open, as dialogs and menus always did.
+    fn escape(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            return;
+        }
+        let target = escape_target(Open {
+            menu: egui::Popup::is_any_open(ctx),
+            full_screen: self.viewer.as_ref().is_some_and(|viewer| viewer.fullscreen),
+            cloud_wait: self.cloud_wait.is_some(),
+            dialog: self.dialog.is_some(),
+            player: self.viewer.is_some(),
+            panels: self.show_tasks || self.show_notices,
+        });
+        match target {
+            Escape::CloudWait => {
+                if let Some(wait) = self.cloud_wait.take() {
+                    self.detached.insert(wait.task);
+                }
+            }
+            Escape::Dialog => {
+                // A task it started goes on, in the task bar.
+                self.dialog = None;
+                self.dialog_request = None;
+            }
+            Escape::Player => self.viewer = None,
+            Escape::Panels => {
+                self.show_tasks = false;
+                self.show_notices = false;
+            }
+            Escape::Menu | Escape::FullScreen | Escape::Nothing => {}
+        }
+    }
+
     /// Asks for the strips the library lacks, the session on screen first.
     fn request_strips(&mut self) {
         if !self.ffmpeg_ok {
@@ -558,6 +635,7 @@ impl eframe::App for App {
                 }
             }
         }
+        self.escape(ctx);
         self.task_bar(ctx);
         self.sidebar(ctx);
         self.browser(ctx);
@@ -726,6 +804,58 @@ fn main() -> eframe::Result {
         },
         Box::new(|cc| Ok(Box::new(App::new(cc)))),
     )
+}
+
+#[cfg(test)]
+mod escape_tests {
+    use super::*;
+
+    #[test]
+    fn escape_closes_the_topmost_thing_open() {
+        let all = || Open {
+            menu: true,
+            full_screen: true,
+            cloud_wait: true,
+            dialog: true,
+            player: true,
+            panels: true,
+        };
+        assert_eq!(escape_target(all()), Escape::Menu);
+        assert_eq!(
+            escape_target(Open {
+                menu: false,
+                ..all()
+            }),
+            Escape::FullScreen
+        );
+        let windowed = || Open {
+            menu: false,
+            full_screen: false,
+            ..all()
+        };
+        assert_eq!(escape_target(windowed()), Escape::CloudWait);
+        assert_eq!(
+            escape_target(Open {
+                cloud_wait: false,
+                ..windowed()
+            }),
+            Escape::Dialog
+        );
+        let player = Open {
+            cloud_wait: false,
+            dialog: false,
+            ..windowed()
+        };
+        assert_eq!(escape_target(player), Escape::Player);
+        assert_eq!(
+            escape_target(Open {
+                panels: true,
+                ..Open::default()
+            }),
+            Escape::Panels
+        );
+        assert_eq!(escape_target(Open::default()), Escape::Nothing);
+    }
 }
 
 #[cfg(test)]
