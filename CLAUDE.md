@@ -1008,6 +1008,12 @@ frame-exact boundary editor. Layout:
   `FPV_RUSH_CONFIG` / `FPV_RUSH_LIBRARY` override both folders for one run (the native app
   reads `FPV_CONFIG_DIR` / `FPV_CACHE_DIR` / `FPV_MEDIA_ROOT` first, then these, 2026-10-28). The `fpvlib` CLI
   still takes an explicit `<library>` folder holding `library.sqlite`.
+- **The native import dialog** (2026-10-28, #16) is the Tauri one's again: *Import Folder…*
+  opens the folder picker at once and names the session after the folder until a name is
+  typed (`session_name_from`), "Copy to … *Change…*" sets the import folder, "Joins the
+  existing session of that name" shows when it would, the DVR's missing clock is explained,
+  and the summary counts action-cam flights and files deleted from the card
+  (`import_summary`).
 - **The import folder is chosen in the app** (2026-10-18): Settings (gear in the sidebar), or
   *Change…* under "Copy to" in the import dialog — one setting, `mediaRoot`, saved to
   `config.json` by `Library::set_media_root`, which refuses a relative or unwritable folder.

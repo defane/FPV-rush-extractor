@@ -251,7 +251,13 @@ impl Dialog {
             Reply::Relocation(preview) => self.relocation = Some(preview),
             Reply::Deletion(preview) => self.deletion = Some(preview),
             Reply::Cache(usage) => self.cache = Some(usage),
-            Reply::Picked(Some(path)) => self.path = path.to_string_lossy().into_owned(),
+            Reply::Picked(Some(path)) => {
+                // An import's session is named after its folder until named.
+                if self.kind == Kind::Import && self.name.trim().is_empty() {
+                    self.name = session_name_from(&path);
+                }
+                self.path = path.to_string_lossy().into_owned();
+            }
             Reply::Mismatch(reason) => self.mismatch = Some(reason),
             _ => {}
         }
@@ -338,6 +344,11 @@ impl App {
         }
     }
 
+    /// The folder picker for an import's source.
+    pub(crate) fn pick_source(&mut self) {
+        self.pick_path(false, String::new());
+    }
+
     fn pick_path(&mut self, save: bool, name: String) {
         self.dialog_request = Some(self.submit("Choose path", true, move |_, _| {
             let dialog = rfd::FileDialog::new();
@@ -358,8 +369,14 @@ impl App {
                 if ui.button("Choose source…").clicked() {
                     self.pick_path(false, String::new());
                 }
-                ui.label("Session name (use an existing name to add takes to it)");
+                ui.label("Session name");
                 ui.text_edit_singleline(&mut dialog.name);
+                if self.sessions.iter().any(|s| s.name == dialog.name.trim()) {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(230, 160, 60),
+                        "Joins the existing session of that name: its flights are numbered after the ones it has.",
+                    );
+                }
                 date_picker(
                     ui,
                     "Flying date (optional for action cams)",
@@ -368,8 +385,27 @@ impl App {
                     &mut dialog.date_picker_open,
                     true,
                 );
+                ui.small("The DVR has no clock: without a date, its session is undated. Action cams date their own takes.");
                 let _ = crate::ui::no_sound_choice(ui, &mut dialog.mute_videos);
-                ui.small(format!("Copies go to {}", self.config.media_root.display()));
+                ui.horizontal(|ui| {
+                    ui.small(format!("Copy to {}", self.config.media_root.display()));
+                    if ui.small_button("Change…").clicked() {
+                        // The import folder setting itself, as in Settings.
+                        self.submit_in(
+                            Scope::Library,
+                            "Change import folder",
+                            false,
+                            |library, _| match rfd::FileDialog::new().pick_folder() {
+                                Some(folder) => {
+                                    library.set_media_root(&folder)?;
+                                    Ok(Reply::Done(format!("Imports go to {}", folder.display())))
+                                }
+                                None => Ok(Reply::Done("Import folder unchanged".into())),
+                            },
+                        );
+                    }
+                });
+                ui.small("Each session gets its own folder inside, kept for later imports.");
                 ui.checkbox(
                     &mut dialog.flag,
                     "Delete newly imported files from the card after verification",
@@ -394,7 +430,7 @@ impl App {
                         if report.failed > 0 || !report.kept.is_empty() {
                             return Err(fpv_library::LibraryError::Invalid(format!("Imported {}, skipped {}, failed {}. Kept on card: {}. See task logs.", report.imported, report.skipped, report.failed, report.kept.join("; "))));
                         }
-                        Ok(Reply::Done(format!("Imported {}, skipped {}, {} flights", report.imported, report.skipped, report.flights)))
+                        Ok(Reply::Done(import_summary(&report)))
                     }));
                 }
             }
@@ -1154,6 +1190,34 @@ fn format_date(date: Option<NaiveDate>) -> Option<String> {
     date.map(|date| date.format("%Y-%m-%d").to_string())
 }
 
+/// An import's session is named after the folder it came from.
+fn session_name_from(folder: &std::path::Path) -> String {
+    folder
+        .file_name()
+        .map(|name| name.to_string_lossy().trim().to_owned())
+        .unwrap_or_default()
+}
+
+/// What an import says it did: "3 imported, 1 skipped, 2 action-cam flights,
+/// 3 deleted from card" — the zero parts left out.
+fn import_summary(report: &fpv_library::ImportSummary) -> String {
+    let mut parts = vec![format!("{} imported", report.imported)];
+    if report.skipped > 0 {
+        parts.push(format!("{} skipped", report.skipped));
+    }
+    if report.flights > 0 {
+        parts.push(format!(
+            "{} action-cam flight{}",
+            report.flights,
+            if report.flights == 1 { "" } else { "s" }
+        ));
+    }
+    if report.deleted_from_card > 0 {
+        parts.push(format!("{} deleted from card", report.deleted_from_card));
+    }
+    parts.join(", ")
+}
+
 /// What a single export says: the files written, or — when a lossless one
 /// met recordings at different rates — the library's reason, for the dialog
 /// to ask how instead of failing.
@@ -1175,6 +1239,41 @@ fn export_reply(
                 .collect::<Vec<_>>()
                 .join(", ")
         ))),
+    }
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+
+    #[test]
+    fn an_import_is_named_after_its_folder_and_says_all_it_did() {
+        assert_eq!(
+            session_name_from(std::path::Path::new("/media/pilot/Alpes 2026")),
+            "Alpes 2026"
+        );
+        let report = fpv_library::ImportSummary {
+            imported: 3,
+            skipped: 1,
+            flights: 2,
+            deleted_from_card: 3,
+            ..Default::default()
+        };
+        assert_eq!(
+            import_summary(&report),
+            "3 imported, 1 skipped, 2 action-cam flights, 3 deleted from card"
+        );
+        let first = fpv_library::ImportSummary {
+            imported: 1,
+            flights: 1,
+            ..Default::default()
+        };
+        assert_eq!(import_summary(&first), "1 imported, 1 action-cam flight");
+        let mut dialog = Dialog::import(None, String::new());
+        dialog.reply(Reply::Picked(Some("/media/pilot/Alpes".into())));
+        assert_eq!(dialog.name, "Alpes");
+        dialog.reply(Reply::Picked(Some("/media/pilot/Other".into())));
+        assert_eq!(dialog.name, "Alpes", "a name given is kept");
     }
 }
 

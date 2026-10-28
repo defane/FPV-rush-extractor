@@ -2601,3 +2601,43 @@ fn the_sidebar_pages_its_sessions_and_follows_the_one_opened() {
     let texts = shown_texts(&ctx, &mut app, draw);
     assert!(texts.iter().any(|t| t == "Session 3"), "{texts:?}");
 }
+
+#[test]
+fn importing_a_folder_asks_for_it_names_the_session_after_it_and_says_when_it_joins_one() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, events) = app_with_worker(&ctx);
+    let mut alpes = session_of(vec![]);
+    alpes.name = "Alpes".into();
+    app.sessions = vec![alpes];
+    app.open_import(None, String::new());
+    let pick = jobs.try_recv().expect("the folder picker opens at once");
+    assert!(
+        app.tasks
+            .iter()
+            .any(|t| t.id == pick.id && t.label == "Choose path")
+    );
+    events
+        .send(crate::worker::Event::Finished {
+            id: pick.id,
+            result: Ok(crate::worker::Reply::Picked(Some(
+                "/media/pilot/Alpes".into(),
+            ))),
+        })
+        .unwrap();
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| {
+        app.receive(ctx);
+        app.dialog_window(ctx)
+    };
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(
+        texts.iter().any(|t| t == "Alpes"),
+        "named after its folder: {texts:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.starts_with("Joins the existing session")),
+        "Alpes exists: {texts:?}"
+    );
+    assert!(texts.iter().any(|t| t == "Change…"), "{texts:?}");
+}

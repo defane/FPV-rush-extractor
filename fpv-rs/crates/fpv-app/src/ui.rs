@@ -583,7 +583,12 @@ impl App {
     }
 
     fn open_import(&mut self, folder: Option<PathBuf>, name: String) {
+        // With no card to take it from, the folder is the first question.
+        let pick = folder.is_none();
         self.dialog = Some(Dialog::import(folder, name));
+        if pick {
+            self.pick_source();
+        }
     }
 
     pub(crate) fn sidebar(&mut self, ctx: &egui::Context) {
