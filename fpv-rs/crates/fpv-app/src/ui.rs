@@ -635,7 +635,6 @@ impl App {
                                     });
                                 if row.response.interact(egui::Sense::click()).clicked() {
                                     self.browse.session = Some(session.id);
-                                    self.browse.sort = Sort::Oldest;
                                     self.browse.page = 0;
                                     self.selected.clear();
                                     self.selecting = false;
@@ -645,32 +644,43 @@ impl App {
                 }
                 ui.separator();
                 if self.browse.view != View::Sessions {
-                    let old = self.browse.filter_session.clone();
+                    let sessions = &self.sessions;
+                    let filter = &mut self.browse.filters_mut().session;
+                    let old = filter.clone();
                     egui::ComboBox::from_id_salt("session-filter")
                         .selected_text(
-                            self.sessions
+                            sessions
                                 .iter()
-                                .find(|s| Some(&s.id) == self.browse.filter_session.as_ref())
+                                .find(|s| Some(&s.id) == filter.as_ref())
                                 .map(|s| s.name.as_str())
                                 .unwrap_or("All sessions"),
                         )
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.browse.filter_session,
-                                None,
-                                "All sessions",
-                            );
-                            for session in &self.sessions {
+                            ui.selectable_value(filter, None, "All sessions");
+                            for session in sessions {
                                 ui.selectable_value(
-                                    &mut self.browse.filter_session,
+                                    filter,
                                     Some(session.id.clone()),
                                     &session.name,
                                 );
                             }
                         });
-                    if old != self.browse.filter_session {
+                    if old != *filter {
                         self.browse.page = 0;
                     }
+                }
+                // A session's flights are not filtered by tag: the panel is
+                // All flights' and Figures'.
+                if self.browse.view == View::Sessions {
+                    if ui.small_button("Reset filters").clicked() {
+                        let sort = self.browse.in_session.sort;
+                        self.browse.in_session = browse::Filters {
+                            sort,
+                            ..Default::default()
+                        };
+                        self.browse.page = 0;
+                    }
+                    return;
                 }
                 let mut names = Vec::<String>::new();
                 for session in &self.sessions {
@@ -694,11 +704,8 @@ impl App {
                     }
                 }
                 names.sort_by_key(|name| name.to_lowercase());
-                let chosen = if self.browse.view == View::Figures {
-                    &mut self.browse.figure_labels
-                } else {
-                    &mut self.browse.labels
-                };
+                let chosen = &mut self.browse.filters_mut().labels;
+                let mut changed = false;
                 egui::ScrollArea::vertical()
                     .id_salt("labels")
                     .max_height(160.0)
@@ -712,22 +719,26 @@ impl App {
                                 } else {
                                     chosen.retain(|selected| !browse::same(selected, &label));
                                 }
-                                self.browse.page = 0;
+                                changed = true;
                             }
                         }
                     });
-                if self.browse.view != View::Figures
+                if changed {
+                    self.browse.page = 0;
+                }
+                if self.browse.view == View::Flights
                     && ui
-                        .checkbox(&mut self.browse.all_labels, "Match all tags")
+                        .checkbox(&mut self.browse.flights.all_labels, "Match all tags")
                         .changed()
                 {
                     self.browse.page = 0;
                 }
                 if ui.small_button("Reset filters").clicked() {
-                    self.browse.filter_session = None;
-                    self.browse.liked = false;
-                    self.browse.labels.clear();
-                    self.browse.figure_labels.clear();
+                    let sort = self.browse.filters().sort;
+                    *self.browse.filters_mut() = browse::Filters {
+                        sort,
+                        ..Default::default()
+                    };
                     self.browse.page = 0;
                 }
             });
@@ -888,13 +899,15 @@ impl App {
                 else { ui.heading("Select a session or import recordings"); return; }
             } else { ui.heading(if self.browse.view == View::Flights { "All flights" } else { "Figures" }); }
             ui.horizontal_wrapped(|ui| {
-                if ui.selectable_label(self.browse.liked, "♡ Liked").clicked() { self.browse.liked = !self.browse.liked; self.browse.page = 0; }
+                let liked = self.browse.filters().liked;
+                if ui.selectable_label(liked, "♡ Liked").clicked() { self.browse.filters_mut().liked = !liked; self.browse.page = 0; }
                 if self.browse.view != View::Figures && ui.selectable_label(self.selecting, "Select").clicked() { self.selecting = !self.selecting; if !self.selecting { self.selected.clear(); } }
-                ui.label("Sort:"); let old = self.browse.sort;
-                egui::ComboBox::from_id_salt("sort").selected_text(format!("{:?}", self.browse.sort)).show_ui(ui, |ui| {
-                    for sort in [Sort::Newest, Sort::Oldest, Sort::Longest] { ui.selectable_value(&mut self.browse.sort, sort, format!("{sort:?}")); }
+                ui.label("Sort:"); let old = self.browse.filters().sort;
+                let chosen = &mut self.browse.filters_mut().sort;
+                egui::ComboBox::from_id_salt("sort").selected_text(format!("{chosen:?}")).show_ui(ui, |ui| {
+                    for sort in [Sort::Newest, Sort::Oldest, Sort::Longest] { ui.selectable_value(chosen, sort, format!("{sort:?}")); }
                 });
-                if old != self.browse.sort { self.browse.page = 0; }
+                if old != self.browse.filters().sort { self.browse.page = 0; }
                 if ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search titles, sessions, figures…")).changed() { self.browse.page = 0; }
             });
             let mut items = vec![];
@@ -902,7 +915,8 @@ impl App {
             for (session, flight) in self.browse.flights(&self.sessions) {
                 if self.browse.view == View::Figures {
                     for tag in &flight.figures {
-                        if !self.browse.figure_labels.is_empty() && !self.browse.figure_labels.iter().any(|name| browse::same(name, &tag.label)) { continue; }
+                        let names = &self.browse.figures.labels;
+                        if !names.is_empty() && !names.iter().any(|name| browse::same(name, &tag.label)) { continue; }
                         if format!("{} {} {}", session.name, flight_name(flight), tag.label).to_lowercase().contains(&query) {
                             items.push((session.clone(), flight.clone(), Some(tag.clone())));
                         }
@@ -917,7 +931,7 @@ impl App {
                         item.2.as_ref().map(|t| t.start).unwrap_or_default();
                     let length = |item: &(SessionView, FlightView, Option<fpv_library::TagView>)|
                         item.2.as_ref().map(|t| t.end - t.start).unwrap_or_default();
-                    match self.browse.sort {
+                    match self.browse.filters().sort {
                         Sort::Longest => length(b).total_cmp(&length(a)),
                         sort => {
                             let order = a.0.date.cmp(&b.0.date).then_with(|| a.0.id.cmp(&b.0.id))

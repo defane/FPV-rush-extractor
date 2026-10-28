@@ -18,17 +18,31 @@ pub enum Sort {
     Longest,
 }
 
+/// One view's filters and sort. Each view keeps its own, as the Tauri app
+/// did: a tag picked in All flights must not hide flights inside a session.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Filters {
+    /// One session's flights only (All flights, Figures).
+    pub session: Option<String>,
+    pub liked: bool,
+    /// Flight and session tags (All flights), or figure names (Figures).
+    pub labels: Vec<String>,
+    /// Every tag rather than any (All flights).
+    pub all_labels: bool,
+    pub sort: Sort,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Browse {
     pub view: View,
+    /// The session open in the Sessions view.
     pub session: Option<String>,
-    pub filter_session: Option<String>,
-    pub liked: bool,
-    pub labels: Vec<String>,
-    pub all_labels: bool,
-    pub figure_labels: Vec<String>,
-    pub sort: Sort,
+    /// A session's flights in their flying order, oldest first.
+    pub in_session: Filters,
+    pub flights: Filters,
+    pub figures: Filters,
     pub page: usize,
     pub page_size: usize,
 }
@@ -38,12 +52,12 @@ impl Default for Browse {
         Self {
             view: View::Sessions,
             session: None,
-            filter_session: None,
-            liked: false,
-            labels: vec![],
-            all_labels: false,
-            figure_labels: vec![],
-            sort: Sort::Newest,
+            in_session: Filters {
+                sort: Sort::Oldest,
+                ..Filters::default()
+            },
+            flights: Filters::default(),
+            figures: Filters::default(),
             page: 0,
             page_size: 24,
         }
@@ -55,16 +69,35 @@ pub fn same(a: &str, b: &str) -> bool {
 }
 
 impl Browse {
+    /// The filters of the view on screen.
+    pub fn filters(&self) -> &Filters {
+        match self.view {
+            View::Sessions => &self.in_session,
+            View::Flights => &self.flights,
+            View::Figures => &self.figures,
+        }
+    }
+
+    pub fn filters_mut(&mut self) -> &mut Filters {
+        match self.view {
+            View::Sessions => &mut self.in_session,
+            View::Flights => &mut self.flights,
+            View::Figures => &mut self.figures,
+        }
+    }
+
     pub fn matches(&self, session: &SessionView, flight: &FlightView) -> bool {
+        let filters = self.filters();
         let wanted = if self.view == View::Sessions {
             &self.session
         } else {
-            &self.filter_session
+            &filters.session
         };
-        if wanted.as_ref().is_some_and(|id| id != &session.id) || (self.liked && !flight.liked) {
+        if wanted.as_ref().is_some_and(|id| id != &session.id) || (filters.liked && !flight.liked) {
             return false;
         }
-        if self.view == View::Figures || self.labels.is_empty() {
+        // Tags filter All flights only; figure names are matched per figure.
+        if self.view != View::Flights || filters.labels.is_empty() {
             return true;
         }
         let has = |label: &String| {
@@ -74,10 +107,10 @@ impl Browse {
                 .chain(&session.labels)
                 .any(|tag| same(tag, label))
         };
-        if self.all_labels {
-            self.labels.iter().all(has)
+        if filters.all_labels {
+            filters.labels.iter().all(has)
         } else {
-            self.labels.iter().any(has)
+            filters.labels.iter().any(has)
         }
     }
 
@@ -90,7 +123,7 @@ impl Browse {
             .flat_map(|session| session.flights.iter().map(move |flight| (session, flight)))
             .filter(|(s, f)| self.matches(s, f))
             .collect();
-        items.sort_by(|(a, af), (b, bf)| match self.sort {
+        items.sort_by(|(a, af), (b, bf)| match self.filters().sort {
             Sort::Longest => bf.duration.total_cmp(&af.duration),
             sort => {
                 let order = a
@@ -447,8 +480,8 @@ mod tests {
             ..Browse::default()
         };
         assert_eq!(browse.flights(&sessions).len(), 3);
-        browse.labels = vec!["race".into(), "FREESTYLE".into()];
-        browse.all_labels = true;
+        browse.flights.labels = vec!["race".into(), "FREESTYLE".into()];
+        browse.flights.all_labels = true;
         assert_eq!(
             browse
                 .flights(&sessions)
@@ -457,12 +490,58 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["one"]
         );
-        browse.all_labels = false;
+        browse.flights.all_labels = false;
         assert_eq!(browse.flights(&sessions).len(), 2);
-        browse.liked = true;
+        browse.flights.liked = true;
         assert_eq!(browse.flights(&sessions).len(), 1);
-        browse.filter_session = Some("alps".into());
+        browse.flights.session = Some("alps".into());
         assert!(browse.flights(&sessions).is_empty());
+    }
+
+    #[test]
+    fn each_view_keeps_its_own_filters_and_sort() {
+        let sessions = vec![session(
+            "race",
+            None,
+            vec![
+                flight("one", 1, true, &["gates"], 60.0),
+                flight("two", 2, false, &[], 20.0),
+            ],
+            &[],
+        )];
+        let mut browse = Browse::default();
+        assert_eq!(
+            browse.in_session.sort,
+            Sort::Oldest,
+            "a session reads in flying order"
+        );
+        assert_eq!(
+            (browse.flights.sort, browse.figures.sort),
+            (Sort::Newest, Sort::Newest)
+        );
+        // Filters set in All flights…
+        browse.view = View::Flights;
+        browse.filters_mut().labels = vec!["gates".into()];
+        browse.filters_mut().liked = true;
+        browse.filters_mut().sort = Sort::Longest;
+        assert_eq!(browse.flights(&sessions).len(), 1);
+        // …hide nothing in the session, which keeps its own order.
+        browse.view = View::Sessions;
+        browse.session = Some("race".into());
+        let ids: Vec<_> = browse
+            .flights(&sessions)
+            .iter()
+            .map(|(_, f)| f.id.clone())
+            .collect();
+        assert_eq!(ids, ["one", "two"]);
+        // Back in All flights, they are still set.
+        browse.view = View::Flights;
+        assert_eq!(browse.filters().sort, Sort::Longest);
+        assert_eq!(browse.flights(&sessions).len(), 1);
+        // Figure names pick figures, not flights by their tags.
+        browse.view = View::Figures;
+        browse.filters_mut().labels = vec!["power loop".into()];
+        assert_eq!(browse.flights(&sessions).len(), 2);
     }
 
     #[test]
@@ -492,9 +571,9 @@ mod tests {
         ];
         let mut browse = Browse {
             view: View::Flights,
-            sort: Sort::Oldest,
             ..Browse::default()
         };
+        browse.flights.sort = Sort::Oldest;
         let ids = |browse: &Browse| {
             browse
                 .flights(&sessions)
@@ -503,9 +582,9 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(ids(&browse), ["old", "one", "two", "long"]);
-        browse.sort = Sort::Newest;
+        browse.flights.sort = Sort::Newest;
         assert_eq!(ids(&browse), ["long", "two", "one", "old"]);
-        browse.sort = Sort::Longest;
+        browse.flights.sort = Sort::Longest;
         assert_eq!(ids(&browse), ["long", "one", "two", "old"]);
     }
 }

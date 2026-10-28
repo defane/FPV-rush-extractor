@@ -1937,3 +1937,23 @@ fn a_long_task_only_holds_back_what_it_conflicts_with() {
     click_text(&ctx, &mut app, "♡", draw);
     assert_eq!(likes(&app, &jobs), 0, "the flight is being remade");
 }
+
+#[test]
+fn the_tag_filters_belong_to_all_flights_not_to_a_session() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    app.sessions = vec![session_of(vec![FlightView {
+        labels: vec!["gates".into()],
+        ..flight()
+    }])];
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| app.sidebar(ctx);
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(
+        !texts.iter().any(|t| t == "gates"),
+        "no tag filter in a session: {texts:?}"
+    );
+    app.browse.view = crate::browse::View::Flights;
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(texts.iter().any(|t| t == "Match all tags"), "{texts:?}");
+    assert!(texts.iter().any(|t| t == "gates"), "{texts:?}");
+}

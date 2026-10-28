@@ -1205,7 +1205,10 @@ frame-exact boundary editor. Layout:
   only when that session changes — a library refresh, which every ending task causes, must not
   pull the viewer back from the page they turned to. All of it is
   computed in the window from the snapshot (`lib/library.ts`, `lib/browse.svelte.ts`, both
-  tested): the library is already there, so no view asks Rust for more. A session's folder,
+  tested) — in the native app, `browse.rs`: each view keeps its own filters and sort
+  (`Filters`: a session oldest first, All flights and Figures newest first), tags filter All
+  flights only (2026-10-28, #4: the port shared one set, so a tag picked in All flights hid
+  flights inside a session, and opening a session reset the sort): the library is already there, so no view asks Rust for more. A session's folder,
   detection profile, labels export, re-segment, rename and removal moved to its **menu** (⋯ or
   right-click) — the pilot's call over keeping them in the header. Every pop-up menu (a
   session's, a card's, Import Folder's arrow) is placed by `fitMenu` (`lib/fit.ts`, tested):
