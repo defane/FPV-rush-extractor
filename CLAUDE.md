@@ -95,6 +95,9 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   are impossible with whitespace"), and the pilot's checkout is `…/FPV Rush extractor`
   — the first `make macos` there died on it. `build-ffmpeg.sh` then builds in
   `$TMPDIR/fpv-rush-ffmpeg-build`; the tools still land in `packaging/resources`.
+  **A tool there is removed before the new one is written**: macOS caches a binary's code
+  signature by file, and the arm64 `ffmpeg` copied over the universal one of a previous
+  run was killed on its first start ("Killed: 9", the pilot's Mac, 2026-10-28).
 - Bundled FFmpeg must enable its internal `extract_extradata` bitstream filter:
   stream probing needs it to retain H.264/HEVC headers before indexed seeks.
   The player tries input-side seeking, with a sequential fallback if no video

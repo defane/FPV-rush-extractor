@@ -22,6 +22,10 @@ case "$WORK" in
 esac
 DEST="$ROOT/packaging/resources"
 mkdir -p "$WORK" "$DEST/bin" "$DEST/licenses/ffmpeg"
+# A tool already there is removed before the new one is written, never copied
+# over: macOS caches a binary's code signature by file, and an executable
+# rewritten in place (the universal build replaced by an arm64 one) is killed
+# on its first run — "Killed: 9" on the pilot's Mac (2026-10-28).
 ARCHIVE="$WORK/ffmpeg-$VERSION.tar.xz"
 if [ ! -f "$ARCHIVE" ]; then
     curl --fail --location --retry 3 --retry-all-errors --connect-timeout 30 \
@@ -85,6 +89,7 @@ if [ "$ARCH" = universal ]; then
     build aarch64
     build x86_64
     for bin in ffmpeg ffprobe; do
+        rm -f "$DEST/bin/$bin"
         lipo -create "$WORK/install-aarch64/bin/$bin" "$WORK/install-x86_64/bin/$bin" -output "$DEST/bin/$bin"
     done
 else
@@ -94,7 +99,10 @@ else
     build "$ARCH"
     suffix=""
     case "$(uname -s)" in MINGW*|MSYS*) suffix=.exe ;; esac
-    for bin in ffmpeg ffprobe; do cp "$WORK/install-$ARCH/bin/$bin$suffix" "$DEST/bin/$bin$suffix"; done
+    for bin in ffmpeg ffprobe; do
+        rm -f "$DEST/bin/$bin$suffix"
+        cp "$WORK/install-$ARCH/bin/$bin$suffix" "$DEST/bin/$bin$suffix"
+    done
 fi
 
 # Corresponding, unmodified source and exact build recipe travel in EVERY
