@@ -137,6 +137,8 @@ pub(crate) struct App {
     /// Hover strips made ahead of the pointer, and the batch running now.
     strips: strips::Strips,
     strip_batch: Option<u64>,
+    /// A card's title being edited in place: (flight, text so far).
+    title_edit: Option<(String, String)>,
     images: images::Images,
     thumbnails: HashMap<String, String>,
     requested: HashSet<String>,
@@ -241,6 +243,7 @@ impl App {
             detached: HashSet::new(),
             strips: strips::Strips::default(),
             strip_batch: None,
+            title_edit: None,
             images: images::Images::new(cc.egui_ctx.clone()),
             thumbnails: HashMap::new(),
             requested: HashSet::new(),

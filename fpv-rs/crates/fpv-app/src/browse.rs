@@ -195,6 +195,53 @@ pub fn labels(text: &str) -> Vec<String> {
     result
 }
 
+/// "2 chapters" for an action cam's take in chapters, "2 recordings" for a
+/// DVR flight across the DVR's cuts; nothing for a flight in one file.
+pub fn parts_label(flight: &FlightView) -> Option<String> {
+    (flight.recordings > 1).then(|| {
+        let what = if flight.action_cam {
+            "chapters"
+        } else {
+            "recordings"
+        };
+        format!("{} {what}", flight.recordings)
+    })
+}
+
+/// A card's tags: the flight's own, then the session's it does not have
+/// itself, each once, marked as inherited so the card can draw it apart.
+pub fn card_labels(flight: &FlightView, session: &SessionView) -> Vec<(String, bool)> {
+    let mut labels: Vec<(String, bool)> = vec![];
+    for (label, inherited) in flight
+        .labels
+        .iter()
+        .map(|l| (l, false))
+        .chain(session.labels.iter().map(|l| (l, true)))
+    {
+        if !labels.iter().any(|(known, _)| same(known, label)) {
+            labels.push((label.clone(), inherited));
+        }
+    }
+    labels
+}
+
+/// The hover strip's frame `at` flight seconds in: the strip spreads `count`
+/// frames over the flight, each the middle of its share.
+pub fn strip_index(at: f64, duration: f64, count: usize) -> usize {
+    if count == 0 || duration.is_nan() || duration <= 0.0 || !at.is_finite() {
+        return 0;
+    }
+    ((at / duration).clamp(0.0, 0.999_999) * count as f64) as usize
+}
+
+/// The frame to show while the one wanted is still being made: the nearest
+/// one already loaded, the earlier on a tie.
+pub fn nearest_known(wanted: usize, count: usize, known: impl Fn(usize) -> bool) -> Option<usize> {
+    (0..count)
+        .filter(|&i| known(i))
+        .min_by_key(|&i| (i.abs_diff(wanted), i))
+}
+
 /// What recorded a session, for its row: "DVR" (with "· reduced" or "·
 /// partly reduced" when its recordings were cut down to their flights), then
 /// each camera once, in the order its files came.
@@ -334,6 +381,50 @@ mod tests {
             cloud: false,
             freeable: false,
         }
+    }
+
+    #[test]
+    fn a_card_counts_chapters_or_recordings_and_marks_inherited_tags() {
+        let take = FlightView {
+            recordings: 2,
+            action_cam: true,
+            ..flight("take", 1, false, &["Gates"], 60.0)
+        };
+        assert_eq!(parts_label(&take).as_deref(), Some("2 chapters"));
+        let dvr = FlightView {
+            action_cam: false,
+            ..take.clone()
+        };
+        assert_eq!(parts_label(&dvr).as_deref(), Some("2 recordings"));
+        assert_eq!(
+            parts_label(&FlightView {
+                recordings: 1,
+                ..dvr
+            }),
+            None
+        );
+        let race = session("race", None, vec![], &["gates", "Race"]);
+        assert_eq!(
+            card_labels(&take, &race),
+            [("Gates".to_owned(), false), ("Race".to_owned(), true)]
+        );
+    }
+
+    #[test]
+    fn finds_a_moments_strip_frame_and_the_nearest_one_loaded() {
+        assert_eq!(strip_index(0.0, 60.0, 24), 0);
+        assert_eq!(strip_index(30.0, 60.0, 24), 12);
+        assert_eq!(strip_index(60.0, 60.0, 24), 23, "the end is the last frame");
+        assert_eq!(strip_index(f64::NAN, 60.0, 24), 0);
+        assert_eq!(strip_index(10.0, 0.0, 24), 0);
+        let loaded = [2usize, 9, 15];
+        assert_eq!(nearest_known(10, 24, |i| loaded.contains(&i)), Some(9));
+        assert_eq!(
+            nearest_known(12, 24, |i| loaded.contains(&i)),
+            Some(9),
+            "a tie: the earlier"
+        );
+        assert_eq!(nearest_known(5, 24, |_| false), None);
     }
 
     #[test]

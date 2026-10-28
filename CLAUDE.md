@@ -1194,6 +1194,14 @@ frame-exact boundary editor. Layout:
   only some of a session's DVR recordings were. The native app's rows say it again (2026-10-28, #8):
   `browse::session_sources` (DVR and its reduction, each camera once with a camera icon),
   `browse::elsewhere` ("elsewhere", the folders on hover).
+- **The native cards** (2026-10-28, #9) got back what the port had lost: the camera or
+  goggles icon by source, "N chapters" for a take vs "N recordings" for the DVR
+  (`browse::parts_label`), the session's tags outlined beside the flight's own
+  (`card_labels`, "From the session" on hover), a film icon until the poster is there,
+  a playhead and the time under the pointer while it scrubs, the nearest strip frame
+  already loaded while the one wanted is made (`nearest_known`), figure cards showing the
+  strip frame at the figure's moment (`strip_index`), the title renamed in place by a
+  double-click, and an export icon.
 - **Format badge** (2026-10-21, the pilot's request): cards (and the Files tab, until it was dropped) say
   "4K · HEVC · 59.94 fps" (`views::format_label`, in Rust like every other number shown).
   Size by width for the camera classes (5.3K, 4K, 2.7K), else the height (`1080p`, `480p`);

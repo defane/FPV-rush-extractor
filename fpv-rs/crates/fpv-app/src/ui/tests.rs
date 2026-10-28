@@ -27,6 +27,7 @@ fn app(ctx: &egui::Context) -> App {
         detached: HashSet::new(),
         strips: crate::strips::Strips::default(),
         strip_batch: None,
+        title_edit: None,
         images: Images::new(ctx.clone()),
         thumbnails: HashMap::new(),
         requested: HashSet::new(),
@@ -2121,4 +2122,155 @@ fn a_session_row_names_its_sources_its_reduction_and_an_earlier_folder() {
     for expected in ["DVR · partly reduced", "GoPro HERO11", "elsewhere"] {
         assert!(texts.iter().any(|t| t == expected), "{expected}: {texts:?}");
     }
+}
+
+#[test]
+fn a_card_says_chapters_marks_session_tags_and_scrubs_with_the_time() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    let take = FlightView {
+        recordings: 2,
+        labels: vec!["gates".into()],
+        ..flight()
+    };
+    let mut session = session_of(vec![take]);
+    session.labels = vec!["race".into()];
+    app.sessions = vec![session];
+    app.browse.session = Some("session".into());
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| app.browser(ctx);
+    let texts = shown_texts(&ctx, &mut app, draw);
+    for expected in ["2 chapters", "gates", "race", "1:00.0"] {
+        assert!(texts.iter().any(|t| t == expected), "{expected}: {texts:?}");
+    }
+
+    // The pointer halfway across the picture: that frame, that time.
+    let output = ctx.run(input(egui::vec2(1280.0, 820.0)), |ctx| draw(&mut app, ctx));
+    let title = text_positions(&output.shapes)
+        .into_iter()
+        .find(|(text, _)| text == "Layout test flight")
+        .unwrap()
+        .1;
+    let pointer = egui::pos2(title.x + 60.0, title.y - 60.0);
+    let mut texts = vec![];
+    for _ in 0..3 {
+        let mut raw = input(egui::vec2(1280.0, 820.0));
+        raw.events = vec![egui::Event::PointerMoved(pointer)];
+        let output = ctx.run(raw, |ctx| draw(&mut app, ctx));
+        texts = text_positions(&output.shapes)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+    }
+    assert!(
+        app.requested
+            .iter()
+            .any(|key| key.starts_with("strip:test-flight:")),
+        "the frame under the pointer: {:?}",
+        app.requested
+    );
+    assert!(
+        !texts.iter().any(|t| t == "1:00.0"),
+        "the time under the pointer: {texts:?}"
+    );
+}
+
+#[test]
+fn a_figure_card_shows_the_frame_at_its_moment() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    let mut figured = flight();
+    figured.figures.push(fpv_library::TagView {
+        id: "tag".into(),
+        label: "power loop".into(),
+        note: None,
+        start: 30.0,
+        end: 32.0,
+        marker: false,
+    });
+    app.sessions = vec![session_of(vec![figured])];
+    app.browse.view = crate::browse::View::Figures;
+    let _ = shown_texts(&ctx, &mut app, |app, ctx| app.browser(ctx));
+    assert!(
+        app.requested.contains("strip:test-flight:12"),
+        "30 s into 60: frame 12 of 24, not the poster: {:?}",
+        app.requested
+    );
+}
+
+#[test]
+fn a_cards_title_is_renamed_in_place_and_its_export_is_a_click_away() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, _events) = app_with_worker(&ctx);
+    app.sessions = vec![session_of(vec![flight()])];
+    app.browse.session = Some("session".into());
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| app.browser(ctx);
+    let output = ctx.run(input(egui::vec2(1280.0, 820.0)), |ctx| draw(&mut app, ctx));
+    let title = text_positions(&output.shapes)
+        .into_iter()
+        .find(|(text, _)| text == "Layout test flight")
+        .unwrap()
+        .1
+        + egui::vec2(5.0, 5.0);
+    // A double-click: two clicks in quick succession.
+    for pressed in [true, false, true, false] {
+        let mut raw = input(egui::vec2(1280.0, 820.0));
+        raw.events = vec![
+            egui::Event::PointerMoved(title),
+            egui::Event::PointerButton {
+                pos: title,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            },
+        ];
+        let _ = ctx.run(raw, |ctx| draw(&mut app, ctx));
+    }
+    assert!(app.title_edit.is_some(), "editing in place");
+    for events in [
+        vec![egui::Event::Text(" II".into())],
+        vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }],
+    ] {
+        let mut raw = input(egui::vec2(1280.0, 820.0));
+        raw.events = events;
+        let _ = ctx.run(raw, |ctx| draw(&mut app, ctx));
+    }
+    assert!(app.title_edit.is_none());
+    let saved: Vec<_> = jobs
+        .try_iter()
+        .filter(|job| {
+            app.tasks
+                .iter()
+                .any(|t| t.id == job.id && t.label == "Edit flight title")
+        })
+        .collect();
+    assert_eq!(saved.len(), 1, "Enter saves it");
+
+    // The export icon sits between the duration and the "…".
+    let output = ctx.run(input(egui::vec2(1280.0, 820.0)), |ctx| draw(&mut app, ctx));
+    let texts = text_positions(&output.shapes);
+    let at = |label: &str| texts.iter().find(|(text, _)| text == label).unwrap().1;
+    let (duration, dots) = (at("1:00.0"), at("…"));
+    // The "…" button's padding and the row's spacing, then half the icon.
+    let icon = egui::pos2(dots.x - 30.0, dots.y + 7.0);
+    assert!(icon.x > duration.x, "right of the duration");
+    for pressed in [true, false] {
+        let mut raw = input(egui::vec2(1280.0, 820.0));
+        raw.events = vec![
+            egui::Event::PointerMoved(icon),
+            egui::Event::PointerButton {
+                pos: icon,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            },
+        ];
+        let _ = ctx.run(raw, |ctx| draw(&mut app, ctx));
+    }
+    assert!(app.dialog.is_some(), "the export dialog");
 }

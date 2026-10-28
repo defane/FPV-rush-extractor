@@ -18,6 +18,7 @@ enum MetadataIcon {
     Cloud,
     Camera,
     Folder,
+    Export,
 }
 
 fn metadata_icon(ui: &mut egui::Ui, kind: MetadataIcon) {
@@ -33,6 +34,7 @@ fn metadata_icon(ui: &mut egui::Ui, kind: MetadataIcon) {
         MetadataIcon::Cloud => "Online Only on the cloud drive: downloads when played",
         MetadataIcon::Camera => "Action camera",
         MetadataIcon::Folder => "In an earlier import folder",
+        MetadataIcon::Export => "Export…",
     });
 }
 
@@ -184,6 +186,38 @@ fn paint_metadata_icon(ui: &egui::Ui, kind: MetadataIcon, area: egui::Rect) {
                 [
                     body.right_center() - egui::vec2(3.0, 0.0),
                     body.right_top() + egui::vec2(0.0, 3.0),
+                ],
+                stroke,
+            );
+        }
+        MetadataIcon::Export => {
+            // An arrow down into a tray.
+            let x = body.center().x;
+            painter.line_segment(
+                [
+                    egui::pos2(x, body.top()),
+                    egui::pos2(x, body.bottom() - 4.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(x - 3.0, body.bottom() - 7.0),
+                    egui::pos2(x, body.bottom() - 4.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(x + 3.0, body.bottom() - 7.0),
+                    egui::pos2(x, body.bottom() - 4.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    body.left_bottom() + egui::vec2(1.0, 0.0),
+                    body.right_bottom() - egui::vec2(1.0, 0.0),
                 ],
                 stroke,
             );
@@ -1051,27 +1085,46 @@ impl App {
             });
             ui.painter()
                 .rect_filled(rect, 4.0, Color32::from_rgb(22, 28, 37));
-            if !flight.cloud
-                && response.hovered()
-                && self.ffmpeg_ok
-                && self.tasks.iter().filter(|t| t.running).count() < 12
-                && let Some(pointer) = response.hover_pos()
-            {
-                let index = (((pointer.x - rect.min.x) / rect.width()).clamp(0.0, 0.999)
-                    * crate::strips::STRIP as f32) as usize;
-                let hover = format!("strip:{}:{index}", flight.cache_key);
-                if let Some(known) = self.thumbnails.get(&hover) {
+            // Under the pointer, the strip's frame there and its time; on a
+            // figure's card, the frame nearest the figure's moment.
+            let strip = crate::strips::STRIP;
+            let pointer = response.hover_pos().filter(|_| !flight.cloud);
+            let hover_time = pointer.map(|pointer| {
+                ((pointer.x - rect.min.x) / rect.width()).clamp(0.0, 1.0) as f64 * flight.duration
+            });
+            let wanted = match (hover_time, figure) {
+                (Some(at), _) => Some(browse::strip_index(at, flight.duration, strip)),
+                (None, Some(figure)) if !flight.cloud => {
+                    Some(browse::strip_index(figure.start, flight.duration, strip))
+                }
+                _ => None,
+            };
+            if let Some(index) = wanted {
+                let frame = |i: usize| format!("strip:{}:{i}", flight.cache_key);
+                if let Some(known) = self.thumbnails.get(&frame(index)) {
                     path = Some(known.clone());
-                } else if self.requested.insert(hover.clone()) {
-                    let id = flight.id.clone();
-                    self.submit("Hover frame", true, move |library, _| {
-                        Ok(Reply::Image {
-                            thumbnail: library.filmstrip_frame(&id, index, crate::strips::STRIP)?,
-                            key: hover,
-                        })
-                    });
+                } else {
+                    // While it is made, the nearest frame already here.
+                    if let Some(near) = browse::nearest_known(index, strip, |i| {
+                        self.thumbnails.contains_key(&frame(i))
+                    }) {
+                        path = self.thumbnails.get(&frame(near)).cloned();
+                    }
+                    if self.ffmpeg_ok
+                        && self.tasks.iter().filter(|t| t.running).count() < 12
+                        && self.requested.insert(frame(index))
+                    {
+                        let (id, key) = (flight.id.clone(), frame(index));
+                        self.submit("Hover frame", true, move |library, _| {
+                            Ok(Reply::Image {
+                                thumbnail: library.filmstrip_frame(&id, index, strip)?,
+                                key,
+                            })
+                        });
+                    }
                 }
             }
+            let mut shown = false;
             if let Some(path) = path {
                 if let Some(texture) = self.images.get(ui.ctx(), &path) {
                     let size = texture.size_vec2();
@@ -1083,6 +1136,7 @@ impl App {
                         egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                         Color32::WHITE,
                     );
+                    shown = true;
                 } else if self.images.failed(&path)
                     && !flight.cloud
                     && self.ffmpeg_ok
@@ -1110,6 +1164,22 @@ impl App {
                         thumbnail: library.poster(&id)?,
                     })
                 });
+            }
+            if !shown {
+                // No picture yet: a film frame, not an empty box.
+                paint_metadata_icon(
+                    ui,
+                    MetadataIcon::Film,
+                    egui::Rect::from_center_size(rect.center(), egui::vec2(40.0, 34.0)),
+                );
+            }
+            if let Some(pointer) = pointer {
+                // The playhead under the pointer.
+                let x = pointer.x.clamp(rect.left(), rect.right());
+                ui.painter().line_segment(
+                    [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                    egui::Stroke::new(2.0_f32, ACCENT),
+                );
             }
             let heart_rect = egui::Rect::from_min_size(
                 rect.right_top() + egui::vec2(-30.0, 4.0),
@@ -1175,14 +1245,28 @@ impl App {
                         }
                     }
                 }
-                ui.add(
-                    egui::Label::new(RichText::new(flight_name(flight)).strong().size(16.0))
-                        .truncate(),
-                );
+                self.card_title(ui, flight, remade);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     self.flight_actions(ui, &session.id, flight);
                     if figure.is_none() {
-                        ui.small(RichText::new(clock(flight.duration)).weak());
+                        let export = ui
+                            .add_enabled_ui(!remade, |ui| {
+                                let (area, response) = ui.allocate_exact_size(
+                                    egui::vec2(20.0, 18.0),
+                                    egui::Sense::click(),
+                                );
+                                paint_metadata_icon(ui, MetadataIcon::Export, area);
+                                response.on_hover_text("Export…")
+                            })
+                            .inner;
+                        if export.clicked() {
+                            let name = session.name.clone();
+                            self.dialog = Some(Dialog::export(&name, flight));
+                        }
+                        // The time under the pointer while it scrubs.
+                        ui.small(
+                            RichText::new(clock(hover_time.unwrap_or(flight.duration))).weak(),
+                        );
                     }
                 });
             });
@@ -1202,7 +1286,14 @@ impl App {
                 );
             } else {
                 ui.horizontal_wrapped(|ui| {
-                    metadata_icon(ui, MetadataIcon::Dvr);
+                    metadata_icon(
+                        ui,
+                        if flight.action_cam {
+                            MetadataIcon::Camera
+                        } else {
+                            MetadataIcon::Dvr
+                        },
+                    );
                     ui.small(
                         RichText::new(format!(
                             "{}{}",
@@ -1216,8 +1307,8 @@ impl App {
                     metadata_icon(ui, MetadataIcon::Film);
                     ui.small(RichText::new(&flight.format).weak());
                 });
-                if flight.recordings > 1 {
-                    ui.small(RichText::new(format!("{} recordings", flight.recordings)).weak());
+                if let Some(parts) = browse::parts_label(flight) {
+                    ui.small(RichText::new(parts).weak());
                 }
                 if flight.cloud {
                     ui.horizontal_wrapped(|ui| {
@@ -1227,23 +1318,63 @@ impl App {
                     });
                 }
                 ui.horizontal_wrapped(|ui| {
-                    let mut shown = Vec::<&str>::new();
-                    for label in flight.labels.iter().chain(&session.labels) {
-                        if shown.iter().any(|s| browse::same(s, label)) {
-                            continue;
-                        }
-                        shown.push(label);
-                        egui::Frame::new()
-                            .fill(Color32::from_rgb(35, 37, 43))
+                    for (label, inherited) in browse::card_labels(flight, session) {
+                        // A session's tag is outlined, the flight's own filled.
+                        let chip = egui::Frame::new()
+                            .fill(if inherited {
+                                Color32::TRANSPARENT
+                            } else {
+                                Color32::from_rgb(35, 37, 43)
+                            })
+                            .stroke(if inherited {
+                                egui::Stroke::new(1.0_f32, ui.visuals().weak_text_color())
+                            } else {
+                                egui::Stroke::NONE
+                            })
                             .corner_radius(9.0)
                             .inner_margin(egui::Margin::symmetric(6, 1))
                             .show(ui, |ui| {
-                                ui.label(RichText::new(label).size(11.0));
+                                ui.label(RichText::new(&label).size(11.0));
                             });
+                        if inherited {
+                            chip.response.on_hover_text("From the session");
+                        }
                     }
                 });
             }
         });
+    }
+
+    /// A card's title; a double-click edits it in place, Enter saves it.
+    fn card_title(&mut self, ui: &mut egui::Ui, flight: &FlightView, remade: bool) {
+        if let Some((id, text)) = &mut self.title_edit
+            && *id == flight.id
+        {
+            let edit = ui.add(egui::TextEdit::singleline(text).desired_width(140.0));
+            if !edit.has_focus() && !edit.lost_focus() {
+                edit.request_focus();
+            }
+            if edit.lost_focus() {
+                if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                    let (id, title) = (id.clone(), text.trim().to_owned());
+                    self.submit("Edit flight title", true, move |library, _| {
+                        library.set_flight_title(&id, &title)?;
+                        Ok(Reply::Done("Title updated".into()))
+                    });
+                }
+                self.title_edit = None;
+            }
+            return;
+        }
+        let title = ui.add(
+            egui::Label::new(RichText::new(flight_name(flight)).strong().size(16.0))
+                .truncate()
+                .sense(egui::Sense::click()),
+        );
+        if title.double_clicked() && !remade {
+            self.title_edit = Some((flight.id.clone(), flight.title.clone().unwrap_or_default()));
+        }
+        title.on_hover_text("Double-click to rename");
     }
 
     fn flight_actions(&mut self, ui: &mut egui::Ui, session: &str, flight: &FlightView) {
