@@ -1216,7 +1216,9 @@ frame-exact boundary editor. Layout:
   flights only (2026-10-28, #4: the port shared one set, so a tag picked in All flights hid
   flights inside a session, and opening a session reset the sort): the library is already there, so no view asks Rust for more. A session's folder,
   detection profile, labels export, re-segment, rename and removal moved to its **menu** (⋯ or
-  right-click) — the pilot's call over keeping them in the header. Every pop-up menu (a
+  right-click) — the pilot's call over keeping them in the header. The native app opens them on a
+  right-click too (2026-10-28, #7): a session row gives its menu, a card's picture its "…"
+  (`flight_menu`, shared with the button). Every pop-up menu (a
   session's, a card's, Import Folder's arrow) is placed by `fitMenu` (`lib/fit.ts`, tested):
   measured once rendered, below its anchor or above it when the window has no room — a
   session low in the list had its menu cut off (the pilot's report, 2026-10-24) — and never

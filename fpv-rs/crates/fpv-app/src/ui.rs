@@ -633,7 +633,15 @@ impl App {
                                             });
                                         }
                                     });
-                                if row.response.interact(egui::Sense::click()).clicked() {
+                                let response = row.response.interact(egui::Sense::click());
+                                // Its menu on a right-click, as in the session's header.
+                                let remade = self.session_busy(&session.id);
+                                response.context_menu(|ui| {
+                                    ui.add_enabled_ui(!remade, |ui| {
+                                        self.session_menu(ui, &session)
+                                    });
+                                });
+                                if response.clicked() {
                                     self.browse.session = Some(session.id);
                                     self.browse.page = 0;
                                     self.selected.clear();
@@ -984,6 +992,10 @@ impl App {
                 .or_else(|| flight.clips.first().and_then(|clip| clip.thumbnail.clone()));
             let (rect, response) =
                 ui.allocate_exact_size(egui::vec2(width, width * 0.75), egui::Sense::click());
+            let remade = self.session_busy(&session.id);
+            response.context_menu(|ui| {
+                ui.add_enabled_ui(!remade, |ui| self.flight_menu(ui, &session.id, flight));
+            });
             ui.painter()
                 .rect_filled(rect, 4.0, Color32::from_rgb(22, 28, 37));
             if !flight.cloud
@@ -1184,51 +1196,54 @@ impl App {
     fn flight_actions(&mut self, ui: &mut egui::Ui, session: &str, flight: &FlightView) {
         // A flight its session's task is remaking cannot be acted on meanwhile.
         ui.add_enabled_ui(!self.session_busy(session), |ui| {
-            ui.menu_button("…", |ui| {
-                if ui
-                    .add_enabled(flight.cloud, egui::Button::new("Download recordings"))
-                    .clicked()
-                {
-                    self.download_cloud(flight.id.clone(), false);
-                    ui.close();
-                }
-                if ui
-                    .add_enabled(flight.freeable, egui::Button::new("Free up cloud space…"))
-                    .clicked()
-                {
-                    self.dialog = Some(Dialog::free_flight(flight));
-                    ui.close();
-                }
-                if ui.button("Edit title…").clicked() {
-                    self.dialog = Some(Dialog::title(flight));
-                    ui.close();
-                }
-                if ui.button("Edit boundaries…").clicked() {
-                    self.viewer = None;
-                    self.dialog = Some(Dialog::editor(flight));
-                    ui.close();
-                }
-                if ui.button("Export…").clicked() {
-                    let name = self
-                        .sessions
-                        .iter()
-                        .find(|s| s.id == session)
-                        .map_or("Session", |s| s.name.as_str());
-                    self.dialog = Some(Dialog::export(name, flight));
-                    ui.close();
-                }
-                if ui.button("Delete flight…").clicked() {
-                    self.dialog = Some(Dialog::delete_flight(flight));
-                    let id = flight.id.clone();
-                    self.dialog_request = Some(self.submit(
-                        "Plan flight deletion",
-                        true,
-                        move |library, _| Ok(Reply::Deletion(library.flight_deletion(&id)?)),
-                    ));
-                    ui.close();
-                }
-            });
+            ui.menu_button("…", |ui| self.flight_menu(ui, session, flight));
         });
+    }
+
+    /// A card's actions: behind its "…" and on a right-click alike.
+    fn flight_menu(&mut self, ui: &mut egui::Ui, session: &str, flight: &FlightView) {
+        if ui
+            .add_enabled(flight.cloud, egui::Button::new("Download recordings"))
+            .clicked()
+        {
+            self.download_cloud(flight.id.clone(), false);
+            ui.close();
+        }
+        if ui
+            .add_enabled(flight.freeable, egui::Button::new("Free up cloud space…"))
+            .clicked()
+        {
+            self.dialog = Some(Dialog::free_flight(flight));
+            ui.close();
+        }
+        if ui.button("Edit title…").clicked() {
+            self.dialog = Some(Dialog::title(flight));
+            ui.close();
+        }
+        if ui.button("Edit boundaries…").clicked() {
+            self.viewer = None;
+            self.dialog = Some(Dialog::editor(flight));
+            ui.close();
+        }
+        if ui.button("Export…").clicked() {
+            let name = self
+                .sessions
+                .iter()
+                .find(|s| s.id == session)
+                .map_or("Session", |s| s.name.as_str());
+            self.dialog = Some(Dialog::export(name, flight));
+            ui.close();
+        }
+        if ui.button("Delete flight…").clicked() {
+            self.dialog = Some(Dialog::delete_flight(flight));
+            let id = flight.id.clone();
+            self.dialog_request = Some(self.submit(
+                "Plan flight deletion",
+                true,
+                move |library, _| Ok(Reply::Deletion(library.flight_deletion(&id)?)),
+            ));
+            ui.close();
+        }
     }
 
     pub(crate) fn player_window(&mut self, ctx: &egui::Context) {

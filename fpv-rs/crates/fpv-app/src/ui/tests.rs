@@ -2032,3 +2032,60 @@ fn an_export_across_rates_asks_how_instead_of_failing() {
         assert!(jobs.try_recv().is_ok(), "exported in parts");
     }
 }
+
+/// Right-clicks at `position`, as `click_text` clicks.
+fn right_click(
+    ctx: &egui::Context,
+    app: &mut App,
+    position: egui::Pos2,
+    draw: fn(&mut App, &egui::Context),
+) {
+    for pressed in [true, false] {
+        let mut raw = input(egui::vec2(1280.0, 820.0));
+        raw.events = vec![
+            egui::Event::PointerMoved(position),
+            egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: Default::default(),
+            },
+        ];
+        let _ = ctx.run(raw, |ctx| draw(app, ctx));
+    }
+}
+
+#[test]
+fn a_right_click_opens_a_sessions_menu_and_a_flights() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    app.sessions = vec![session_of(vec![flight()])];
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| {
+        app.sidebar(ctx);
+        app.browser(ctx)
+    };
+    let output = ctx.run(input(egui::vec2(1280.0, 820.0)), |ctx| draw(&mut app, ctx));
+    let row = text_positions(&output.shapes)
+        .into_iter()
+        .find(|(text, _)| text == "Test session")
+        .unwrap()
+        .1;
+    right_click(&ctx, &mut app, row + egui::vec2(5.0, 5.0), draw);
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(texts.iter().any(|t| t == "Edit session…"), "{texts:?}");
+
+    // Open the session, then right-click its flight's picture.
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    app.sessions = vec![session_of(vec![flight()])];
+    app.browse.session = Some("session".into());
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| app.browser(ctx);
+    let output = ctx.run(input(egui::vec2(1280.0, 820.0)), |ctx| draw(&mut app, ctx));
+    let title = text_positions(&output.shapes)
+        .into_iter()
+        .find(|(text, _)| text == "Layout test flight")
+        .unwrap()
+        .1;
+    right_click(&ctx, &mut app, title - egui::vec2(-20.0, 60.0), draw);
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(texts.iter().any(|t| t == "Export…"), "{texts:?}");
+}
