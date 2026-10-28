@@ -1342,6 +1342,10 @@ frame-exact boundary editor. Layout:
   import holds back another import and the settings, a segmentation, reduction, move or
   removal holds back its own session's menu, flights and dialogs — nothing else. The port
   had greyed out the whole app (likes, menus, every form) while any task ran.
+  The native bar says it as the Tauri one did again (2026-10-28, #13): "N tasks running" /
+  "N failed" / "No task running" with the running ones' mean progress, and its list marks
+  each ✔/✖ with how long it took, offers *Clear finished*, and says "Nothing has run yet."
+  (`taskbar.rs`, tested).
   **Errors are notifications beside it** (2026-10-24, the pilot's request): a bell at the
   bar's right end, red with the count of errors not yet seen; a click lists them (time,
   dismiss, *Clear all*) and marks them read. `lib/notices.svelte.ts` (`notify`) replaced the

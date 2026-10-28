@@ -1885,13 +1885,24 @@ impl App {
     pub(crate) fn task_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("tasks").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let running = self
-                    .tasks
-                    .iter()
-                    .filter(|task| task.running && !task.quiet)
-                    .count();
-                if ui.button(format!("Tasks ({running} running)")).clicked() {
+                let shown = || self.tasks.iter().filter(|task| !task.quiet || task.failed);
+                let running = shown().filter(|task| task.running).count();
+                let failed = shown().filter(|task| task.failed).count();
+                let text = RichText::new(crate::taskbar::summary(running, failed));
+                let text = if running == 0 && failed > 0 {
+                    text.color(Color32::LIGHT_RED)
+                } else {
+                    text
+                };
+                if ui.button(text).clicked() {
                     self.show_tasks = !self.show_tasks;
+                }
+                if let Some(progress) = crate::taskbar::overall(
+                    shown()
+                        .filter(|task| task.running)
+                        .map(|task| (task.done, task.total)),
+                ) {
+                    ui.add(egui::ProgressBar::new(progress).desired_width(120.0));
                 }
                 if let Some(task) = self
                     .tasks
@@ -1956,6 +1967,18 @@ impl App {
                 }
             }
             if self.show_tasks {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.heading("Tasks");
+                    if self.tasks.iter().any(|task| !task.running)
+                        && ui.small_button("Clear finished").clicked()
+                    {
+                        self.tasks.retain(|task| task.running);
+                    }
+                });
+                if !self.tasks.iter().any(|task| !task.quiet || task.failed) {
+                    ui.weak("Nothing has run yet.");
+                }
                 egui::ScrollArea::vertical()
                     .max_height(160.0)
                     .show(ui, |ui| {
@@ -1966,6 +1989,13 @@ impl App {
                             .filter(|task| !task.quiet || task.failed)
                         {
                             ui.horizontal_wrapped(|ui| {
+                                if task.running {
+                                    ui.spinner();
+                                } else if task.failed {
+                                    ui.colored_label(Color32::LIGHT_RED, "✖");
+                                } else {
+                                    ui.colored_label(Color32::LIGHT_GREEN, "✔");
+                                }
                                 ui.label(&task.label);
                                 if task.failed {
                                     ui.colored_label(Color32::LIGHT_RED, &task.line);
@@ -1981,6 +2011,10 @@ impl App {
                                         .show_percentage(),
                                     );
                                 }
+                                let end = task.ended.unwrap_or_else(std::time::Instant::now);
+                                ui.weak(crate::taskbar::elapsed(
+                                    end.saturating_duration_since(task.started).as_secs_f64(),
+                                ));
                             });
                             if !task.log.is_empty() {
                                 ui.collapsing(

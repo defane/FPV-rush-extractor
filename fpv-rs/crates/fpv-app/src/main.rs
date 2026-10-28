@@ -10,6 +10,7 @@ mod images;
 mod notices;
 mod player;
 mod strips;
+mod taskbar;
 mod ui;
 mod worker;
 
@@ -89,6 +90,7 @@ struct Task {
     quiet: bool,
     log: Vec<String>,
     started: std::time::Instant,
+    ended: Option<std::time::Instant>,
 }
 
 #[derive(Default)]
@@ -293,6 +295,7 @@ impl App {
             running: true,
             failed: false,
             started: std::time::Instant::now(),
+            ended: None,
         });
         if self
             .worker
@@ -307,6 +310,7 @@ impl App {
                 .push("The library worker is unavailable. Restart the application.");
             if let Some(task) = self.tasks.last_mut() {
                 task.running = false;
+                task.ended = Some(std::time::Instant::now());
                 task.failed = true;
             }
         }
@@ -404,6 +408,7 @@ impl App {
                     }
                     if let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) {
                         task.running = false;
+                        task.ended = Some(std::time::Instant::now());
                         task.failed = result.is_err();
                         task.line = match &result {
                             Ok(Reply::Done(text)) => text.clone(),

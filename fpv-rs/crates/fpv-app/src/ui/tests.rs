@@ -2461,3 +2461,57 @@ fn settings_show_each_cache_kind_and_ask_before_emptying_one() {
         "the default pattern is back"
     );
 }
+
+#[test]
+fn the_task_bar_counts_marks_times_and_clears_what_is_finished() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, events) = app_with_worker(&ctx);
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| {
+        app.receive(ctx);
+        app.task_bar(ctx)
+    };
+    assert!(
+        shown_texts(&ctx, &mut app, draw)
+            .iter()
+            .any(|t| t == "No task running")
+    );
+    app.show_tasks = true;
+    assert!(
+        shown_texts(&ctx, &mut app, draw)
+            .iter()
+            .any(|t| t == "Nothing has run yet.")
+    );
+
+    let import = app.submit("Import recordings", false, |_, _| unreachable!());
+    let export = app.submit("Export Flight 1", false, |_, _| unreachable!());
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(texts.iter().any(|t| t == "2 tasks running"), "{texts:?}");
+    assert!(
+        texts.iter().any(|t| t == "0 s"),
+        "each task's time: {texts:?}"
+    );
+
+    events
+        .send(crate::worker::Event::Finished {
+            id: import,
+            result: Ok(crate::worker::Reply::Done("3 imported".into())),
+        })
+        .unwrap();
+    events
+        .send(crate::worker::Event::Finished {
+            id: export,
+            result: Err("disk full".into()),
+        })
+        .unwrap();
+    let texts = shown_texts(&ctx, &mut app, draw);
+    for expected in ["1 failed", "✔", "✖", "3 imported", "disk full"] {
+        assert!(texts.iter().any(|t| t == expected), "{expected}: {texts:?}");
+    }
+    click_text(&ctx, &mut app, "Clear finished", draw);
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(texts.iter().any(|t| t == "No task running"), "{texts:?}");
+    assert!(
+        texts.iter().any(|t| t == "Nothing has run yet."),
+        "{texts:?}"
+    );
+}
