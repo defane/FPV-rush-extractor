@@ -1191,7 +1191,9 @@ frame-exact boundary editor. Layout:
   source names), so a session mixing DVR and GoPro footage shows both. A reduced recording
   says so (2026-10-23): `FileView.reduced` / `FlightView.reduced` from the `reduced-1` runs,
   "DVR · reduced" on the cards, and in the sidebar "DVR · reduced" or "· partly reduced" when
-  only some of a session's DVR recordings were.
+  only some of a session's DVR recordings were. The native app's rows say it again (2026-10-28, #8):
+  `browse::session_sources` (DVR and its reduction, each camera once with a camera icon),
+  `browse::elsewhere` ("elsewhere", the folders on hover).
 - **Format badge** (2026-10-21, the pilot's request): cards (and the Files tab, until it was dropped) say
   "4K · HEVC · 59.94 fps" (`views::format_label`, in Rust like every other number shown).
   Size by width for the camera classes (5.3K, 4K, 2.7K), else the height (`1080p`, `480p`);

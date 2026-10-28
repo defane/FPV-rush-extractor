@@ -16,6 +16,8 @@ enum MetadataIcon {
     Settings,
     Chevron,
     Cloud,
+    Camera,
+    Folder,
 }
 
 fn metadata_icon(ui: &mut egui::Ui, kind: MetadataIcon) {
@@ -29,6 +31,8 @@ fn metadata_icon(ui: &mut egui::Ui, kind: MetadataIcon) {
         MetadataIcon::Settings => "Settings and About",
         MetadataIcon::Chevron => "Import options",
         MetadataIcon::Cloud => "Online Only on the cloud drive: downloads when played",
+        MetadataIcon::Camera => "Action camera",
+        MetadataIcon::Folder => "In an earlier import folder",
     });
 }
 
@@ -163,6 +167,42 @@ fn paint_metadata_icon(ui: &egui::Ui, kind: MetadataIcon, area: egui::Rect) {
                 stroke,
             );
             painter.circle_filled(body.right_bottom() - egui::vec2(3.0, 3.0), 1.2_f32, color);
+        }
+        MetadataIcon::Camera => {
+            let lens = body.center() - egui::vec2(1.5, 0.0);
+            painter.rect_stroke(
+                egui::Rect::from_min_max(
+                    body.min + egui::vec2(0.0, 2.0),
+                    body.max - egui::vec2(3.0, 1.0),
+                ),
+                2.0,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.circle_stroke(lens, 2.2, stroke);
+            painter.line_segment(
+                [
+                    body.right_center() - egui::vec2(3.0, 0.0),
+                    body.right_top() + egui::vec2(0.0, 3.0),
+                ],
+                stroke,
+            );
+        }
+        MetadataIcon::Folder => {
+            let top = body.top() + 3.0;
+            painter.rect_stroke(
+                egui::Rect::from_min_max(egui::pos2(body.left(), top), body.max),
+                1.5,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(body.left() + 1.0, top),
+                    egui::pos2(body.left() + 5.0, top - 2.0),
+                ],
+                stroke,
+            );
         }
         MetadataIcon::Cloud => {
             // Two puffs on a flat base, in the accent: something to notice.
@@ -614,18 +654,31 @@ impl App {
                                             ))
                                             .weak(),
                                         );
-                                        let mut sources = Vec::new();
-                                        for file in &session.files {
-                                            if !sources.contains(&file.source) {
-                                                sources.push(file.source.clone());
-                                            }
-                                        }
-                                        if !sources.is_empty() {
-                                            ui.horizontal_wrapped(|ui| {
+                                        let sources = browse::session_sources(&session);
+                                        let away = browse::elsewhere(&session);
+                                        ui.horizontal_wrapped(|ui| {
+                                            if let Some(dvr) = sources.dvr {
                                                 metadata_icon(ui, MetadataIcon::Dvr);
-                                                ui.small(RichText::new(sources.join(" · ")).weak());
-                                            });
-                                        }
+                                                let label = ui.small(RichText::new(dvr).weak());
+                                                if dvr != "DVR" {
+                                                    label.on_hover_text(
+                                                        "Cut down to its flights with Reduce…",
+                                                    );
+                                                }
+                                            }
+                                            for camera in &sources.cameras {
+                                                metadata_icon(ui, MetadataIcon::Camera);
+                                                ui.small(RichText::new(camera).weak());
+                                            }
+                                            if !away.is_empty() {
+                                                metadata_icon(ui, MetadataIcon::Folder);
+                                                ui.small(RichText::new("elsewhere").weak())
+                                                    .on_hover_text(format!(
+                                                        "In an earlier import folder: {}",
+                                                        away.join(", ")
+                                                    ));
+                                            }
+                                        });
                                         if let Some(state) = browse::cloud_state(&session) {
                                             ui.horizontal_wrapped(|ui| {
                                                 metadata_icon(ui, MetadataIcon::Cloud);

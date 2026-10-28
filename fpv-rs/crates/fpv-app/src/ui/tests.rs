@@ -2089,3 +2089,36 @@ fn a_right_click_opens_a_sessions_menu_and_a_flights() {
     let texts = shown_texts(&ctx, &mut app, draw);
     assert!(texts.iter().any(|t| t == "Export…"), "{texts:?}");
 }
+
+#[test]
+fn a_session_row_names_its_sources_its_reduction_and_an_earlier_folder() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    let file = |source: &str, action_cam, reduced, elsewhere: Option<&str>| fpv_library::FileView {
+        id: "f".into(),
+        name: "PICT0032.AVI".into(),
+        width: 640,
+        height: 480,
+        fps: 29.887,
+        duration: 60.0,
+        codec: "mjpeg".into(),
+        action_cam,
+        source: source.into(),
+        format: String::new(),
+        reduced,
+        elsewhere: elsewhere.map(Into::into),
+        cloud: false,
+        freeable: false,
+    };
+    let mut session = session_of(vec![flight()]);
+    session.files = vec![
+        file("DVR", false, true, None),
+        file("DVR", false, false, Some("/Volumes/Old")),
+        file("GoPro HERO11", true, false, None),
+    ];
+    app.sessions = vec![session];
+    let texts = shown_texts(&ctx, &mut app, |app, ctx| app.sidebar(ctx));
+    for expected in ["DVR · partly reduced", "GoPro HERO11", "elsewhere"] {
+        assert!(texts.iter().any(|t| t == expected), "{expected}: {texts:?}");
+    }
+}

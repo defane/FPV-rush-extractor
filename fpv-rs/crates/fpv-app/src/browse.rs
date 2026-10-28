@@ -195,6 +195,46 @@ pub fn labels(text: &str) -> Vec<String> {
     result
 }
 
+/// What recorded a session, for its row: "DVR" (with "· reduced" or "·
+/// partly reduced" when its recordings were cut down to their flights), then
+/// each camera once, in the order its files came.
+#[derive(Debug, Default, PartialEq)]
+pub struct Sources {
+    pub dvr: Option<&'static str>,
+    pub cameras: Vec<String>,
+}
+
+pub fn session_sources(session: &SessionView) -> Sources {
+    let mut cameras: Vec<String> = vec![];
+    for file in session.files.iter().filter(|f| f.action_cam) {
+        if !cameras.iter().any(|c| same(c, &file.source)) {
+            cameras.push(file.source.clone());
+        }
+    }
+    let dvr: Vec<_> = session.files.iter().filter(|f| !f.action_cam).collect();
+    let cut = dvr.iter().filter(|f| f.reduced).count();
+    Sources {
+        dvr: (!dvr.is_empty()).then_some(match cut {
+            0 => "DVR",
+            n if n == dvr.len() => "DVR · reduced",
+            _ => "DVR · partly reduced",
+        }),
+        cameras,
+    }
+}
+
+/// The earlier import folders a session's recordings still sit in, each once:
+/// what "Move to Import Folder…" would bring in.
+pub fn elsewhere(session: &SessionView) -> Vec<String> {
+    let mut folders: Vec<String> = vec![];
+    for folder in session.files.iter().filter_map(|f| f.elsewhere.as_ref()) {
+        if !folders.contains(folder) {
+            folders.push(folder.clone());
+        }
+    }
+    folders
+}
+
 /// How much of a session only the cloud drive holds: "in the cloud" when all
 /// of it, "partly in the cloud" when some, nothing when it is all here.
 pub fn cloud_state(session: &SessionView) -> Option<&'static str> {
@@ -271,6 +311,55 @@ pub fn resegment_losses(session: &SessionView) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    fn recording(
+        source: &str,
+        action_cam: bool,
+        reduced: bool,
+        elsewhere: Option<&str>,
+    ) -> fpv_library::FileView {
+        fpv_library::FileView {
+            id: "f".into(),
+            name: "PICT0032.AVI".into(),
+            width: 640,
+            height: 480,
+            fps: 29.887,
+            duration: 60.0,
+            codec: "mjpeg".into(),
+            action_cam,
+            source: source.into(),
+            format: String::new(),
+            reduced,
+            elsewhere: elsewhere.map(Into::into),
+            cloud: false,
+            freeable: false,
+        }
+    }
+
+    #[test]
+    fn names_what_recorded_a_session_and_where_its_recordings_were_left() {
+        let mut letz = session("letz", None, vec![], &[]);
+        assert_eq!(session_sources(&letz), Sources::default());
+        letz.files = vec![
+            recording("DVR", false, true, None),
+            recording("GoPro HERO11", true, false, Some("/Volumes/Old")),
+            recording("DVR", false, false, Some("/Volumes/Old")),
+            recording("gopro hero11", true, false, None),
+            recording("DJI", true, false, Some("/media/Older")),
+        ];
+        assert_eq!(
+            session_sources(&letz),
+            Sources {
+                dvr: Some("DVR · partly reduced"),
+                cameras: vec!["GoPro HERO11".into(), "DJI".into()],
+            }
+        );
+        assert_eq!(elsewhere(&letz), ["/Volumes/Old", "/media/Older"]);
+        letz.files.retain(|f| !f.action_cam && f.reduced);
+        assert_eq!(session_sources(&letz).dvr, Some("DVR · reduced"));
+        letz.files[0].reduced = false;
+        assert_eq!(session_sources(&letz).dvr, Some("DVR"));
+    }
 
     #[test]
     fn says_whether_a_session_is_all_or_partly_in_the_cloud() {
