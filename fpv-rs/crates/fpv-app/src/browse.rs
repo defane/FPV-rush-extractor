@@ -162,6 +162,17 @@ pub fn labels(text: &str) -> Vec<String> {
     result
 }
 
+/// How much of a session only the cloud drive holds: "in the cloud" when all
+/// of it, "partly in the cloud" when some, nothing when it is all here.
+pub fn cloud_state(session: &SessionView) -> Option<&'static str> {
+    let away = session.files.iter().filter(|file| file.cloud).count();
+    match away {
+        0 => None,
+        n if n == session.files.len() => Some("in the cloud"),
+        _ => Some("partly in the cloud"),
+    }
+}
+
 /// Names the library already uses that match what is being typed, each once
 /// in the spelling first met — the tags across flights and sessions, or the
 /// figures — those starting with it first, never one already `taken`.
@@ -227,6 +238,34 @@ pub fn resegment_losses(session: &SessionView) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn says_whether_a_session_is_all_or_partly_in_the_cloud() {
+        let file = |cloud| fpv_library::FileView {
+            id: "f".into(),
+            name: "GH010042.MP4".into(),
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            duration: 60.0,
+            codec: "h264".into(),
+            action_cam: true,
+            source: "GoPro".into(),
+            format: String::new(),
+            reduced: false,
+            elsewhere: None,
+            cloud,
+            freeable: !cloud,
+        };
+        let mut letz = session("letz", None, vec![], &[]);
+        assert_eq!(cloud_state(&letz), None, "no recordings");
+        letz.files = vec![file(false), file(false)];
+        assert_eq!(cloud_state(&letz), None);
+        letz.files = vec![file(true), file(false)];
+        assert_eq!(cloud_state(&letz), Some("partly in the cloud"));
+        letz.files = vec![file(true), file(true)];
+        assert_eq!(cloud_state(&letz), Some("in the cloud"));
+    }
 
     #[test]
     fn suggests_the_names_in_use_starting_with_what_is_typed_first() {

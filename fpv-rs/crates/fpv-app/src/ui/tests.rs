@@ -1791,3 +1791,45 @@ fn progress_reaches_only_its_own_task_and_a_failure_is_notified() {
     assert_eq!(task(export).line, "disk full");
     assert_eq!(app.notices.items()[0].text, "disk full");
 }
+
+#[test]
+fn the_session_list_and_the_cards_say_what_is_only_in_the_cloud() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    let file = |cloud| fpv_library::FileView {
+        id: "f".into(),
+        name: "GH010042.MP4".into(),
+        width: 1920,
+        height: 1080,
+        fps: 30.0,
+        duration: 60.0,
+        codec: "h264".into(),
+        action_cam: true,
+        source: "GoPro".into(),
+        format: String::new(),
+        reduced: false,
+        elsewhere: None,
+        cloud,
+        freeable: false,
+    };
+    let mut session = session_of(vec![FlightView {
+        cloud: true,
+        ..flight()
+    }]);
+    session.files = vec![file(true), file(false)];
+    app.browse.session = Some(session.id.clone());
+    app.sessions = vec![session];
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| {
+        app.sidebar(ctx);
+        app.browser(ctx)
+    };
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(
+        texts.iter().any(|t| t == "partly in the cloud"),
+        "{texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t == "In the cloud"),
+        "the card: {texts:?}"
+    );
+}

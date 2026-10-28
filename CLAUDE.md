@@ -1066,10 +1066,11 @@ frame-exact boundary editor. Layout:
   last download's speed (kept in `localStorage`), and says nothing once that guess has run
   out; the bar never shows done before it is. Seen in the window with a build simulating a slow drive (the `.cloud`
   marker, 300 ms a chunk); how Proton's own downloads report progress is for the Mac to show.
-  **In the native app** (2026-10-28) the wait counts videos only — the pilot's Proton never
+  **In the native app** (2026-10-28) the wait shows an endless busy bar (`sweep`) and counts videos only — the pilot's Proton never
   reported bytes — "Video 1 of 2", the time left at the pace of the videos already down
   (`cloudwait.rs`, tested), *Continue in Background* (`App::detached`: the download's
-  `Playback` reply then opens nothing). Tested through the window in `ui/tests.rs`.
+  `Playback` reply then opens nothing). Tested through the window in `ui/tests.rs`. Cards say *In the cloud* (cloud icon, accent colour), the session list *in the cloud* /
+  *partly in the cloud* (`browse::cloud_state`), as the Tauri app did.
 - **Batch export** (2026-10-19): *Select* in a session's header ticks cards, *Export N…* writes
   them all into one chosen folder through `Library::export_flights` — one after the other,
   progress as `export-progress` events, each under `<session> — <title>` (`.avi` for DVR,

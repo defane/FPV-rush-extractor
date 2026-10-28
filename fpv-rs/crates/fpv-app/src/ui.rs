@@ -15,6 +15,7 @@ enum MetadataIcon {
     Speaker(bool),
     Settings,
     Chevron,
+    Cloud,
 }
 
 fn metadata_icon(ui: &mut egui::Ui, kind: MetadataIcon) {
@@ -27,6 +28,7 @@ fn metadata_icon(ui: &mut egui::Ui, kind: MetadataIcon) {
         MetadataIcon::Speaker(false) => "Playback volume",
         MetadataIcon::Settings => "Settings and About",
         MetadataIcon::Chevron => "Import options",
+        MetadataIcon::Cloud => "Online Only on the cloud drive: downloads when played",
     });
 }
 
@@ -156,6 +158,20 @@ fn paint_metadata_icon(ui: &egui::Ui, kind: MetadataIcon, area: egui::Rect) {
                 stroke,
             );
             painter.circle_filled(body.right_bottom() - egui::vec2(3.0, 3.0), 1.2_f32, color);
+        }
+        MetadataIcon::Cloud => {
+            // Two puffs on a flat base, in the accent: something to notice.
+            let stroke = egui::Stroke::new(1.4_f32, crate::ACCENT);
+            let base = body.center().y + 3.0;
+            painter.circle_stroke(egui::pos2(body.center().x - 2.5, base - 2.5), 3.0, stroke);
+            painter.circle_stroke(egui::pos2(body.center().x + 2.0, base - 3.5), 4.0, stroke);
+            painter.line_segment(
+                [
+                    egui::pos2(body.left() + 1.0, base),
+                    egui::pos2(body.right() - 1.0, base),
+                ],
+                stroke,
+            );
         }
         MetadataIcon::Film => {
             painter.rect_stroke(body, 2.0, stroke, egui::StrokeKind::Inside);
@@ -603,6 +619,12 @@ impl App {
                                             ui.horizontal_wrapped(|ui| {
                                                 metadata_icon(ui, MetadataIcon::Dvr);
                                                 ui.small(RichText::new(sources.join(" · ")).weak());
+                                            });
+                                        }
+                                        if let Some(state) = browse::cloud_state(&session) {
+                                            ui.horizontal_wrapped(|ui| {
+                                                metadata_icon(ui, MetadataIcon::Cloud);
+                                                ui.small(RichText::new(state).color(crate::ACCENT));
                                             });
                                         }
                                     });
@@ -1110,7 +1132,11 @@ impl App {
                     ui.small(RichText::new(format!("{} recordings", flight.recordings)).weak());
                 }
                 if flight.cloud {
-                    ui.small("Online Only · downloads when played");
+                    ui.horizontal_wrapped(|ui| {
+                        metadata_icon(ui, MetadataIcon::Cloud);
+                        ui.small(RichText::new("In the cloud").color(crate::ACCENT))
+                            .on_hover_text("Online Only: downloads when played");
+                    });
                 }
                 ui.horizontal_wrapped(|ui| {
                     let mut shown = Vec::<&str>::new();
