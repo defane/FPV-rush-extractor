@@ -1314,7 +1314,11 @@ frame-exact boundary editor. Layout:
   folders** (2026-10-23, the pilot's request): a dialog lists the import folder's folders
   (`Library::import_folder_contents` — names and known paths only, nothing probed), each with
   the session it would load into and its new recordings; a folder already wholly in the
-  library is greyed and cannot be picked. `load_import_folders` takes folder *names*, never
+  library is greyed and cannot be picked. The native dialog is that one again (2026-10-28, #17): the import
+  folder named in its intro, each folder with "→ session · day" and what it holds in words
+  (`folder_status`), its deleted recordings named with "load again into <session>", ten a
+  page, "Select all new", "Load N folders", and "Reading the import folder…" / "holds no
+  folders". `load_import_folders` takes folder *names*, never
   paths: one not directly in the import folder (`..`, an absolute path) is refused (tested).
 - **Deleting a session can keep its videos** (2026-10-20): the sidebar's ✕ asks, with
   *Keep the Videos* as the main button and *Also Trash the Videos* beside it

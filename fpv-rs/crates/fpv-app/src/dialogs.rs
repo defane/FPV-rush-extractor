@@ -55,6 +55,7 @@ pub(crate) struct Dialog {
     file_name: String,
     flights: Vec<String>,
     folders: Option<Vec<FolderView>>,
+    load_page: usize,
     chosen: HashSet<String>,
     reduction: Option<ReducePreview>,
     relocation: Option<RelocationPreview>,
@@ -100,6 +101,7 @@ impl Dialog {
             file_name: String::new(),
             flights: vec![],
             folders: None,
+            load_page: 0,
             chosen: HashSet::new(),
             reduction: None,
             relocation: None,
@@ -1027,47 +1029,117 @@ impl App {
                 }
             }
             Kind::Load => {
+                ui.add(egui::Label::new(format!(
+                    "Recordings already in {} are added where they are, without copying. Each folder loads into the session its name gives.",
+                    self.config.media_root.display()
+                )).wrap());
                 if let Some(folders) = &dialog.folders {
+                    if folders.is_empty() {
+                        ui.weak("The import folder holds no folders.");
+                    }
+                    let range = crate::browse::page_range(
+                        folders.len(),
+                        &mut dialog.load_page,
+                        FOLDERS_PER_PAGE,
+                    );
                     egui::ScrollArea::vertical()
                         .max_height(350.0)
                         .show(ui, |ui| {
-                            for folder in folders {
-                                let mut chosen = dialog.chosen.contains(&folder.name);
-                                if ui
-                                    .add_enabled(
-                                        folder.new > 0 || dialog.restore.contains(&folder.name),
-                                        egui::Checkbox::new(
-                                            &mut chosen,
-                                            format!(
-                                                "{} · {} new / {} recordings",
-                                                folder.name, folder.new, folder.recordings
-                                            ),
-                                        ),
-                                    )
-                                    .changed()
-                                {
-                                    if chosen {
-                                        dialog.chosen.insert(folder.name.clone());
-                                    } else {
-                                        dialog.chosen.remove(&folder.name);
-                                    }
-                                }
-                                if !folder.deleted.is_empty() {
-                                    ui.indent(&folder.name, |ui| {
-                                        let mut restore = dialog.restore.contains(&folder.name);
-                                        if ui.checkbox(&mut restore, format!("Restore {} recording(s) previously deleted with their flight", folder.deleted.len())).changed() {
-                                            if restore { dialog.restore.insert(folder.name.clone()); dialog.chosen.insert(folder.name.clone()); }
-                                            else { dialog.restore.remove(&folder.name); if folder.new == 0 { dialog.chosen.remove(&folder.name); } }
+                            for folder in &folders[range] {
+                                let loadable =
+                                    folder.new > 0 || dialog.restore.contains(&folder.name);
+                                ui.horizontal(|ui| {
+                                    let mut chosen = dialog.chosen.contains(&folder.name);
+                                    if ui
+                                        .add_enabled(
+                                            loadable,
+                                            egui::Checkbox::new(&mut chosen, &folder.name),
+                                        )
+                                        .changed()
+                                    {
+                                        if chosen {
+                                            dialog.chosen.insert(folder.name.clone());
+                                        } else {
+                                            dialog.chosen.remove(&folder.name);
                                         }
-                                        ui.collapsing("Deleted recordings", |ui| { for file in &folder.deleted { ui.small(file); } });
-                                    });
+                                    }
+                                    ui.weak(folder_status(folder));
+                                });
+                                ui.indent(("target", &folder.name), |ui| {
+                                    ui.small(format!(
+                                        "→ {}{}",
+                                        folder.session,
+                                        folder
+                                            .date
+                                            .as_ref()
+                                            .map(|d| format!(" · {d}"))
+                                            .unwrap_or_default()
+                                    ));
+                                    if !folder.deleted.is_empty() {
+                                        let mut restore = dialog.restore.contains(&folder.name);
+                                        let label = format!(
+                                            "{} deleted with {} ({}) — load again into {}",
+                                            if folder.deleted.len() == 1 {
+                                                "1 recording".to_owned()
+                                            } else {
+                                                format!("{} recordings", folder.deleted.len())
+                                            },
+                                            if folder.deleted.len() == 1 {
+                                                "its flight"
+                                            } else {
+                                                "their flights"
+                                            },
+                                            folder.deleted.join(", "),
+                                            folder.session
+                                        );
+                                        if ui.checkbox(&mut restore, label).changed() {
+                                            if restore {
+                                                dialog.restore.insert(folder.name.clone());
+                                                dialog.chosen.insert(folder.name.clone());
+                                            } else {
+                                                dialog.restore.remove(&folder.name);
+                                                if folder.new == 0 {
+                                                    dialog.chosen.remove(&folder.name);
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                    let pages = folders.len().div_ceil(FOLDERS_PER_PAGE);
+                    if pages > 1 {
+                        ui.horizontal(|ui| {
+                            for page in 0..pages {
+                                if ui
+                                    .selectable_label(
+                                        page == dialog.load_page,
+                                        (page + 1).to_string(),
+                                    )
+                                    .clicked()
+                                {
+                                    dialog.load_page = page;
                                 }
                             }
                         });
+                    }
+                    let new: Vec<String> = folders
+                        .iter()
+                        .filter(|f| f.new > 0)
+                        .map(|f| f.name.clone())
+                        .collect();
+                    if new.len() > 1 && ui.button("Select all new").clicked() {
+                        dialog.chosen.extend(new);
+                    }
+                    let count = dialog.chosen.len();
                     if ui
                         .add_enabled(
-                            !dialog.chosen.is_empty(),
-                            egui::Button::new("Load selected folders"),
+                            count > 0,
+                            egui::Button::new(if count > 1 {
+                                format!("Load {count} folders")
+                            } else {
+                                "Load".into()
+                            }),
                         )
                         .clicked()
                     {
@@ -1101,7 +1173,10 @@ impl App {
                         ));
                     }
                 } else {
-                    ui.spinner();
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Reading the import folder…");
+                    });
                 }
             }
         }
@@ -1190,6 +1265,20 @@ fn format_date(date: Option<NaiveDate>) -> Option<String> {
     date.map(|date| date.format("%Y-%m-%d").to_string())
 }
 
+/// Folders a page in the Load from Destination Folder dialog.
+const FOLDERS_PER_PAGE: usize = 10;
+
+/// What a folder of the import folder holds for the library, in words.
+fn folder_status(folder: &FolderView) -> String {
+    match (folder.recordings, folder.new) {
+        (0, _) => "No recordings".into(),
+        (_, 0) if !folder.deleted.is_empty() => "Nothing new".into(),
+        (_, 0) => "Already in library".into(),
+        (all, new) if new == all => format!("{all} recording{}", if all == 1 { "" } else { "s" }),
+        (all, new) => format!("{new} new of {all}"),
+    }
+}
+
 /// An import's session is named after the folder it came from.
 fn session_name_from(folder: &std::path::Path) -> String {
     folder
@@ -1239,6 +1328,32 @@ fn export_reply(
                 .collect::<Vec<_>>()
                 .join(", ")
         ))),
+    }
+}
+
+#[cfg(test)]
+mod load_tests {
+    use super::*;
+
+    #[test]
+    fn says_in_words_what_a_folder_holds_for_the_library() {
+        let folder = |recordings, new, deleted: &[&str]| FolderView {
+            name: "2026-10-23 Bench DJI".into(),
+            session: "Bench".into(),
+            date: None,
+            recordings,
+            new,
+            deleted: deleted.iter().map(|d| d.to_string()).collect(),
+        };
+        assert_eq!(folder_status(&folder(0, 0, &[])), "No recordings");
+        assert_eq!(folder_status(&folder(3, 0, &[])), "Already in library");
+        assert_eq!(
+            folder_status(&folder(3, 0, &["DJI_0100.MP4"])),
+            "Nothing new"
+        );
+        assert_eq!(folder_status(&folder(3, 3, &[])), "3 recordings");
+        assert_eq!(folder_status(&folder(1, 1, &[])), "1 recording");
+        assert_eq!(folder_status(&folder(3, 1, &[])), "1 new of 3");
     }
 }
 

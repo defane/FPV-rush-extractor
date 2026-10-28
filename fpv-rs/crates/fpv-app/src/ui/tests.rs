@@ -1739,22 +1739,27 @@ fn a_recording_deleted_with_its_flight_loads_only_when_restore_is_ticked() {
     ]));
     app.dialog = Some(dialog);
     let draw: fn(&mut App, &egui::Context) = |app, ctx| app.dialog_window(ctx);
-    click_text(
-        &ctx,
-        &mut app,
-        "2026-10-23 Bench DJI · 0 new / 2 recordings",
-        draw,
+    let texts = shown_texts(&ctx, &mut app, draw);
+    for expected in ["Nothing new", "→ Bench · 2026-10-23"] {
+        assert!(texts.iter().any(|t| t == expected), "{expected}: {texts:?}");
+    }
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.starts_with("Recordings already in ")),
+        "{texts:?}"
     );
-    click_text(&ctx, &mut app, "Load selected folders", draw);
+    click_text(&ctx, &mut app, "2026-10-23 Bench DJI", draw);
+    click_text(&ctx, &mut app, "Load", draw);
     assert!(
         jobs.try_recv().is_err(),
         "nothing new: the folder cannot be picked"
     );
 
-    let restore = "Restore 1 recording(s) previously deleted with their flight";
+    let restore = "1 recording deleted with its flight (DJI_0100.MP4) — load again into Bench";
     click_text(&ctx, &mut app, restore, draw);
     // Ticking it picks the folder: Load now runs.
-    click_text(&ctx, &mut app, "Load selected folders", draw);
+    click_text(&ctx, &mut app, "Load", draw);
     assert!(jobs.try_recv().is_ok());
 }
 
@@ -2640,4 +2645,66 @@ fn importing_a_folder_asks_for_it_names_the_session_after_it_and_says_when_it_jo
         "Alpes exists: {texts:?}"
     );
     assert!(texts.iter().any(|t| t == "Change…"), "{texts:?}");
+}
+
+#[test]
+fn loading_folders_reads_pages_and_selects_all_new_at_once() {
+    let ctx = egui::Context::default();
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| app.dialog_window(ctx);
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    app.dialog = Some(crate::dialogs::Dialog::load());
+    assert!(
+        shown_texts(&ctx, &mut app, draw)
+            .iter()
+            .any(|t| t == "Reading the import folder…")
+    );
+    app.dialog
+        .as_mut()
+        .unwrap()
+        .reply(crate::worker::Reply::Folders(vec![]));
+    assert!(
+        shown_texts(&ctx, &mut app, draw)
+            .iter()
+            .any(|t| t == "The import folder holds no folders.")
+    );
+
+    let folders = (0..12)
+        .map(|n| fpv_library::FolderView {
+            name: format!("2026-10-{:02} Spot {n} DJI", n + 1),
+            session: format!("Spot {n}"),
+            date: None,
+            recordings: 1,
+            new: 1,
+            deleted: vec![],
+        })
+        .collect();
+    app.dialog
+        .as_mut()
+        .unwrap()
+        .reply(crate::worker::Reply::Folders(folders));
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(
+        texts.iter().any(|t| t == "2026-10-01 Spot 0 DJI"),
+        "{texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t == "2026-10-11 Spot 10 DJI"),
+        "ten a page: {texts:?}"
+    );
+    click_text(&ctx, &mut app, "Select all new", draw);
+    assert!(
+        shown_texts(&ctx, &mut app, draw)
+            .iter()
+            .any(|t| t == "Load 12 folders")
+    );
+    click_text(&ctx, &mut app, "2", draw);
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(
+        texts.iter().any(|t| t == "2026-10-11 Spot 10 DJI"),
+        "page two: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t == "2026-10-01 Spot 0 DJI"),
+        "{texts:?}"
+    );
 }
