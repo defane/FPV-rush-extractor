@@ -37,6 +37,45 @@ pub fn time_left(done: usize, total: usize, elapsed: f64) -> Option<String> {
     })
 }
 
+/// One sweep of the busy bar, in seconds.
+const SWEEP: f64 = 1.6;
+/// The moving segment's length, as a share of the bar.
+const SEGMENT: f64 = 0.3;
+
+/// Where the busy bar's segment is `t` seconds in, as (start, end) shares of
+/// the bar: it slides in from the left and out at the right, endlessly. The
+/// wait cannot say how far along a video is, so it shows that work goes on.
+pub fn sweep(t: f64) -> (f32, f32) {
+    let phase = if t.is_finite() {
+        t.rem_euclid(SWEEP) / SWEEP
+    } else {
+        0.0
+    };
+    let head = phase * (1.0 + SEGMENT);
+    (
+        (head - SEGMENT).clamp(0.0, 1.0) as f32,
+        head.clamp(0.0, 1.0) as f32,
+    )
+}
+
+/// The busy bar: a track and its sliding segment, redrawn as time goes.
+fn busy_bar(ui: &mut eframe::egui::Ui) {
+    use eframe::egui;
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 8.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 4.0, ui.visuals().extreme_bg_color);
+    let (start, end) = sweep(ui.input(|input| input.time));
+    if end > start {
+        let segment = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + rect.width() * start, rect.top()),
+            egui::pos2(rect.left() + rect.width() * end, rect.bottom()),
+        );
+        painter.rect_filled(segment, 4.0, crate::ACCENT);
+    }
+    ui.ctx().request_repaint();
+}
+
 impl crate::App {
     /// The wait itself: which video, how long, and the way out that leaves
     /// the download running and the flight unplayed.
@@ -61,12 +100,7 @@ impl crate::App {
                 "{} is only in the cloud: it plays as soon as it is on this computer.",
                 wait.flight
             ));
-            let fraction = if total > 0 {
-                done as f32 / total as f32
-            } else {
-                0.0
-            };
-            ui.add(egui::ProgressBar::new(fraction).animate(true));
+            busy_bar(ui);
             let mut line = wait_line(done, total);
             if let Some(left) = time_left(done, total, elapsed) {
                 line = format!("{line} · {left}");
@@ -100,6 +134,23 @@ mod tests {
         assert_eq!(wait_line(1, 2), "Video 2 of 2");
         // The last report comes once everything is down.
         assert_eq!(wait_line(2, 2), "Video 2 of 2");
+    }
+
+    #[test]
+    fn the_busy_bar_slides_across_and_starts_over() {
+        assert_eq!(sweep(0.0), (0.0, 0.0), "enters from the left");
+        let (start, end) = sweep(SWEEP * 0.5);
+        assert!(
+            start > 0.0 && end < 1.0 && end - start > 0.2,
+            "{start} {end}"
+        );
+        let (start, end) = sweep(SWEEP * 0.99);
+        assert!(
+            end == 1.0 && start > 0.6,
+            "leaves at the right: {start} {end}"
+        );
+        assert_eq!(sweep(SWEEP * 3.0 + 0.4), sweep(0.4), "endlessly");
+        assert_eq!(sweep(f64::NAN), (0.0, 0.0));
     }
 
     #[test]
