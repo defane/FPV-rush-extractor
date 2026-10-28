@@ -178,7 +178,47 @@ fn player_fits_viewport_when_opened_and_when_the_display_shrinks() {
         "restore should return to {initial:?}, got {restored:?}"
     );
     click_control(&ctx, &mut app, "Maximize");
-    click_control(&ctx, &mut app, "×");
+    let output = ctx.run(input(egui::vec2(1280.0, 820.0)), |ctx| {
+        app.player_window(ctx)
+    });
+    assert!(
+        !text_positions(&output.shapes)
+            .iter()
+            .any(|(text, _)| text == "×"),
+        "the title bar's × is the player's only one"
+    );
+    // The title bar's close button: egui draws it as lines, so it is found
+    // as the square widget at the top right of the player's layer.
+    let player = ctx
+        .memory(|m| m.area_rect(egui::Id::new("player")))
+        .unwrap();
+    let close = ctx.viewport(|viewport| {
+        viewport
+            .prev_pass
+            .widgets
+            .get_layer(egui::LayerId::new(
+                egui::Order::Middle,
+                egui::Id::new("player"),
+            ))
+            .filter(|w| w.sense.senses_click() && w.rect.width() == w.rect.height())
+            .filter(|w| w.rect.top() < player.top() + 40.0)
+            .max_by(|a, b| a.rect.right().total_cmp(&b.rect.right()))
+            .map(|w| w.rect.center())
+            .expect("a close button in the player's title bar")
+    });
+    for pressed in [true, false] {
+        let mut raw = input(egui::vec2(1280.0, 820.0));
+        raw.events = vec![
+            egui::Event::PointerMoved(close),
+            egui::Event::PointerButton {
+                pos: close,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            },
+        ];
+        let _ = ctx.run(raw, |ctx| app.player_window(ctx));
+    }
     assert!(
         app.viewer.is_none(),
         "close must dismiss the maximized player"

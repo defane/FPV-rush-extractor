@@ -1236,7 +1236,9 @@ frame-exact boundary editor. Layout:
   `danger_text` for the menu items and small "×" leading there — and no × by a dialog's
   title (Close below or Escape). The view tabs are three blocks of one height, name and count
   centred (`view_tab`, drawn by hand: egui's button set a centred two-line text off its
-  middle). Separators stay neutral (the pilot's call). A review of the restyle in the window
+  middle). Separators stay neutral (the pilot's call). The player keeps its title bar's ×
+  and lost the second one beside Maximize and Full screen (the pilot's call); in full screen,
+  which has no title bar, Escape leaves full screen first. A review of the restyle in the window
   found what it broke and what it showed up, all fixed: dialogs taller than the window
   scroll inside it (`dialog-form`, Close stays in reach), About closes with Close or Escape,
   the session list scrolls per page and stops above its pager, scrollbars are solid (they

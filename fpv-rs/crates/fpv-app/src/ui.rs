@@ -1681,7 +1681,6 @@ impl App {
                 );
             }
         }
-        let mut close_requested = false;
         let shown = window.show(ctx, |ui| {
             if fullscreen && !ui.visuals().dark_mode {
                 // The fullscreen backing is black even when the OS follows a
@@ -1696,7 +1695,6 @@ impl App {
             self.player_contents(
                 ui,
                 &mut viewer,
-                &mut close_requested,
                 ctx,
                 if fullscreen {
                     ctx.content_rect().height()
@@ -1709,9 +1707,6 @@ impl App {
             viewer.window.normal_rect = Some(shown.response.rect);
         }
         viewer.window.was_expanded = expanded;
-        if close_requested {
-            open = false;
-        }
         if viewer.fullscreen && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
             viewer.fullscreen = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
@@ -1730,7 +1725,6 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         viewer: &mut Viewer,
-        close_requested: &mut bool,
         ctx: &egui::Context,
         content_height: f32,
     ) {
@@ -1756,9 +1750,6 @@ impl App {
             {
                 viewer.fullscreen = !viewer.fullscreen;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(viewer.fullscreen));
-            }
-            if ui.button("×").on_hover_text("Close player").clicked() {
-                *close_requested = true;
             }
             ui.label(flight_name(&viewer.flight));
         });
