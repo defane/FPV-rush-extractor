@@ -1,7 +1,7 @@
 //! Forms keep their drafts while operations run or fail. Confirmation previews
 //! come from the same library methods which perform the destructive action.
 use crate::{
-    ACCENT, App, Reply,
+    ACCENT, App, Reply, Scope,
     browse::{flight_name, labels},
 };
 use chrono::{Datelike, Months, NaiveDate};
@@ -238,6 +238,31 @@ impl Dialog {
 }
 
 impl App {
+    /// What a dialog's form waits for: another import for the library-wide
+    /// ones, a task remaking its session for the others.
+    fn dialog_scope(&self, dialog: &Dialog) -> Scope {
+        match dialog.kind {
+            Kind::Import | Kind::Load | Kind::Settings => Scope::Library,
+            Kind::Session
+            | Kind::Profile
+            | Kind::Segment
+            | Kind::RemoveSession
+            | Kind::Reduce
+            | Kind::Relocate => Scope::Session(dialog.id.clone()),
+            Kind::DeleteFlight | Kind::Title | Kind::Editor | Kind::Export | Kind::FreeSpace => {
+                self.session_of_flight(&dialog.id)
+                    .or_else(|| {
+                        self.sessions
+                            .iter()
+                            .find(|s| s.id == dialog.id)
+                            .map(|s| s.id.as_str())
+                    })
+                    .map_or(Scope::None, |session| Scope::Session(session.to_owned()))
+            }
+            Kind::Bulk => Scope::None,
+        }
+    }
+
     pub(crate) fn dialog_window(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.dialog.take() else {
             return;
@@ -263,7 +288,8 @@ impl App {
                 }
             });
             ui.separator();
-            ui.add_enabled_ui(dialog.saving.is_none() && !self.busy(), |ui| {
+            let scope = self.dialog_scope(&dialog);
+            ui.add_enabled_ui(dialog.saving.is_none() && !self.busy_with(&scope), |ui| {
                 self.dialog_form(ui, &mut dialog);
             });
             if dialog.saving.is_some() {
@@ -333,7 +359,7 @@ impl App {
                         dialog.flag,
                         dialog.mute_videos,
                     );
-                    dialog.saving = Some(self.submit("Import recordings", false, move |library, progress| {
+                    dialog.saving = Some(self.submit_in(Scope::Library, "Import recordings", false, move |library, progress| {
                         let mut counter = ImportProgress::default();
                         let report = library.import_with_audio(&path, &name, date.as_deref(), delete, no_sound, |event| progress.step(counter.step(event)))?;
                         if report.failed > 0 || !report.kept.is_empty() {
@@ -420,16 +446,21 @@ impl App {
                     let budgets = dialog.budgets;
                     let (mute, hide_splash) = (dialog.mute_videos, dialog.do_not_show_splash);
                     self.viewer = None;
-                    dialog.saving = Some(self.submit("Save settings", false, move |library, _| {
-                        library.set_folder_pattern(&pattern)?;
-                        library.set_media_root(&path)?;
-                        library.set_cache_budgets(budgets[0], budgets[1])?;
-                        library.set_video_preferences(mute, hide_splash)?;
-                        Ok(Reply::VideoPreferences {
-                            mute_videos: mute,
-                            do_not_show_splash: hide_splash,
-                        })
-                    }));
+                    dialog.saving = Some(self.submit_in(
+                        Scope::Library,
+                        "Save settings",
+                        false,
+                        move |library, _| {
+                            library.set_folder_pattern(&pattern)?;
+                            library.set_media_root(&path)?;
+                            library.set_cache_budgets(budgets[0], budgets[1])?;
+                            library.set_video_preferences(mute, hide_splash)?;
+                            Ok(Reply::VideoPreferences {
+                                mute_videos: mute,
+                                do_not_show_splash: hide_splash,
+                            })
+                        },
+                    ));
                 }
                 ui.separator();
                 ui.small("FPV Rush · MIT OR Apache-2.0");
@@ -496,36 +527,38 @@ impl App {
                 {
                     self.viewer = None;
                     let (id, profile) = (dialog.id.clone(), dialog.profile.clone());
-                    dialog.saving =
-                        Some(
-                            self.submit("Segment session", false, move |library, progress| {
-                                library.set_detection_profile(&id, &profile)?;
-                                let total = library
-                                    .snapshot()?
-                                    .iter()
-                                    .find(|s| s.id == id)
-                                    .map(|s| {
-                                        s.files
-                                            .iter()
-                                            .filter(|f| !f.action_cam && !f.reduced)
-                                            .count()
-                                    })
-                                    .unwrap_or_default();
-                                let mut counter = SegmentProgress::new(total);
-                                let report = library
-                                    .segment(&id, |event| progress.step(counter.step(event)))?;
-                                if !report.failed.is_empty() {
-                                    return Err(fpv_library::LibraryError::Invalid(format!(
-                                        "{} flights, failures: {:?}",
-                                        report.flights, report.failed
-                                    )));
-                                }
-                                Ok(Reply::Done(format!(
-                                    "{} flights, {} clips",
-                                    report.flights, report.clips
-                                )))
-                            }),
-                        );
+                    dialog.saving = Some(self.submit_in(
+                        Scope::Session(id.clone()),
+                        "Segment session",
+                        false,
+                        move |library, progress| {
+                            library.set_detection_profile(&id, &profile)?;
+                            let total = library
+                                .snapshot()?
+                                .iter()
+                                .find(|s| s.id == id)
+                                .map(|s| {
+                                    s.files
+                                        .iter()
+                                        .filter(|f| !f.action_cam && !f.reduced)
+                                        .count()
+                                })
+                                .unwrap_or_default();
+                            let mut counter = SegmentProgress::new(total);
+                            let report =
+                                library.segment(&id, |event| progress.step(counter.step(event)))?;
+                            if !report.failed.is_empty() {
+                                return Err(fpv_library::LibraryError::Invalid(format!(
+                                    "{} flights, failures: {:?}",
+                                    report.flights, report.failed
+                                )));
+                            }
+                            Ok(Reply::Done(format!(
+                                "{} flights, {} clips",
+                                report.flights, report.clips
+                            )))
+                        },
+                    ));
                 }
             }
             Kind::RemoveSession => {
@@ -540,11 +573,15 @@ impl App {
                 if ui.button("Remove session").clicked() {
                     self.viewer = None;
                     let (id, keep) = (dialog.id.clone(), dialog.flag);
-                    dialog.saving =
-                        Some(self.submit("Remove session", false, move |library, _| {
+                    dialog.saving = Some(self.submit_in(
+                        Scope::Session(id.clone()),
+                        "Remove session",
+                        false,
+                        move |library, _| {
                             library.delete_session(&id, keep)?;
                             Ok(Reply::Done("Session removed".into()))
-                        }));
+                        },
+                    ));
                 }
             }
             Kind::Reduce => {
@@ -570,7 +607,8 @@ impl App {
                     {
                         self.viewer = None;
                         let id = dialog.id.clone();
-                        dialog.saving = Some(self.submit(
+                        dialog.saving = Some(self.submit_in(
+                            Scope::Session(id.clone()),
                             "Reduce session",
                             false,
                             move |library, progress| {
@@ -611,22 +649,24 @@ impl App {
                     if ui.button("Move recordings").clicked() {
                         self.viewer = None;
                         let id = dialog.id.clone();
-                        dialog.saving =
-                            Some(
-                                self.submit("Move session", false, move |library, progress| {
-                                    let report = library.move_session_into_import_folder(
-                                        &id,
-                                        |done, total, line| progress.count(done, total, line),
-                                    )?;
-                                    if !report.failed.is_empty() {
-                                        return Err(fpv_library::LibraryError::Invalid(format!(
-                                            "{} moved; failures: {:?}",
-                                            report.moved, report.failed
-                                        )));
-                                    }
-                                    Ok(Reply::Done(format!("{} recordings moved", report.moved)))
-                                }),
-                            );
+                        dialog.saving = Some(self.submit_in(
+                            Scope::Session(id.clone()),
+                            "Move session",
+                            false,
+                            move |library, progress| {
+                                let report = library
+                                    .move_session_into_import_folder(&id, |done, total, line| {
+                                        progress.count(done, total, line)
+                                    })?;
+                                if !report.failed.is_empty() {
+                                    return Err(fpv_library::LibraryError::Invalid(format!(
+                                        "{} moved; failures: {:?}",
+                                        report.moved, report.failed
+                                    )));
+                                }
+                                Ok(Reply::Done(format!("{} recordings moved", report.moved)))
+                            },
+                        ));
                     }
                 } else {
                     ui.spinner();
@@ -908,7 +948,8 @@ impl App {
                             .intersection(&dialog.chosen)
                             .cloned()
                             .collect();
-                        dialog.saving = Some(self.submit(
+                        dialog.saving = Some(self.submit_in(
+                            Scope::Library,
                             "Load destination folders",
                             false,
                             move |library, progress| {

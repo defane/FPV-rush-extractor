@@ -1,5 +1,5 @@
 use crate::{
-    ACCENT, App, Dialog, Reply, Viewer,
+    ACCENT, App, Dialog, Reply, Scope, Viewer,
     browse::{self, Sort, View, clock, flight_name, page_range},
     day, reveal,
 };
@@ -491,7 +491,7 @@ impl App {
             .min_width(220.0)
             .max_width(360.0)
             .show(ctx, |ui| {
-                ui.add_enabled_ui(self.ready && !self.busy(), |ui| {
+                ui.add_enabled_ui(self.ready && !self.busy_with(&Scope::Library), |ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         ui.spacing_mut().button_padding = egui::vec2(6.0, 4.0);
@@ -542,7 +542,7 @@ impl App {
                 for card in self.cards.clone() {
                     if ui
                         .add_enabled(
-                            self.ffmpeg_ok && !self.busy(),
+                            self.ffmpeg_ok && !self.busy_with(&Scope::Library),
                             egui::Button::new(format!(
                                 "Import {} ({})",
                                 card.name, card.file_count
@@ -737,7 +737,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.heading(&session.name);
             ui.label(day(&session.date));
-            ui.add_enabled_ui(!self.busy(), |ui| {
+            ui.add_enabled_ui(!self.session_busy(&session.id), |ui| {
                 ui.menu_button("Session…", |ui| {
                     self.session_menu(ui, session);
                 });
@@ -930,7 +930,10 @@ impl App {
             if self.browse.view != View::Figures && self.selecting { ui.horizontal_wrapped(|ui| {
                 if ui.small_button("Select all filtered").clicked() { self.selected.extend(items.iter().map(|(_, f, _)| f.id.clone())); }
                 if ui.small_button("Clear selection").clicked() { self.selected.clear(); }
-                if ui.add_enabled(!self.selected.is_empty() && !self.busy() && self.ffmpeg_ok,
+                let remade = self.selected.iter().any(|flight| {
+                    self.session_of_flight(flight).is_some_and(|session| self.session_busy(session))
+                });
+                if ui.add_enabled(!self.selected.is_empty() && !remade && self.ffmpeg_ok,
                     egui::Button::new(format!("Export {}…", self.selected.len()))).clicked() {
                     self.dialog = Some(Dialog::bulk(self.selected.iter().cloned().collect()));
                 }
@@ -1039,15 +1042,16 @@ impl App {
                     .max_rect(heart_rect),
             );
             like_ui.spacing_mut().button_padding = egui::vec2(2.0, 2.0);
+            let remade = self.session_busy(&session.id);
             let heart = like_ui.add_enabled(
-                !self.busy(),
+                !remade,
                 egui::Button::new(
                     RichText::new(if flight.liked { "♥" } else { "♡" }).color(Color32::WHITE),
                 )
                 .frame(false)
                 .min_size(heart_rect.size()),
             );
-            if heart.clicked() && !self.busy() {
+            if heart.clicked() && !remade {
                 let id = flight.id.clone();
                 self.submit("Like flight", true, move |library, _| {
                     library.toggle_like(&id)?;
@@ -1097,7 +1101,7 @@ impl App {
                         .truncate(),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    self.flight_actions(ui, flight);
+                    self.flight_actions(ui, &session.id, flight);
                     if figure.is_none() {
                         ui.small(RichText::new(clock(flight.duration)).weak());
                     }
@@ -1163,8 +1167,9 @@ impl App {
         });
     }
 
-    fn flight_actions(&mut self, ui: &mut egui::Ui, flight: &FlightView) {
-        ui.add_enabled_ui(!self.busy(), |ui| {
+    fn flight_actions(&mut self, ui: &mut egui::Ui, session: &str, flight: &FlightView) {
+        // A flight its session's task is remaking cannot be acted on meanwhile.
+        ui.add_enabled_ui(!self.session_busy(session), |ui| {
             ui.menu_button("…", |ui| {
                 if ui
                     .add_enabled(flight.cloud, egui::Button::new("Download recordings"))

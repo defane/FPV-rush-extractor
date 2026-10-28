@@ -1303,7 +1303,11 @@ frame-exact boundary editor. Layout:
   leaves a job running and visible, and the library refreshes when any job ends. Progress
   events carry the task's ID (`task` on `import_card`, `segment`, `export_flights`), so two
   jobs of one kind never mix. A segmented file counts as done when it is through, not when it
-  starts.
+  starts. **In the native app** (2026-10-28, #3) every task has a scope (`Scope`: the
+  library, one session, or none) and only what conflicts with a running one waits: an
+  import holds back another import and the settings, a segmentation, reduction, move or
+  removal holds back its own session's menu, flights and dialogs — nothing else. The port
+  had greyed out the whole app (likes, menus, every form) while any task ran.
   **Errors are notifications beside it** (2026-10-24, the pilot's request): a bell at the
   bar's right end, red with the count of errors not yet seen; a click lists them (time,
   dismiss, *Clear all*) and marks them read. `lib/notices.svelte.ts` (`notify`) replaced the

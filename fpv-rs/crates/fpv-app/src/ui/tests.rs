@@ -1871,3 +1871,69 @@ fn a_flight_opened_muted_by_the_setting_can_be_unmuted_from_the_speaker() {
     assert!(!viewer.playback_muted);
     assert!(viewer.player.audio_enabled(), "the sound comes back");
 }
+
+#[test]
+fn a_long_task_only_holds_back_what_it_conflicts_with() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, _events) = app_with_worker(&ctx);
+    let mut other = session_of(vec![FlightView {
+        id: "other-flight".into(),
+        ..flight()
+    }]);
+    other.id = "other".into();
+    app.sessions = vec![session_of(vec![flight()]), other];
+    app.browse.session = Some("session".into());
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| app.browser(ctx);
+    let likes = |app: &App, jobs: &mpsc::Receiver<crate::worker::Job>| {
+        jobs.try_iter()
+            .filter(|job| {
+                app.tasks
+                    .iter()
+                    .any(|t| t.id == job.id && t.label == "Like flight")
+            })
+            .count()
+    };
+
+    // An export changes nothing anyone waits on: the batch export dialog,
+    // with no scope of its own, stays usable.
+    app.submit("Export flights", false, |_, _| unreachable!());
+    let _ = jobs.try_recv();
+    assert!(!app.busy_with(&crate::Scope::None));
+
+    // An import runs: a like on a flight has nothing to wait for.
+    app.submit_in(
+        crate::Scope::Library,
+        "Import recordings",
+        false,
+        |_, _| unreachable!(),
+    );
+    let _ = jobs.try_recv();
+    click_text(&ctx, &mut app, "♡", draw);
+    assert_eq!(
+        likes(&app, &jobs),
+        1,
+        "the library stays usable during an import"
+    );
+
+    // Another session is re-segmented: still nothing to wait for.
+    app.submit_in(
+        crate::Scope::Session("other".into()),
+        "Segment session",
+        false,
+        |_, _| unreachable!(),
+    );
+    let _ = jobs.try_recv();
+    click_text(&ctx, &mut app, "♡", draw);
+    assert_eq!(likes(&app, &jobs), 1);
+
+    // This flight's own session is being remade: its like waits.
+    app.submit_in(
+        crate::Scope::Session("session".into()),
+        "Segment session",
+        false,
+        |_, _| unreachable!(),
+    );
+    let _ = jobs.try_recv();
+    click_text(&ctx, &mut app, "♡", draw);
+    assert_eq!(likes(&app, &jobs), 0, "the flight is being remade");
+}

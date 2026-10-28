@@ -22,8 +22,20 @@ use std::path::PathBuf;
 use std::time::Duration;
 use worker::{Event, Job, Progress, Reply, Worker};
 
+/// What a task changes, so only what conflicts with it waits: the library as
+/// a whole (an import, the import folder), one session (its flights remade or
+/// moved), or nothing anyone else depends on (a like, a poster, an export).
+/// The worker runs every job in turn anyway; the scope is about meaning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Scope {
+    None,
+    Library,
+    Session(String),
+}
+
 struct Task {
     id: u64,
+    scope: Scope,
     label: String,
     line: String,
     done: usize,
@@ -210,10 +222,21 @@ impl App {
         quiet: bool,
         work: impl FnOnce(&mut Library, &Progress) -> Result<Reply, LibraryError> + Send + 'static,
     ) -> u64 {
+        self.submit_in(Scope::None, label, quiet, work)
+    }
+
+    fn submit_in(
+        &mut self,
+        scope: Scope,
+        label: impl Into<String>,
+        quiet: bool,
+        work: impl FnOnce(&mut Library, &Progress) -> Result<Reply, LibraryError> + Send + 'static,
+    ) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         self.tasks.push(Task {
             id,
+            scope,
             label: label.into(),
             quiet,
             log: vec![],
@@ -244,6 +267,26 @@ impl App {
     }
     fn busy(&self) -> bool {
         self.tasks.iter().any(|task| task.running && !task.quiet)
+    }
+
+    /// A task of this scope runs: what conflicts with it waits.
+    fn busy_with(&self, scope: &Scope) -> bool {
+        *scope != Scope::None
+            && self
+                .tasks
+                .iter()
+                .any(|task| task.running && !task.quiet && task.scope == *scope)
+    }
+
+    fn session_busy(&self, session: &str) -> bool {
+        self.busy_with(&Scope::Session(session.to_owned()))
+    }
+
+    fn session_of_flight(&self, flight: &str) -> Option<&str> {
+        self.sessions
+            .iter()
+            .find(|session| session.flights.iter().any(|f| f.id == flight))
+            .map(|session| session.id.as_str())
     }
 
     fn receive(&mut self, ctx: &egui::Context) {
