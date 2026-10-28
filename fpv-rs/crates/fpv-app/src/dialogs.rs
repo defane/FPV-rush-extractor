@@ -322,9 +322,20 @@ impl App {
             ui.label(crate::section(&dialog.title));
             ui.separator();
             let scope = self.dialog_scope(&dialog);
-            ui.add_enabled_ui(dialog.saving.is_none() && !self.busy_with(&scope), |ui| {
-                self.dialog_form(ui, &mut dialog);
-            });
+            let enabled = dialog.saving.is_none() && !self.busy_with(&scope);
+            if dialog.kind == Kind::Editor {
+                // The editor scrolls on its own.
+                ui.add_enabled_ui(enabled, |ui| self.dialog_form(ui, &mut dialog));
+            } else {
+                // Taller than the window (Settings on a small screen): it
+                // scrolls, and Close below stays in reach.
+                egui::ScrollArea::vertical()
+                    .id_salt("dialog-form")
+                    .max_height((ctx.content_rect().height() - 150.0).max(120.0))
+                    .show(ui, |ui| {
+                        ui.add_enabled_ui(enabled, |ui| self.dialog_form(ui, &mut dialog));
+                    });
+            }
             if dialog.saving.is_some() {
                 ui.horizontal(|ui| {
                     ui.spinner();
@@ -387,7 +398,7 @@ impl App {
                 let _ = crate::ui::no_sound_choice(ui, &mut dialog.mute_videos);
                 ui.horizontal(|ui| {
                     ui.small(format!("Copy to {}", self.config.media_root.display()));
-                    if ui.small_button("Change…").clicked() {
+                    if ui.button("Change…").clicked() {
                         // The import folder setting itself, as in Settings.
                         self.submit_in(
                             Scope::Library,
@@ -491,10 +502,7 @@ impl App {
                         ] {
                             ui.label(format!("   {}", what[..1].to_uppercase() + &what[1..]));
                             ui.label(crate::browse::size(bytes));
-                            if ui
-                                .add_enabled(bytes > 0, crate::danger("Empty…").small())
-                                .clicked()
-                            {
+                            if ui.add_enabled(bytes > 0, crate::danger("Empty…")).clicked() {
                                 ask =
                                     Some((vec![kind], crate::browse::empty_question(what, bytes)));
                             }
@@ -511,7 +519,7 @@ impl App {
                         ui.label("");
                         ui.label(crate::browse::size(usage.proxies));
                         if ui
-                            .add_enabled(usage.proxies > 0, crate::danger("Empty…").small())
+                            .add_enabled(usage.proxies > 0, crate::danger("Empty…"))
                             .clicked()
                         {
                             ask = Some((
@@ -1111,7 +1119,7 @@ impl App {
                                 });
                                 ui.indent(("target", &folder.name), |ui| {
                                     ui.small(format!(
-                                        "→ {}{}",
+                                        "Loads into {}{}",
                                         folder.session,
                                         folder
                                             .date
@@ -1369,7 +1377,7 @@ fn deletion_text(plan: &FlightDeletion) -> (Vec<(bool, String)>, &'static str) {
 fn reduce_summary(preview: &ReducePreview) -> Option<String> {
     (preview.recordings > 0).then(|| {
         format!(
-            "{} → {} — about {} freed over {} recording{}",
+            "{} to {} — about {} freed over {} recording{}",
             crate::browse::size(preview.bytes_now),
             crate::browse::size(preview.bytes_after),
             crate::browse::size(preview.bytes_now.saturating_sub(preview.bytes_after)),
@@ -1549,7 +1557,7 @@ mod confirm_tests {
         };
         assert_eq!(
             reduce_summary(&preview).as_deref(),
-            Some("829.0 MB → 508.0 MB — about 321.0 MB freed over 2 recordings")
+            Some("829.0 MB to 508.0 MB — about 321.0 MB freed over 2 recordings")
         );
     }
 }

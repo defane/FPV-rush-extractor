@@ -263,6 +263,18 @@ pub fn match_count(browse: &Browse, sessions: &[SessionView]) -> usize {
         .count()
 }
 
+/// A session row's second line: "2026-10-23 · 1 file · 2 flights", the day
+/// left out when there is none.
+pub fn session_meta(day: &str, files: usize, flights: usize) -> String {
+    let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+    let counts = format!("{} · {}", plural(files, "file"), plural(flights, "flight"));
+    if day.is_empty() {
+        counts
+    } else {
+        format!("{day} · {counts}")
+    }
+}
+
 /// The session header's button: "Re-segment" once DVR flights exist — a
 /// re-segment remakes them — "Segment" before.
 pub fn segment_label(session: &SessionView) -> &'static str {
@@ -601,6 +613,15 @@ mod tests {
         assert_eq!(match_count(&browse, &sessions), 1);
         browse.figures.labels = vec!["split-s".into()];
         assert_eq!(match_count(&browse, &sessions), 0);
+    }
+
+    #[test]
+    fn a_session_row_counts_in_words_and_leaves_out_a_missing_day() {
+        assert_eq!(
+            session_meta("2026-10-23", 1, 2),
+            "2026-10-23 · 1 file · 2 flights"
+        );
+        assert_eq!(session_meta("", 3, 1), "3 files · 1 flight");
     }
 
     #[test]

@@ -53,10 +53,11 @@ fn view_tab(ui: &mut egui::Ui, label: &str, count: usize, selected: bool) -> egu
         egui::StrokeKind::Inside,
     );
     let font = egui::TextStyle::Button.resolve(ui.style());
+    // Plain text, not the widgets' accent stroke: only the chosen tab stands out.
     let color = if selected {
         Color32::WHITE
     } else {
-        visuals.text_color()
+        ui.visuals().text_color()
     };
     for (text, dy) in [(label.to_owned(), -9.0), (count.to_string(), 9.0)] {
         ui.painter().text(
@@ -91,7 +92,7 @@ fn suggestions(ui: &mut egui::Ui, field: &mut String, names: Vec<String>) {
     }
     ui.horizontal_wrapped(|ui| {
         for name in names {
-            if ui.small_button(&name).clicked() {
+            if ui.button(&name).clicked() {
                 *field = name;
             }
         }
@@ -541,8 +542,9 @@ impl App {
         if !self.show_about {
             return;
         }
+        // Closed by its Close button or Escape, like a dialog: no ×.
+        let mut close = false;
         egui::Window::new("About FPV Rush")
-            .open(&mut self.show_about)
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {
@@ -576,8 +578,15 @@ impl App {
                         ui.add_space(4.0);
                     }
                     ui.hyperlink_to("letzkwad.lu", "https://letzkwad.lu/");
+                    ui.add_space(8.0);
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
                 });
             });
+        if close {
+            self.show_about = false;
+        }
     }
 
     pub(crate) fn splash_window(&mut self, ctx: &egui::Context) {
@@ -753,9 +762,11 @@ impl App {
                         browse::SESSIONS_PER_PAGE,
                     );
                     let page: Vec<SessionView> = self.sessions[range].to_vec();
+                    // A page opens at its top; the list takes the height left
+                    // but the pager's.
                     egui::ScrollArea::vertical()
-                        .id_salt("sessions")
-                        .max_height((ui.available_height() - 200.0).max(100.0))
+                        .id_salt(("sessions", self.browse.session_page))
+                        .max_height((ui.available_height() - 56.0).max(100.0))
                         .show(ui, |ui| {
                             for session in page {
                                 let selected = self.browse.session.as_ref() == Some(&session.id);
@@ -772,11 +783,10 @@ impl App {
                                         ui.set_width((ui.available_width() - 12.0).max(1.0));
                                         ui.add(egui::Label::new(&session.name).truncate());
                                         ui.small(
-                                            RichText::new(format!(
-                                                "{} · {} files · {} flights",
-                                                day(&session.date),
+                                            RichText::new(browse::session_meta(
+                                                &day(&session.date),
                                                 session.files.len(),
-                                                session.flights.len()
+                                                session.flights.len(),
                                             ))
                                             .weak(),
                                         );
@@ -898,16 +908,8 @@ impl App {
                     }
                 }
                 // A session's flights are not filtered by tag: the panel is
-                // All flights' and Figures'.
+                // All flights' and Figures'. (Liked is in the grid's header.)
                 if self.browse.view == View::Sessions {
-                    if ui.small_button("Reset filters").clicked() {
-                        let sort = self.browse.in_session.sort;
-                        self.browse.in_session = browse::Filters {
-                            sort,
-                            ..Default::default()
-                        };
-                        self.browse.page = 0;
-                    }
                     return;
                 }
                 let names = browse::label_counts(&self.sessions, self.browse.view);
@@ -953,7 +955,7 @@ impl App {
                         (false, false) => "flights",
                     }
                 ));
-                if ui.small_button("Reset filters").clicked() {
+                if ui.button("Reset filters").clicked() {
                     let sort = self.browse.filters().sort;
                     *self.browse.filters_mut() = browse::Filters {
                         sort,
@@ -1030,7 +1032,7 @@ impl App {
                     if let Some(folder) = &file.elsewhere {
                         ui.label("elsewhere").on_hover_text(folder);
                     }
-                    if ui.small_button("Open folder").clicked() {
+                    if ui.button("Open folder").clicked() {
                         let id = file.id.clone();
                         self.submit("Open recording folder", true, move |library, _| {
                             let path = library.recording_path(&id)?;
@@ -1183,8 +1185,8 @@ impl App {
                 });
             }
             if self.browse.view != View::Figures && self.selecting { ui.horizontal_wrapped(|ui| {
-                if ui.small_button("Select all filtered").clicked() { self.selected.extend(items.iter().map(|(_, f, _)| f.id.clone())); }
-                if ui.small_button("Clear selection").clicked() { self.selected.clear(); }
+                if ui.button("Select all filtered").clicked() { self.selected.extend(items.iter().map(|(_, f, _)| f.id.clone())); }
+                if ui.button("Clear selection").clicked() { self.selected.clear(); }
                 let remade = self.selected.iter().any(|flight| {
                     self.session_of_flight(flight).is_some_and(|session| self.session_busy(session))
                 });
@@ -1864,6 +1866,7 @@ impl App {
                         "recording"
                     };
                     ui.small(format!("{what} {part}/{of}"));
+                    ui.add_space(8.0);
                 }
                 if !viewer.fullscreen
                     && ui
@@ -1956,7 +1959,7 @@ impl App {
                                 ui.label(format!("– {}", clock(tag.end)));
                             }
                             if ui
-                                .small_button(crate::danger_text("×"))
+                                .add(egui::Button::new(crate::danger_text("×")).frame(false))
                                 .on_hover_text("Delete figure")
                                 .clicked()
                             {
@@ -1974,37 +1977,40 @@ impl App {
                     viewer.mark = Some(viewer.player.position());
                 }
                 if let Some(mark) = viewer.mark {
-                    ui.label(RichText::new(format!("● Marked at {}", clock(mark))).color(ACCENT));
-                    if ui.small_button("Cancel").clicked() {
+                    ui.label(RichText::new(format!("Marked at {}", clock(mark))).color(ACCENT));
+                    ui.add_space(6.0);
+                    if ui.button("Cancel").clicked() {
                         viewer.mark = None;
                     }
                 }
             });
-            // The button first, from the right: "Add Range to 0:12.3" is
-            // wider than "Add Point", and the field takes what is left.
+            // The name across the panel, the button below it at the right:
+            // "Add Range to 0:12.3" never clips the field nor the edge.
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut viewer.figure)
+                    .hint_text("Figure name (split-s, power loop…)")
+                    .desired_width((ui.available_width() - 8.0).max(20.0)),
+            );
+            let enter =
+                response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            let mut clicked = false;
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(8.0);
                     let add = browse::add_figure_label(viewer.mark, viewer.player.position());
-                    let clicked = ui.button(add).clicked();
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut viewer.figure)
-                            .hint_text("Figure name (split-s, power loop…)")
-                            .desired_width(ui.available_width().max(20.0)),
-                    );
-                    let enter = response.lost_focus()
-                        && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                    if (clicked || enter) && !viewer.figure.trim().is_empty() {
-                        let id = viewer.flight.id.clone();
-                        let label = std::mem::take(&mut viewer.figure);
-                        let end = viewer.player.position();
-                        let start = viewer.mark.take().unwrap_or(end);
-                        this.submit("Add figure", true, move |library, _| {
-                            library.add_tag(&id, &label, start, end)?;
-                            Ok(Reply::Done("Figure added".into()))
-                        });
-                    }
+                    clicked = ui.button(add).clicked();
                 })
             });
+            if (clicked || enter) && !viewer.figure.trim().is_empty() {
+                let id = viewer.flight.id.clone();
+                let label = std::mem::take(&mut viewer.figure);
+                let end = viewer.player.position();
+                let start = viewer.mark.take().unwrap_or(end);
+                this.submit("Add figure", true, move |library, _| {
+                    library.add_tag(&id, &label, start, end)?;
+                    Ok(Reply::Done("Figure added".into()))
+                });
+            }
             let names = this
                 .sessions
                 .iter()
@@ -2115,7 +2121,7 @@ impl App {
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label(crate::section("Notifications"));
-                    if !self.notices.items().is_empty() && ui.small_button("Clear all").clicked() {
+                    if !self.notices.items().is_empty() && ui.button("Clear all").clicked() {
                         self.notices.clear();
                     }
                 });
@@ -2130,11 +2136,11 @@ impl App {
                         for (index, notice) in self.notices.items().iter().enumerate() {
                             ui.horizontal_wrapped(|ui| {
                                 ui.weak(&notice.at);
-                                ui.colored_label(Color32::LIGHT_RED, &notice.text);
+                                ui.colored_label(Color32::LIGHT_RED, notice.text.trim());
                                 if notice.times > 1 {
                                     ui.weak(format!("{} times", notice.times));
                                 }
-                                if ui.small_button("Dismiss").clicked() {
+                                if ui.button("Dismiss").clicked() {
                                     dismissed = Some(index);
                                 }
                             });
@@ -2149,7 +2155,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(crate::section("Tasks"));
                     if self.tasks.iter().any(|task| !task.running)
-                        && ui.small_button("Clear finished").clicked()
+                        && ui.button("Clear finished").clicked()
                     {
                         self.tasks.retain(|task| task.running);
                     }

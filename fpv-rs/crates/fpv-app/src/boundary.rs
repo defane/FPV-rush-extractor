@@ -77,7 +77,7 @@ pub(crate) fn nudge_controls(
     });
     ui.horizontal(|ui| {
         ui.small(format!(
-            "{:.3} s → {:.3} s at {:.3} fps",
+            "{:.3} s to {:.3} s at {:.3} fps",
             clip.start_frame as f64 / clip.fps,
             clip.end_frame as f64 / clip.fps,
             clip.fps

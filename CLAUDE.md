@@ -1236,7 +1236,14 @@ frame-exact boundary editor. Layout:
   `danger_text` for the menu items and small "×" leading there — and no × by a dialog's
   title (Close below or Escape). The view tabs are three blocks of one height, name and count
   centred (`view_tab`, drawn by hand: egui's button set a centred two-line text off its
-  middle). Separators stay neutral (the pilot's call).
+  middle). Separators stay neutral (the pilot's call). A review of the restyle in the window
+  found what it broke and what it showed up, all fixed: dialogs taller than the window
+  scroll inside it (`dialog-form`, Close stays in reach), About closes with Close or Escape,
+  the session list scrolls per page and stops above its pager, scrollbars are solid (they
+  covered fields), check marks are in the accent, small buttons are ordinary buttons, the
+  Sessions view has no filters to reset, and every character the interface writes must
+  exist in its fonts — egui's defaults have no ● and no →, which drew as boxes (a test scans
+  the sources).
 - **Empty states** (native app, 2026-10-28, #14): an empty grid says why and offers the
   way out (`browse::empty_state`) — "No flights yet" with Segment, "No liked flights", "No
   flights match these filters" / "No figures match…" with Reset filters, "No figures here"

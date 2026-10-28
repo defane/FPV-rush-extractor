@@ -44,6 +44,8 @@ enum Escape {
     /// The cloud wait: Continue in Background.
     CloudWait,
     Dialog,
+    /// The About window.
+    About,
     Player,
     /// The task and notification lists.
     Panels,
@@ -56,6 +58,7 @@ struct Open {
     full_screen: bool,
     cloud_wait: bool,
     dialog: bool,
+    about: bool,
     player: bool,
     panels: bool,
 }
@@ -69,6 +72,8 @@ fn escape_target(open: Open) -> Escape {
         Escape::CloudWait
     } else if open.dialog {
         Escape::Dialog
+    } else if open.about {
+        Escape::About
     } else if open.player {
         Escape::Player
     } else if open.panels {
@@ -203,6 +208,8 @@ fn configure_style(ctx: &egui::Context) {
     style.spacing.interact_size.y = 24.0;
     style.spacing.window_margin = egui::Margin::same(16);
     style.spacing.menu_margin = egui::Margin::same(8);
+    // Scroll bars take their own room instead of covering what they scroll.
+    style.spacing.scroll = egui::style::ScrollStyle::solid();
     style.visuals.panel_fill = egui::Color32::from_rgb(24, 26, 32);
     style.visuals.window_fill = egui::Color32::from_rgb(27, 29, 35);
     style.visuals.extreme_bg_color = egui::Color32::from_rgb(14, 16, 20);
@@ -219,6 +226,10 @@ fn configure_style(ctx: &egui::Context) {
     style.visuals.widgets.inactive.bg_stroke =
         egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(48, 52, 62));
     style.visuals.widgets.noninteractive.bg_stroke = style.visuals.widgets.inactive.bg_stroke;
+    // A ticked box, a chosen radio, a combo's arrow: in the accent and
+    // thicker, so a checked filter reads at a glance.
+    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(2.0_f32, ACCENT);
+    style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(2.0_f32, egui::Color32::WHITE);
     style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(55, 58, 68);
     style.visuals.widgets.active.weak_bg_fill = ACCENT;
     style
@@ -575,6 +586,7 @@ impl App {
             full_screen: self.viewer.as_ref().is_some_and(|viewer| viewer.fullscreen),
             cloud_wait: self.cloud_wait.is_some(),
             dialog: self.dialog.is_some(),
+            about: self.show_about,
             player: self.viewer.is_some(),
             panels: self.show_tasks || self.show_notices,
         });
@@ -589,6 +601,7 @@ impl App {
                 self.dialog = None;
                 self.dialog_request = None;
             }
+            Escape::About => self.show_about = false,
             Escape::Player => self.viewer = None,
             Escape::Panels => {
                 self.show_tasks = false;
@@ -861,6 +874,7 @@ mod escape_tests {
             full_screen: true,
             cloud_wait: true,
             dialog: true,
+            about: true,
             player: true,
             panels: true,
         };
@@ -885,9 +899,18 @@ mod escape_tests {
             }),
             Escape::Dialog
         );
+        assert_eq!(
+            escape_target(Open {
+                cloud_wait: false,
+                dialog: false,
+                ..windowed()
+            }),
+            Escape::About
+        );
         let player = Open {
             cloud_wait: false,
             dialog: false,
+            about: false,
             ..windowed()
         };
         assert_eq!(escape_target(player), Escape::Player);

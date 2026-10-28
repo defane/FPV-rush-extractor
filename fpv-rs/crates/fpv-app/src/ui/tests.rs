@@ -1397,7 +1397,7 @@ fn app_with_worker(
 fn click_text(ctx: &egui::Context, app: &mut App, label: &str, draw: fn(&mut App, &egui::Context)) {
     let size = egui::vec2(1280.0, 820.0);
     let mut output = ctx.run(input(size), |ctx| draw(app, ctx));
-    for _ in 0..2 {
+    for _ in 0..7 {
         output = ctx.run(input(size), |ctx| draw(app, ctx));
     }
     let position = text_positions(&output.shapes)
@@ -1426,9 +1426,10 @@ fn shown_texts(
     app: &mut App,
     draw: fn(&mut App, &egui::Context),
 ) -> Vec<String> {
-    // A new window is laid out over a few frames before it is drawn.
+    // A new window is laid out over a few frames before it is drawn, and a
+    // scroll area grows to its content over a few more.
     let mut texts = vec![];
-    for _ in 0..3 {
+    for _ in 0..8 {
         let output = ctx.run(input(egui::vec2(1280.0, 820.0)), |ctx| draw(app, ctx));
         texts = text_positions(&output.shapes)
             .into_iter()
@@ -1750,7 +1751,7 @@ fn a_recording_deleted_with_its_flight_loads_only_when_restore_is_ticked() {
     app.dialog = Some(dialog);
     let draw: fn(&mut App, &egui::Context) = |app, ctx| app.dialog_window(ctx);
     let texts = shown_texts(&ctx, &mut app, draw);
-    for expected in ["Nothing new", "→ Bench · 2026-10-23"] {
+    for expected in ["Nothing new", "Loads into Bench · 2026-10-23"] {
         assert!(texts.iter().any(|t| t == expected), "{expected}: {texts:?}");
     }
     assert!(
@@ -2003,6 +2004,9 @@ fn escape_closes_a_dialog_then_the_player_then_the_panels() {
     assert!(app.viewer.is_none() && app.show_notices, "then the player");
     press(&mut app);
     assert!(!app.show_notices, "then the lists");
+    app.show_about = true;
+    press(&mut app);
+    assert!(!app.show_about, "About closes like a dialog");
 }
 
 #[test]
@@ -2325,7 +2329,7 @@ fn the_player_says_its_chapter_and_how_to_mark_a_figure() {
     }
     app.viewer.as_mut().unwrap().mark = Some(0.0);
     let texts = shown_texts(&ctx, &mut app, draw);
-    assert!(texts.iter().any(|t| t == "● Marked at 0:00.0"), "{texts:?}");
+    assert!(texts.iter().any(|t| t == "Marked at 0:00.0"), "{texts:?}");
     assert!(
         texts.iter().any(|t| t.starts_with("Add Range to ")),
         "{texts:?}"
@@ -2388,7 +2392,7 @@ fn the_boundary_editor_nudges_by_frame_and_resets_to_what_is_saved() {
         "−1 s",
         "+1 fr",
         "4.000 s · frame 100",
-        "4.000 s → 8.000 s at 25.000 fps",
+        "4.000 s to 8.000 s at 25.000 fps",
         "Detected on a 0.25 s grid — nudge to the exact frame.",
     ] {
         assert!(shown(&mut app, expected), "{expected}");
@@ -2425,7 +2429,7 @@ fn settings_show_each_cache_kind_and_ask_before_emptying_one() {
     let size = egui::vec2(1280.0, 1400.0);
     let texts = |app: &mut App| {
         let mut texts = vec![];
-        for _ in 0..3 {
+        for _ in 0..8 {
             let output = ctx.run(input(size), |ctx| app.dialog_window(ctx));
             texts = text_positions(&output.shapes);
         }
@@ -2984,7 +2988,7 @@ fn what_deletes_is_red_and_a_checkbox_keeps_its_distance_from_its_label() {
     }));
     app.dialog = Some(dialog);
     let mut shapes = vec![];
-    for _ in 0..3 {
+    for _ in 0..20 {
         shapes = ctx
             .run(input(egui::vec2(1280.0, 1400.0)), |ctx| {
                 app.dialog_window(ctx)
@@ -3099,4 +3103,95 @@ fn the_view_tabs_are_blocks_of_one_height_with_their_text_centred() {
         heights.windows(2).all(|h| (h[0] - h[1]).abs() < 0.5),
         "one height: {heights:?}"
     );
+}
+
+#[test]
+fn every_character_the_interface_writes_exists_in_its_fonts() {
+    // A glyph the bundled fonts lack draws as an empty box ("□ Marked at").
+    let ctx = egui::Context::default();
+    crate::configure_style(&ctx);
+    let _ = ctx.run(input(egui::vec2(100.0, 100.0)), |_| {});
+    let sources = [
+        include_str!("../ui.rs"),
+        include_str!("../dialogs.rs"),
+        include_str!("../boundary.rs"),
+        include_str!("../browse.rs"),
+        include_str!("../cloudwait.rs"),
+        include_str!("../taskbar.rs"),
+        include_str!("../main.rs"),
+    ];
+    let mut wanted: Vec<char> = vec![];
+    for source in sources {
+        // Only what sits inside string literals, comments aside.
+        for line in source.lines().filter(|l| !l.trim_start().starts_with("//")) {
+            let mut inside = false;
+            for c in line.chars() {
+                if c == '"' {
+                    inside = !inside;
+                } else if inside && !c.is_ascii() && !wanted.contains(&c) {
+                    wanted.push(c);
+                }
+            }
+        }
+    }
+    let font = egui::FontId::proportional(14.0);
+    let missing: Vec<char> = wanted
+        .into_iter()
+        .filter(|&c| !ctx.fonts_mut(|f| f.has_glyph(&font, c)))
+        .collect();
+    assert!(missing.is_empty(), "no glyph for {missing:?}");
+}
+
+#[test]
+fn a_dialog_taller_than_the_window_scrolls_and_keeps_close_in_reach() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    let mut dialog = crate::dialogs::Dialog::settings(&Default::default());
+    dialog.reply(crate::worker::Reply::Cache(fpv_library::CacheUsage {
+        proxies: 1,
+        strips: 1,
+        posters: 1,
+        previews: 1,
+    }));
+    app.dialog = Some(dialog);
+    // A small screen: Settings is taller than it.
+    let size = egui::vec2(1280.0, 600.0);
+    let mut texts = vec![];
+    for _ in 0..20 {
+        let output = ctx.run(input(size), |ctx| app.dialog_window(ctx));
+        texts = text_positions(&output.shapes);
+    }
+    let close = texts
+        .iter()
+        .find(|(text, _)| text == "Close")
+        .expect("Close is drawn")
+        .1;
+    let title = texts.iter().find(|(text, _)| text == "Settings").unwrap().1;
+    assert!(
+        close.y < size.y - 10.0,
+        "Close within the window: {close:?}"
+    );
+    assert!(title.y > 0.0, "the title too: {title:?}");
+}
+
+#[test]
+fn only_the_chosen_view_tab_is_coloured() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    app.sessions = vec![session_of(vec![flight()])];
+    let mut shapes = vec![];
+    for _ in 0..3 {
+        shapes = ctx
+            .run(input(egui::vec2(1280.0, 820.0)), |ctx| app.sidebar(ctx))
+            .shapes;
+    }
+    let (texts, _) = painted(&shapes);
+    let colour = |word: &str| texts.iter().find(|(t, _, _)| t == word).unwrap().2[0];
+    assert_eq!(colour("Sessions"), Color32::WHITE, "the chosen tab");
+    assert_eq!(
+        colour("All flights"),
+        ctx.style().visuals.text_color(),
+        "the others plain"
+    );
+    assert_eq!(colour("Figures"), ctx.style().visuals.text_color());
 }
