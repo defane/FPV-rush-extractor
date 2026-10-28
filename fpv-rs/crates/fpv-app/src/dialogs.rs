@@ -318,12 +318,8 @@ impl App {
             } else {
                 520.0
             });
-            ui.horizontal(|ui| {
-                ui.heading(&dialog.title);
-                if ui.small_button("×").clicked() {
-                    close = true;
-                }
-            });
+            // Closed by Close below or Escape: no second button by the title.
+            ui.label(crate::section(&dialog.title));
             ui.separator();
             let scope = self.dialog_scope(&dialog);
             ui.add_enabled_ui(dialog.saving.is_none() && !self.busy_with(&scope), |ui| {
@@ -472,7 +468,7 @@ impl App {
                     self.cache_directory.display()
                 ));
                 ui.separator();
-                ui.strong("Cache");
+                ui.label(crate::section("Cache").size(16.0));
                 ui.small("All of it is made again when needed, so any of it can be emptied at any time. Over its budget, the oldest goes first.");
                 let usage = dialog.cache.unwrap_or_default();
                 let mut ask = None;
@@ -496,7 +492,7 @@ impl App {
                             ui.label(format!("   {}", what[..1].to_uppercase() + &what[1..]));
                             ui.label(crate::browse::size(bytes));
                             if ui
-                                .add_enabled(bytes > 0, egui::Button::new("Empty…").small())
+                                .add_enabled(bytes > 0, crate::danger("Empty…").small())
                                 .clicked()
                             {
                                 ask =
@@ -515,7 +511,7 @@ impl App {
                         ui.label("");
                         ui.label(crate::browse::size(usage.proxies));
                         if ui
-                            .add_enabled(usage.proxies > 0, egui::Button::new("Empty…").small())
+                            .add_enabled(usage.proxies > 0, crate::danger("Empty…").small())
                             .clicked()
                         {
                             ask = Some((
@@ -528,7 +524,7 @@ impl App {
                 if ui
                     .add_enabled(
                         usage.total() > 0,
-                        egui::Button::new(format!(
+                        crate::danger(format!(
                             "Empty All ({})…",
                             crate::browse::size(usage.total())
                         )),
@@ -546,7 +542,7 @@ impl App {
                 if let Some((kinds, question)) = dialog.emptying.clone() {
                     ui.colored_label(egui::Color32::from_rgb(230, 160, 60), question);
                     ui.horizontal(|ui| {
-                        if ui.button("Empty").clicked() {
+                        if ui.add(crate::danger("Empty")).clicked() {
                             dialog.emptying = None;
                             self.viewer = None;
                             self.thumbnails.clear();
@@ -719,7 +715,7 @@ impl App {
                     if ui.button("Keep the Videos").clicked() {
                         choice = Some(true);
                     }
-                    if ui.button("Also Trash the Videos").clicked() {
+                    if ui.add(crate::danger("Also Trash the Videos")).clicked() {
                         choice = Some(false);
                     }
                 });
@@ -757,7 +753,7 @@ impl App {
                     if ui
                         .add_enabled(
                             dialog.acknowledged && self.ffmpeg_ok,
-                            egui::Button::new("Reduce recordings"),
+                            crate::danger("Reduce recordings"),
                         )
                         .clicked()
                     {
@@ -846,7 +842,7 @@ impl App {
                             ui.label(line);
                         }
                     }
-                    if ui.button(button).clicked() {
+                    if ui.add(crate::danger(button)).clicked() {
                         self.viewer = None;
                         let id = dialog.id.clone();
                         dialog.saving =

@@ -162,6 +162,25 @@ pub(crate) struct App {
 }
 
 pub(crate) const ACCENT: egui::Color32 = egui::Color32::from_rgb(255, 91, 46);
+/// What deletes: the fill of a button that removes something for good.
+pub(crate) const DANGER: egui::Color32 = egui::Color32::from_rgb(196, 48, 43);
+/// The same, as text on the dark background (a menu item, a small "×").
+pub(crate) const DANGER_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 107, 99);
+
+/// A button that deletes: red, so it is never pressed by mistake.
+pub(crate) fn danger(text: impl Into<String>) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(text.into()).color(egui::Color32::WHITE)).fill(DANGER)
+}
+
+/// A menu item or small control that deletes: red text.
+pub(crate) fn danger_text(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text.into()).color(DANGER_TEXT)
+}
+
+/// A section's heading, in the accent.
+pub(crate) fn section(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text.into()).heading().color(ACCENT)
+}
 
 fn splash_image() -> image::RgbaImage {
     image::load_from_memory(include_bytes!(
@@ -175,8 +194,15 @@ fn splash_image() -> image::RgbaImage {
 fn configure_style(ctx: &egui::Context) {
     ctx.set_visuals(egui::Visuals::dark());
     let mut style = (*ctx.style()).clone();
-    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
-    style.spacing.button_padding = egui::vec2(10.0, 6.0);
+    // Room to breathe: between a checkbox or radio and its label, between
+    // rows, inside buttons, windows and menus.
+    style.spacing.item_spacing = egui::vec2(10.0, 10.0);
+    style.spacing.button_padding = egui::vec2(12.0, 6.0);
+    style.spacing.icon_spacing = 8.0;
+    style.spacing.indent = 22.0;
+    style.spacing.interact_size.y = 24.0;
+    style.spacing.window_margin = egui::Margin::same(16);
+    style.spacing.menu_margin = egui::Margin::same(8);
     style.visuals.panel_fill = egui::Color32::from_rgb(24, 26, 32);
     style.visuals.window_fill = egui::Color32::from_rgb(27, 29, 35);
     style.visuals.extreme_bg_color = egui::Color32::from_rgb(14, 16, 20);

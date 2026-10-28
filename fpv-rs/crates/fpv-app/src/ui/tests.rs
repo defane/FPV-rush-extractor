@@ -506,10 +506,18 @@ fn screenshot_reference_navigation_shows_tab_counts() {
                 .shapes,
         );
     }
-    for expected in ["Sessions\n1", "All flights\n1", "Figures\n1"] {
+    // Each tab: its name, and its count just below it.
+    for name in ["Sessions", "All flights", "Figures"] {
+        let at = positions
+            .iter()
+            .find(|(text, _)| text == name)
+            .unwrap_or_else(|| panic!("missing tab {name:?}"))
+            .1;
         assert!(
-            positions.iter().any(|(text, _)| text == expected),
-            "missing tab {expected:?}"
+            positions
+                .iter()
+                .any(|(text, pos)| text == "1" && pos.y > at.y && (pos.y - at.y) < 30.0),
+            "{name}'s count below it"
         );
     }
 }
@@ -1279,8 +1287,10 @@ fn resized_player_uses_the_largest_aspect_preserving_video_rectangle() {
                     .unwrap();
                 // The actual video area ends before metadata; controls and window
                 // decorations consume less than this tolerance, with no fixed cap.
-                let width = start.x - window.left() - 20.0;
-                let height = window.height() - 145.0;
+                // 30: the window's 16 px margin (2026-10-28) and the gap to the tags.
+                let width = start.x - window.left() - 30.0;
+                // 185: the roomier rows (2026-10-28) under the video take ~30 px more.
+                let height = window.height() - 185.0;
                 let scale = (width / source[0] as f32).min(height / source[1] as f32);
                 assert!(
                     image.width() >= source[0] as f32 * scale - 2.0
@@ -2906,5 +2916,187 @@ fn the_filters_count_what_each_name_lists_and_what_matches() {
             .iter()
             .any(|t| t.starts_with("1 flight: each becomes")),
         "{texts:?}"
+    );
+}
+
+/// A text drawn: its words, where, and the colours of its parts.
+type PaintedText = (String, egui::Rect, Vec<Color32>);
+/// A filled rectangle drawn.
+type PaintedRect = (egui::Rect, Color32);
+
+/// Each text drawn, with the colours of its parts, and every filled rectangle.
+fn painted(shapes: &[egui::epaint::ClippedShape]) -> (Vec<PaintedText>, Vec<PaintedRect>) {
+    fn walk(shape: &egui::Shape, texts: &mut Vec<PaintedText>, rects: &mut Vec<PaintedRect>) {
+        match shape {
+            egui::Shape::Text(t) => texts.push((
+                t.galley.job.text.clone(),
+                t.galley.rect.translate(t.pos.to_vec2()),
+                t.galley
+                    .job
+                    .sections
+                    .iter()
+                    .map(|s| s.format.color)
+                    .collect(),
+            )),
+            egui::Shape::Rect(r) => rects.push((r.rect, r.fill)),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, texts, rects)),
+            _ => {}
+        }
+    }
+    let (mut texts, mut rects) = (vec![], vec![]);
+    for s in shapes {
+        walk(&s.shape, &mut texts, &mut rects);
+    }
+    (texts, rects)
+}
+
+/// Red at any opacity: a dialog fading in dims its colours, not their hue.
+fn reddish(color: Color32) -> bool {
+    let [r, g, b, _] = color.to_array();
+    r > 60 && u16::from(r) > 2 * u16::from(g) && u16::from(r) > 2 * u16::from(b)
+}
+
+#[test]
+fn dialogs_have_no_close_button_by_their_title() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    app.dialog = Some(crate::dialogs::Dialog::settings(&Default::default()));
+    let texts = shown_texts(&ctx, &mut app, |app, ctx| app.dialog_window(ctx));
+    assert!(texts.iter().any(|t| t == "Settings"), "{texts:?}");
+    assert!(!texts.iter().any(|t| t == "×"), "{texts:?}");
+    assert!(
+        texts.iter().any(|t| t == "Close"),
+        "still closable: {texts:?}"
+    );
+}
+
+#[test]
+fn what_deletes_is_red_and_a_checkbox_keeps_its_distance_from_its_label() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    app.sessions = vec![session_of(vec![flight()])];
+    let mut dialog = crate::dialogs::Dialog::settings(&Default::default());
+    dialog.reply(crate::worker::Reply::Cache(fpv_library::CacheUsage {
+        proxies: 1_000_000,
+        strips: 1_000_000,
+        posters: 1_000_000,
+        previews: 0,
+    }));
+    app.dialog = Some(dialog);
+    let mut shapes = vec![];
+    for _ in 0..3 {
+        shapes = ctx
+            .run(input(egui::vec2(1280.0, 1400.0)), |ctx| {
+                app.dialog_window(ctx)
+            })
+            .shapes;
+    }
+    let (texts, rects) = painted(&shapes);
+    let empty_all = texts
+        .iter()
+        .find(|(t, _, _)| t.starts_with("Empty All"))
+        .unwrap();
+    assert!(
+        rects
+            .iter()
+            .any(|(rect, fill)| reddish(*fill) && rect.contains(empty_all.1.center())),
+        "Empty All sits on red"
+    );
+    let save = texts.iter().find(|(t, _, _)| t == "Save settings").unwrap();
+    assert!(
+        !rects
+            .iter()
+            .any(|(rect, fill)| reddish(*fill) && rect.contains(save.1.center())),
+        "Save is not red"
+    );
+    // "Mute videos": the box, then 8 px of air before the words.
+    let label = texts.iter().find(|(t, _, _)| t == "Mute videos").unwrap().1;
+    let gap = rects
+        .iter()
+        .filter(|(rect, _)| {
+            rect.right() <= label.left() && (rect.center().y - label.center().y).abs() < 6.0
+        })
+        .map(|(rect, _)| label.left() - rect.right())
+        .fold(f32::MAX, f32::min);
+    assert!(gap >= 8.0, "checkbox to label: {gap} px");
+
+    // The card menu's Delete flight… reads red.
+    let mut app = app_with_worker(&ctx).0;
+    app.sessions = vec![session_of(vec![flight()])];
+    app.browse.session = Some("session".into());
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| app.browser(ctx);
+    let output = ctx.run(input(egui::vec2(1280.0, 820.0)), |ctx| draw(&mut app, ctx));
+    let title = text_positions(&output.shapes)
+        .into_iter()
+        .find(|(text, _)| text == "Layout test flight")
+        .unwrap()
+        .1;
+    right_click(&ctx, &mut app, title - egui::vec2(-20.0, 60.0), draw);
+    let mut shapes = vec![];
+    for _ in 0..3 {
+        shapes = ctx
+            .run(input(egui::vec2(1280.0, 820.0)), |ctx| draw(&mut app, ctx))
+            .shapes;
+    }
+    let (texts, _) = painted(&shapes);
+    let delete = texts
+        .iter()
+        .find(|(t, _, _)| t == "Delete flight…")
+        .unwrap();
+    assert_eq!(delete.2, [crate::DANGER_TEXT]);
+    let export = texts.iter().find(|(t, _, _)| t == "Export…").unwrap();
+    assert_ne!(export.2, [crate::DANGER_TEXT]);
+}
+
+#[test]
+fn the_view_tabs_are_blocks_of_one_height_with_their_text_centred() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    app.sessions = vec![session_of(vec![flight()])];
+    let mut shapes = vec![];
+    for _ in 0..3 {
+        shapes = ctx
+            .run(input(egui::vec2(1280.0, 820.0)), |ctx| app.sidebar(ctx))
+            .shapes;
+    }
+    let (texts, rects) = painted(&shapes);
+    let at = |word: &str, below: f32| {
+        texts
+            .iter()
+            .filter(|(t, r, _)| t == word && r.top() > below)
+            .map(|(_, r, _)| *r)
+            .next()
+            .unwrap_or_else(|| panic!("{word} drawn"))
+    };
+    let mut heights = vec![];
+    for (name, count) in [("Sessions", "1"), ("All flights", "1"), ("Figures", "0")] {
+        let name_at = at(name, 0.0);
+        let block = rects
+            .iter()
+            .filter(|(rect, _)| rect.contains(name_at.center()) && rect.height() < 80.0)
+            .map(|(rect, _)| *rect)
+            .min_by(|a, b| a.area().total_cmp(&b.area()))
+            .unwrap();
+        let count_at = texts
+            .iter()
+            .filter(|(t, r, _)| t == count && block.contains(r.center()))
+            .map(|(_, r, _)| *r)
+            .next()
+            .unwrap_or_else(|| panic!("{name}'s count in its block"));
+        for (what, text) in [(name, name_at), (count, count_at)] {
+            assert!(
+                (text.center().x - block.center().x).abs() < 1.5,
+                "{what} centred in {name}'s block: {text:?} in {block:?}"
+            );
+        }
+        assert!(
+            count_at.top() >= name_at.bottom() - 1.0,
+            "{name}: the count below the name"
+        );
+        heights.push(block.height());
+    }
+    assert!(
+        heights.windows(2).all(|h| (h[0] - h[1]).abs() < 0.5),
+        "one height: {heights:?}"
     );
 }

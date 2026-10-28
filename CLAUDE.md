@@ -1229,6 +1229,14 @@ frame-exact boundary editor. Layout:
   the rate keeps two decimals because 59.94 is not 60 and the DVR's own rates are odd. A DVR
   flight whose parts differ shows each once, ` / ` between. The Files tab's Rate column
   became Format.
+- **Look** (native app, 2026-10-28, the pilot's request): roomier spacing (8 px between a
+  checkbox and its label, 10 px between rows, 16 px window margins), dialog and section
+  titles in the accent, everything that deletes red — `danger` buttons on a red fill
+  (Delete, Delete and Trash, Also Trash the Videos, Empty…, Reduce recordings) and
+  `danger_text` for the menu items and small "×" leading there — and no × by a dialog's
+  title (Close below or Escape). The view tabs are three blocks of one height, name and count
+  centred (`view_tab`, drawn by hand: egui's button set a centred two-line text off its
+  middle). Separators stay neutral (the pilot's call).
 - **Empty states** (native app, 2026-10-28, #14): an empty grid says why and offers the
   way out (`browse::empty_state`) — "No flights yet" with Segment, "No liked flights", "No
   flights match these filters" / "No figures match…" with Reset filters, "No figures here"

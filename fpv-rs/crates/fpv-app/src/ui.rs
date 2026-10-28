@@ -38,6 +38,52 @@ fn metadata_icon(ui: &mut egui::Ui, kind: MetadataIcon) {
     });
 }
 
+/// A view tab: a block of the column's width and a fixed height, its name
+/// centred on one line and how many centred below — drawn here, since egui's
+/// button places a centred two-line text off its middle.
+fn view_tab(ui: &mut egui::Ui, label: &str, count: usize, selected: bool) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 46.0), egui::Sense::click());
+    let visuals = ui.style().interact_selectable(&response, selected);
+    ui.painter().rect(
+        rect,
+        6.0,
+        visuals.weak_bg_fill,
+        visuals.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let color = if selected {
+        Color32::WHITE
+    } else {
+        visuals.text_color()
+    };
+    for (text, dy) in [(label.to_owned(), -9.0), (count.to_string(), 9.0)] {
+        ui.painter().text(
+            rect.center() + egui::vec2(0.0, dy),
+            egui::Align2::CENTER_CENTER,
+            text,
+            font.clone(),
+            color,
+        );
+    }
+    response
+}
+
+/// A tag that a click removes: its name, then a red "×".
+fn removable_tag(ui: &egui::Ui, label: &str) -> egui::text::LayoutJob {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let color = ui.visuals().text_color();
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        &format!("{label} "),
+        0.0,
+        egui::TextFormat::simple(font.clone(), color),
+    );
+    job.append("×", 0.0, egui::TextFormat::simple(font, crate::DANGER_TEXT));
+    job
+}
+
 /// Names in use matching what is typed: a click puts one in the field.
 fn suggestions(ui: &mut egui::Ui, field: &mut String, names: Vec<String>) {
     if names.is_empty() {
@@ -675,14 +721,11 @@ impl App {
                         (View::Flights, "All flights", counts[1]),
                         (View::Figures, "Figures", counts[2]),
                     ]) {
-                        if column
-                            .add_sized(
-                                [column.available_width(), 42.0],
-                                egui::Button::new(format!("{label}\n{count}"))
-                                    .selected(self.browse.view == view),
-                            )
-                            .clicked()
-                        {
+                        // Three blocks of one height, each centred: its name,
+                        // and how many below.
+                        let clicked =
+                            view_tab(column, label, count, self.browse.view == view).clicked();
+                        if clicked {
                             self.browse.view = view;
                             self.browse.page = 0;
                             self.selected.clear();
@@ -692,7 +735,7 @@ impl App {
                 });
                 ui.separator();
                 if self.browse.view == View::Sessions {
-                    ui.small(RichText::new("SESSIONS").strong().weak());
+                    ui.small(RichText::new("SESSIONS").strong().color(ACCENT));
                     let ids: Vec<&str> = self.sessions.iter().map(|s| s.id.as_str()).collect();
                     browse::follow(
                         &ids,
@@ -1070,7 +1113,7 @@ impl App {
         if ui
             .add_enabled(
                 session.reducible && self.ffmpeg_ok,
-                egui::Button::new("Reduce…"),
+                egui::Button::new(crate::danger_text("Reduce…")),
             )
             .clicked()
         {
@@ -1081,7 +1124,7 @@ impl App {
             }));
             ui.close();
         }
-        if ui.button("Remove session…").clicked() {
+        if ui.button(crate::danger_text("Remove session…")).clicked() {
             self.dialog = Some(Dialog::remove_session(session));
             ui.close();
         }
@@ -1549,7 +1592,7 @@ impl App {
             self.dialog = Some(Dialog::export(name, flight));
             ui.close();
         }
-        if ui.button("Delete flight…").clicked() {
+        if ui.button(crate::danger_text("Delete flight…")).clicked() {
             self.dialog = Some(Dialog::delete_flight(flight));
             let id = flight.id.clone();
             self.dialog_request = Some(self.submit(
@@ -1848,13 +1891,17 @@ impl App {
             });
         };
         let show_metadata = |this: &mut Self, ui: &mut egui::Ui, viewer: &mut Viewer| {
-            ui.heading("Tags");
+            ui.label(crate::section("Tags"));
             if viewer.flight.labels.is_empty() {
                 ui.weak("No tags yet.");
             }
             ui.horizontal_wrapped(|ui| {
                 for label in viewer.flight.labels.clone() {
-                    if ui.button(format!("{label} ×")).clicked() {
+                    if ui
+                        .button(removable_tag(ui, &label))
+                        .on_hover_text("Remove this tag")
+                        .clicked()
+                    {
                         let id = viewer.flight.id.clone();
                         this.submit("Remove flight tag", true, move |library, _| {
                             library.remove_flight_label(&id, &label)?;
@@ -1890,7 +1937,7 @@ impl App {
             let found = browse::suggest(names, &viewer.label, &viewer.flight.labels);
             suggestions(ui, &mut viewer.label, found);
             ui.separator();
-            ui.heading("Figures");
+            ui.label(crate::section("Figures"));
             if viewer.flight.figures.is_empty() {
                 ui.weak("No figures yet.");
             }
@@ -1909,7 +1956,7 @@ impl App {
                                 ui.label(format!("– {}", clock(tag.end)));
                             }
                             if ui
-                                .small_button("×")
+                                .small_button(crate::danger_text("×"))
                                 .on_hover_text("Delete figure")
                                 .clicked()
                             {
@@ -2067,7 +2114,7 @@ impl App {
             if self.show_notices {
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.heading("Notifications");
+                    ui.label(crate::section("Notifications"));
                     if !self.notices.items().is_empty() && ui.small_button("Clear all").clicked() {
                         self.notices.clear();
                     }
@@ -2100,7 +2147,7 @@ impl App {
             if self.show_tasks {
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.heading("Tasks");
+                    ui.label(crate::section("Tasks"));
                     if self.tasks.iter().any(|task| !task.running)
                         && ui.small_button("Clear finished").clicked()
                     {
