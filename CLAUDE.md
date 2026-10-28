@@ -90,6 +90,11 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   corresponding unmodified source, LGPL license and the exact build recipe in
   every package. No libav* library is linked into Rust. The optional CLI proxy
   uses built-in MPEG-4/AAC; the GUI does not transcode playback proxies.
+- **FFmpeg is built outside a checkout whose path holds a space** (2026-10-28): its
+  `configure` refuses an out-of-tree build from such a source path ("Out of tree builds
+  are impossible with whitespace"), and the pilot's checkout is `…/FPV Rush extractor`
+  — the first `make macos` there died on it. `build-ffmpeg.sh` then builds in
+  `$TMPDIR/fpv-rush-ffmpeg-build`; the tools still land in `packaging/resources`.
 - Bundled FFmpeg must enable its internal `extract_extradata` bitstream filter:
   stream probing needs it to retain H.264/HEVC headers before indexed seeks.
   The player tries input-side seeking, with a sequential fallback if no video

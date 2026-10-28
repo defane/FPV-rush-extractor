@@ -7,6 +7,19 @@ VERSION=8.1.3
 SHA256=7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3
 ARCH="${1:-native}"
 WORK="${FPV_FFMPEG_WORK:-$ROOT/fpv-rs/target/ffmpeg-build}"
+# FFmpeg's configure refuses an out-of-tree build from a source path holding
+# whitespace, and the pilot's checkout is ".../FPV Rush extractor": the build
+# then goes to the system's temporary folder. A chosen FPV_FFMPEG_WORK is not
+# second-guessed.
+case "$WORK" in
+    *[[:space:]]*)
+        [ -z "${FPV_FFMPEG_WORK:-}" ] || { echo "FPV_FFMPEG_WORK must not contain spaces: $WORK" >&2; exit 1; }
+        WORK="${TMPDIR:-/tmp}"
+        WORK="${WORK%/}/fpv-rush-ffmpeg-build" ;;
+esac
+case "$WORK" in
+    *[[:space:]]*) echo "No folder without spaces to build FFmpeg in; set FPV_FFMPEG_WORK" >&2; exit 1 ;;
+esac
 DEST="$ROOT/packaging/resources"
 mkdir -p "$WORK" "$DEST/bin" "$DEST/licenses/ffmpeg"
 ARCHIVE="$WORK/ffmpeg-$VERSION.tar.xz"
