@@ -2515,3 +2515,54 @@ fn the_task_bar_counts_marks_times_and_clears_what_is_finished() {
         "{texts:?}"
     );
 }
+
+#[test]
+fn an_empty_grid_says_why_and_offers_the_way_out() {
+    let ctx = egui::Context::default();
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| app.browser(ctx);
+
+    // Nothing open yet.
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(
+        texts.iter().any(|t| t == "No session selected"),
+        "{texts:?}"
+    );
+    click_text(&ctx, &mut app, "Import Folder…", draw);
+    assert!(app.dialog.is_some(), "the import dialog");
+    app.dialog = None;
+    click_text(&ctx, &mut app, "change", draw);
+    assert!(app.dialog.is_some(), "Settings, to change where imports go");
+
+    // A session never segmented.
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    let mut fresh = session_of(vec![]);
+    fresh.segmentable = true;
+    app.sessions = vec![fresh];
+    app.browse.session = Some("session".into());
+    assert!(
+        shown_texts(&ctx, &mut app, draw)
+            .iter()
+            .any(|t| t == "No flights yet")
+    );
+    click_text(&ctx, &mut app, "Segment", draw);
+    assert!(app.dialog.is_some(), "the segment dialog");
+
+    // Filters that match nothing.
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    app.sessions = vec![session_of(vec![flight()])];
+    app.browse.view = crate::browse::View::Flights;
+    app.browse.flights.labels = vec!["race".into()];
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(
+        texts.iter().any(|t| t == "No flights match these filters"),
+        "{texts:?}"
+    );
+    click_text(&ctx, &mut app, "Reset filters", draw);
+    assert!(app.browse.flights.labels.is_empty());
+    assert!(
+        shown_texts(&ctx, &mut app, draw)
+            .iter()
+            .any(|t| t == "Layout test flight")
+    );
+}

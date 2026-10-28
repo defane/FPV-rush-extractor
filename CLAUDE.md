@@ -1218,6 +1218,11 @@ frame-exact boundary editor. Layout:
   the rate keeps two decimals because 59.94 is not 60 and the DVR's own rates are odd. A DVR
   flight whose parts differ shows each once, ` / ` between. The Files tab's Rate column
   became Format.
+- **Empty states** (native app, 2026-10-28, #14): an empty grid says why and offers the
+  way out (`browse::empty_state`) — "No flights yet" with Segment, "No liked flights", "No
+  flights match these filters" / "No figures match…" with Reset filters, "No figures here"
+  with how to tag one — and with no session open, "No session selected", Import Folder…
+  and "Imports go to … — change".
 - **Library tabs, filters and pages** (2026-10-23, the pilot's design from Claude Design,
   "Proposal — library tabs, filters, pagination"). The sidebar switches between **Sessions**,
   **All flights** and **Figures**, each with its count. All flights lists every session's

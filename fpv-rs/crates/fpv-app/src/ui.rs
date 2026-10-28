@@ -555,6 +555,33 @@ impl App {
         ctx.request_repaint_after(Duration::from_millis(16));
     }
 
+    /// No session open: what to do first.
+    fn no_session(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(80.0);
+        ui.vertical_centered(|ui| {
+            ui.heading("No session selected");
+            ui.label("Insert a goggle or action-cam SD card, or import a folder of recordings.");
+            if ui
+                .add_enabled(
+                    self.ffmpeg_ok && !self.busy_with(&Scope::Library),
+                    egui::Button::new("Import Folder…"),
+                )
+                .clicked()
+            {
+                self.open_import(None, String::new());
+            }
+            ui.horizontal(|ui| {
+                ui.weak(format!(
+                    "Imports go to {} —",
+                    self.config.media_root.display()
+                ));
+                if ui.link("change").clicked() {
+                    self.dialog = Some(Dialog::settings(&self.config));
+                }
+            });
+        });
+    }
+
     fn open_import(&mut self, folder: Option<PathBuf>, name: String) {
         self.dialog = Some(Dialog::import(folder, name));
     }
@@ -991,7 +1018,7 @@ impl App {
             let session = self.sessions.iter().find(|s| Some(&s.id) == self.browse.session.as_ref()).cloned();
             if self.browse.view == View::Sessions {
                 if let Some(session) = &session { self.session_header(ui, session); }
-                else { ui.heading("Select a session or import recordings"); return; }
+                else { self.no_session(ui); return; }
             } else { ui.heading(if self.browse.view == View::Flights { "All flights" } else { "Figures" }); }
             ui.horizontal_wrapped(|ui| {
                 let liked = self.browse.filters().liked;
@@ -1049,6 +1076,34 @@ impl App {
             }); }
             let range = page_range(items.len(), &mut self.browse.page, self.browse.page_size);
             ui.separator();
+            if items.is_empty() {
+                let has_flights = session.as_ref().is_some_and(|s| !s.flights.is_empty());
+                let (title, detail, action) = browse::empty_state(
+                    self.browse.view, has_flights, self.browse.filters(), !self.search.is_empty());
+                ui.add_space(24.0);
+                ui.vertical_centered(|ui| {
+                    ui.heading(title);
+                    if !detail.is_empty() { ui.label(detail); }
+                    match action {
+                        browse::EmptyAction::Segment => {
+                            if let Some(session) = session.as_ref().filter(|s| s.segmentable)
+                                && ui.add_enabled(self.ffmpeg_ok && !self.session_busy(&session.id), egui::Button::new("Segment")).clicked() {
+                                self.dialog = Some(Dialog::segment(session));
+                            }
+                        }
+                        browse::EmptyAction::ResetFilters => {
+                            if ui.button("Reset filters").clicked() {
+                                let sort = self.browse.filters().sort;
+                                *self.browse.filters_mut() = browse::Filters { sort, ..Default::default() };
+                                self.search.clear();
+                                self.browse.page = 0;
+                            }
+                        }
+                        browse::EmptyAction::Nothing => {}
+                    }
+                });
+                return;
+            }
             egui::ScrollArea::vertical().id_salt("flight-grid").auto_shrink([false, false]).max_height((ui.available_height() - 28.0 - 3.0 * ui.spacing().item_spacing.y).max(0.0)).show(ui, |ui| {
                 let columns = ((ui.available_width() / 270.0) as usize).clamp(1, 6);
                 for row in items[range.clone()].chunks(columns) {

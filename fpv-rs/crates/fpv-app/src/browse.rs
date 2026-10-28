@@ -195,6 +195,59 @@ pub fn labels(text: &str) -> Vec<String> {
     result
 }
 
+/// What an empty grid offers to do about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmptyAction {
+    Segment,
+    ResetFilters,
+    Nothing,
+}
+
+/// What an empty grid says: why there is nothing, and what to do — the
+/// Tauri app's empty states. `searching` is text in the search field.
+pub fn empty_state(
+    view: View,
+    session_has_flights: bool,
+    filters: &Filters,
+    searching: bool,
+) -> (&'static str, &'static str, EmptyAction) {
+    let filtered = searching
+        || filters.liked
+        || (view != View::Sessions && (filters.session.is_some() || !filters.labels.is_empty()));
+    match view {
+        View::Sessions if !session_has_flights => (
+            "No flights yet",
+            "Segment the recordings to find the flights in them.",
+            EmptyAction::Segment,
+        ),
+        View::Sessions if filters.liked && !searching => (
+            "No liked flights",
+            "A heart on a card likes its flight.",
+            EmptyAction::ResetFilters,
+        ),
+        View::Figures if !filtered => (
+            "No figures here",
+            "Tag figures in the player — Mark In, name it, Enter.",
+            EmptyAction::Nothing,
+        ),
+        View::Flights if !filtered => (
+            "No flights yet",
+            "Import recordings and segment them to see their flights here.",
+            EmptyAction::Nothing,
+        ),
+        View::Figures => (
+            "No figures match these filters",
+            "",
+            EmptyAction::ResetFilters,
+        ),
+        _ => (
+            "No flights match these filters",
+            "",
+            EmptyAction::ResetFilters,
+        ),
+    }
+}
+
 /// A size as people read it: "548 KB", "7.5 MB", "1.2 GB".
 pub fn size(bytes: u64) -> String {
     let bytes = bytes as f64;
@@ -411,6 +464,51 @@ mod tests {
             cloud: false,
             freeable: false,
         }
+    }
+
+    #[test]
+    fn an_empty_grid_says_why_and_what_to_do() {
+        let none = Filters::default();
+        let liked = Filters {
+            liked: true,
+            ..Filters::default()
+        };
+        let tagged = Filters {
+            labels: vec!["gates".into()],
+            ..Filters::default()
+        };
+        assert_eq!(
+            empty_state(View::Sessions, false, &none, false).2,
+            EmptyAction::Segment
+        );
+        assert_eq!(
+            empty_state(View::Sessions, true, &liked, false).0,
+            "No liked flights"
+        );
+        assert_eq!(
+            empty_state(View::Sessions, true, &none, true),
+            (
+                "No flights match these filters",
+                "",
+                EmptyAction::ResetFilters
+            )
+        );
+        assert_eq!(
+            empty_state(View::Flights, true, &none, false).0,
+            "No flights yet"
+        );
+        assert_eq!(
+            empty_state(View::Flights, true, &tagged, false).2,
+            EmptyAction::ResetFilters
+        );
+        assert_eq!(
+            empty_state(View::Figures, true, &none, false).0,
+            "No figures here"
+        );
+        assert_eq!(
+            empty_state(View::Figures, true, &tagged, false).0,
+            "No figures match these filters"
+        );
     }
 
     #[test]
