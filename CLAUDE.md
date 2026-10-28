@@ -109,7 +109,8 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   yields no frame. MJPEG never asks. The Mac's bundled FFmpeg is built with
   `--enable-videotoolbox` (a system framework, LGPL-compatible) and the build
   refuses itself without it. Tested on Linux, whose FFmpeg refuses VideoToolbox:
-  the player falls back and plays.
+  the player falls back and plays. **Verified by the pilot on their Apple Silicon Mac (2026-10-28):
+  the 4K Osmo takes play** in the native app built with `make macos`.
 - **Import audio policy:** schema `v8` adds `sourceFile.muted`, default false for
   existing recordings. Import's No Sound option marks only new recordings;
   playback emits silence for their parts and exports honor that choice. Mixed
