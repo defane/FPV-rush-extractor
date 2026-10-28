@@ -688,11 +688,28 @@ impl App {
                 ui.separator();
                 if self.browse.view == View::Sessions {
                     ui.small(RichText::new("SESSIONS").strong().weak());
+                    let ids: Vec<&str> = self.sessions.iter().map(|s| s.id.as_str()).collect();
+                    browse::follow(
+                        &ids,
+                        self.browse.session.as_deref(),
+                        &mut self.followed_session,
+                        &mut self.browse.session_page,
+                        browse::SESSIONS_PER_PAGE,
+                    );
+                    if self.sessions.is_empty() {
+                        ui.weak("No sessions yet.");
+                    }
+                    let range = page_range(
+                        self.sessions.len(),
+                        &mut self.browse.session_page,
+                        browse::SESSIONS_PER_PAGE,
+                    );
+                    let page: Vec<SessionView> = self.sessions[range].to_vec();
                     egui::ScrollArea::vertical()
                         .id_salt("sessions")
-                        .max_height((ui.available_height() - 170.0).max(100.0))
+                        .max_height((ui.available_height() - 200.0).max(100.0))
                         .show(ui, |ui| {
-                            for session in self.sessions.clone() {
+                            for session in page {
                                 let selected = self.browse.session.as_ref() == Some(&session.id);
                                 let fill = if selected {
                                     Color32::from_rgb(68, 39, 36)
@@ -763,6 +780,42 @@ impl App {
                                 }
                             }
                         });
+                    let pages = self.sessions.len().div_ceil(browse::SESSIONS_PER_PAGE);
+                    if pages > 1 {
+                        ui.horizontal(|ui| {
+                            let current = self.browse.session_page;
+                            if ui
+                                .add_enabled(current > 0, egui::Button::new("‹").small())
+                                .clicked()
+                            {
+                                self.browse.session_page -= 1;
+                            }
+                            for page in browse::visible_pages(current, pages) {
+                                match page {
+                                    Some(page) => {
+                                        if ui
+                                            .selectable_label(
+                                                page == current,
+                                                (page + 1).to_string(),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.browse.session_page = page;
+                                        }
+                                    }
+                                    None => {
+                                        ui.weak("…");
+                                    }
+                                }
+                            }
+                            if ui
+                                .add_enabled(current + 1 < pages, egui::Button::new("›").small())
+                                .clicked()
+                            {
+                                self.browse.session_page += 1;
+                            }
+                        });
+                    }
                 }
                 ui.separator();
                 if self.browse.view != View::Sessions {

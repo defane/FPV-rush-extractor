@@ -28,6 +28,7 @@ fn app(ctx: &egui::Context) -> App {
         strips: crate::strips::Strips::default(),
         strip_batch: None,
         title_edit: None,
+        followed_session: None,
         images: Images::new(ctx.clone()),
         thumbnails: HashMap::new(),
         requested: HashSet::new(),
@@ -2565,4 +2566,38 @@ fn an_empty_grid_says_why_and_offers_the_way_out() {
             .iter()
             .any(|t| t == "Layout test flight")
     );
+}
+
+#[test]
+fn the_sidebar_pages_its_sessions_and_follows_the_one_opened() {
+    let ctx = egui::Context::default();
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| app.sidebar(ctx);
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    assert!(
+        shown_texts(&ctx, &mut app, draw)
+            .iter()
+            .any(|t| t == "No sessions yet.")
+    );
+    app.sessions = (0..12)
+        .map(|n| {
+            let mut session = session_of(vec![]);
+            session.id = format!("s{n}");
+            session.name = format!("Session {n}");
+            session
+        })
+        .collect();
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(texts.iter().any(|t| t == "Session 0"), "{texts:?}");
+    assert!(
+        !texts.iter().any(|t| t == "Session 10"),
+        "ten a page: {texts:?}"
+    );
+    click_text(&ctx, &mut app, "2", draw);
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(texts.iter().any(|t| t == "Session 11"), "{texts:?}");
+    assert!(!texts.iter().any(|t| t == "Session 0"), "{texts:?}");
+    // A session opened from elsewhere brings its page back.
+    app.browse.session = Some("s3".into());
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(texts.iter().any(|t| t == "Session 3"), "{texts:?}");
 }

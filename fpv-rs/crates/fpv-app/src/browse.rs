@@ -45,6 +45,31 @@ pub struct Browse {
     pub figures: Filters,
     pub page: usize,
     pub page_size: usize,
+    /// The sidebar's page of sessions.
+    pub session_page: usize,
+}
+
+/// Sessions per page in the sidebar.
+pub const SESSIONS_PER_PAGE: usize = 10;
+
+/// The sidebar's page follows the session opened from elsewhere — a figure
+/// card, All flights — but only when that session changes: a library
+/// refresh, which every ending task causes, must not pull the viewer back
+/// from the page they turned to.
+pub fn follow(
+    ids: &[&str],
+    opened: Option<&str>,
+    followed: &mut Option<String>,
+    page: &mut usize,
+    per_page: usize,
+) {
+    if opened == followed.as_deref() {
+        return;
+    }
+    *followed = opened.map(str::to_owned);
+    if let Some(index) = opened.and_then(|id| ids.iter().position(|known| *known == id)) {
+        *page = index / per_page.max(1);
+    }
 }
 
 impl Default for Browse {
@@ -60,6 +85,7 @@ impl Default for Browse {
             figures: Filters::default(),
             page: 0,
             page_size: 24,
+            session_page: 0,
         }
     }
 }
@@ -464,6 +490,23 @@ mod tests {
             cloud: false,
             freeable: false,
         }
+    }
+
+    #[test]
+    fn the_sidebar_follows_a_session_opened_elsewhere_only_when_it_changes() {
+        let ids: Vec<String> = (0..25).map(|n| format!("s{n}")).collect();
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let (mut followed, mut page) = (None, 0);
+        follow(&ids, Some("s23"), &mut followed, &mut page, 10);
+        assert_eq!(page, 2, "s23 is on the third page");
+        // The viewer turns back to the first page; a refresh keeps it there.
+        page = 0;
+        follow(&ids, Some("s23"), &mut followed, &mut page, 10);
+        assert_eq!(page, 0);
+        follow(&ids, Some("s12"), &mut followed, &mut page, 10);
+        assert_eq!(page, 1, "another session opened: followed");
+        follow(&ids, None, &mut followed, &mut page, 10);
+        assert_eq!(page, 1, "closing it moves nothing");
     }
 
     #[test]

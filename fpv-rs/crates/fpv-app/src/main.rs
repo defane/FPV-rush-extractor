@@ -141,6 +141,8 @@ pub(crate) struct App {
     strip_batch: Option<u64>,
     /// A card's title being edited in place: (flight, text so far).
     title_edit: Option<(String, String)>,
+    /// The session the sidebar's page last followed (`browse::follow`).
+    followed_session: Option<String>,
     images: images::Images,
     thumbnails: HashMap<String, String>,
     requested: HashSet<String>,
@@ -246,6 +248,7 @@ impl App {
             strips: strips::Strips::default(),
             strip_batch: None,
             title_edit: None,
+            followed_session: None,
             images: images::Images::new(cc.egui_ctx.clone()),
             thumbnails: HashMap::new(),
             requested: HashSet::new(),

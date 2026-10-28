@@ -1234,7 +1234,8 @@ frame-exact boundary editor. Layout:
   sessions and the Load-from-folder dialog's folders page too (10 each, `CompactPager`,
   2026-10-23; page numbers between its arrows since 2026-10-25, the range on hover): the sidebar's page follows the session opened from elsewhere (`pageOf`), but
   only when that session changes — a library refresh, which every ending task causes, must not
-  pull the viewer back from the page they turned to. All of it is
+  pull the viewer back from the page they turned to. The native sidebar pages its sessions the same way
+  (2026-10-28, #15): ten a page, "‹ 1 2 … ›", `browse::follow`, "No sessions yet." All of it is
   computed in the window from the snapshot (`lib/library.ts`, `lib/browse.svelte.ts`, both
   tested) — in the native app, `browse.rs`: each view keeps its own filters and sort
   (`Filters`: a session oldest first, All flights and Figures newest first), tags filter All
