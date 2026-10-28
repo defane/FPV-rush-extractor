@@ -1,0 +1,143 @@
+# Media tools and installers: long (FFmpeg is built from source on every OS),
+# so not on every pull request — ci.yml checks those. Runs on main, on release
+# tags, on demand, and on a pull request that changes the packaging itself.
+name: Packaging
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to build
+        type: choice
+        default: all
+        options: [all, linux, macos, windows]
+  pull_request:
+    paths:
+      - "packaging/**"
+      - ".github/workflows/packaging.yml"
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+jobs:
+  linux:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux'
+    name: Linux ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-22.04, arch: x86_64 }
+          - { runner: ubuntu-22.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          components: clippy,rustfmt
+      - name: Install native build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libasound2-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libgl1-mesa-dev ffmpeg xvfb imagemagick
+      - name: Check and test
+        working-directory: fpv-rs
+        run: |
+          cargo fmt -p fpv-app -- --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test --workspace --locked
+      - name: Build bundled LGPL media tools
+        run: bash packaging/build-ffmpeg.sh native
+      - name: Test the bundled tools with the native player
+        working-directory: fpv-rs
+        env:
+          FPV_TEST_BUNDLED_TOOLS: ${{ github.workspace }}/packaging/resources/bin
+        run: cargo test -p fpv-app --locked player::tests
+      - name: Build installers
+        run: bash packaging/package.sh linux native
+      - name: Smoke-test native window
+        run: bash packaging/smoke.sh fpv-rs/target/release/fpv-rush
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fpv-rush-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos'
+    name: macOS universal
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          components: clippy
+      - name: Install test FFmpeg
+        run: brew install ffmpeg
+      - name: Test native application
+        working-directory: fpv-rs
+        run: |
+          cargo clippy -p fpv-app --all-targets --locked -- -D warnings
+          cargo test --workspace --locked
+      - name: Build universal media tools and DMG
+        run: make macos
+      - name: Test packaged macOS About menu
+        run: bash packaging/macos/smoke-about.sh
+      - name: Save macOS About smoke evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-about-menu-smoke
+          path: |
+            tmp/macos-about.*/app.log
+            tmp/macos-about.*/about.png
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fpv-rush-macos-universal
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows'
+    name: Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - name: Install test FFmpeg and NSIS
+        run: choco install ffmpeg nsis -y --no-progress
+      - name: Test native application
+        working-directory: fpv-rs
+        run: cargo test --workspace --locked
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc make diffutils tar xz curl
+      - name: Build bundled LGPL media tools
+        shell: msys2 {0}
+        run: bash packaging/build-ffmpeg.sh native
+      - name: Build installer and portable ZIP
+        shell: pwsh
+        run: ./packaging/windows/package.ps1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fpv-rush-windows-x64
+          path: dist/*
+          if-no-files-found: error

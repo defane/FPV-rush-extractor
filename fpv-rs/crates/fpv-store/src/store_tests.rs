@@ -515,3 +515,34 @@ fn records_where_a_moved_recording_now_lives() {
                "/new/import/2026-08-23 Letz Kwad FATSHARK/PICT0032.AVI");
     assert!(store.set_imported_path(Uuid::new_v4(), "/x").is_err());
 }
+
+#[test]
+fn persists_recording_mute_without_changing_audio_metadata() {
+    let store = LibraryStore::in_memory().unwrap();
+    let (session, mut recording) = session_with_one_file(&store, "PICT0030.AVI", 30);
+    recording.muted = true;
+    let id = recording.id;
+    store.save_source_files(&[recording]).unwrap();
+    assert!(store.source_files(session.id).unwrap()[0].muted);
+    let connection = store.connection.into_inner().unwrap();
+    let store = LibraryStore::with_connection(connection, None).unwrap();
+    let recording = store.source_file(id).unwrap().unwrap();
+    assert!(recording.muted);
+    assert!(recording.media.audio_codec.is_some());
+}
+
+#[test]
+fn upgrading_v7_keeps_existing_recordings_audible() {
+    let store = LibraryStore::in_memory_up_to("v7").unwrap();
+    let session = Session::new("Old library", None);
+    store.save_session(&session).unwrap();
+    let id = Uuid::new_v4();
+    store.db().execute("INSERT INTO sourceFile (id, sessionId, originalPath, importedPath, width, height,
+        frameRateNumerator, frameRateDenominator, duration, videoCodec, audioCodec)
+        VALUES (?1, ?2, '/card/old.avi', '/library/old.avi', 640, 480, 25, 1, 1.0, 'mjpeg', 'pcm_s16le')",
+        params![Id(id), Id(session.id)]).unwrap();
+    let store = LibraryStore::with_connection(store.connection.into_inner().unwrap(), None).unwrap();
+    let file = store.source_file(id).unwrap().unwrap();
+    assert!(!file.muted);
+    assert_eq!(file.media.audio_codec.as_deref(), Some("pcm_s16le"));
+}

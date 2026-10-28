@@ -91,6 +91,16 @@ pub struct Segment {
     pub offset: f64,
 }
 
+/// A source part for native playback, before display scaling or resampling.
+#[derive(Debug, Clone)]
+pub struct NativeSegment {
+    pub segment: Segment,
+    pub width: i64,
+    pub height: i64,
+    pub has_audio: bool,
+    pub all_intra: bool,
+}
+
 /// The cache folder's contents by kind, in bytes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -144,6 +154,8 @@ pub struct StripsPrepared {
     pub failed: Vec<(String, String)>,
     /// It stopped at the pictures' budget with strips still missing.
     pub at_budget: bool,
+    /// Frames were left for a next batch (`prepare_strips_up_to`).
+    pub more: bool,
 }
 
 /// One kind of what the cache folder holds, each in its own folder.
@@ -601,6 +613,21 @@ impl Library {
         Ok(())
     }
 
+    pub fn set_video_preferences(
+        &mut self,
+        mute_videos: bool,
+        do_not_show_splash: bool,
+    ) -> Result<()> {
+        let config = Config {
+            mute_videos,
+            do_not_show_splash,
+            ..self.config.clone()
+        };
+        config.save(&self.config_directory)?;
+        self.config = config;
+        Ok(())
+    }
+
     pub(crate) fn proxy_cache(&self) -> ProxyCache<'_> {
         ProxyCache::new(self.cache_directory.join("proxies"), self.config.proxy_budget_bytes(),
                         &self.store)
@@ -673,6 +700,13 @@ impl Library {
     /// copy matches size for size.
     pub fn import(&self, folder: &Path, name: &str, date: Option<&str>, delete_originals: bool,
                   progress: impl FnMut(ImportEvent)) -> Result<ImportSummary> {
+        self.import_with_audio(folder, name, date, delete_originals, false, progress)
+    }
+
+    /// Imports with a per-recording audio policy, preserving source bytes and known files.
+    pub fn import_with_audio(&self, folder: &Path, name: &str, date: Option<&str>,
+                  delete_originals: bool, no_sound: bool,
+                  progress: impl FnMut(ImportEvent)) -> Result<ImportSummary> {
         let name = name.trim();
         if name.is_empty() {
             return Err(LibraryError::Invalid("a session needs a name".into()));
@@ -680,6 +714,7 @@ impl Library {
         let date = date.map(local_midnight).transpose()?;
         let ffmpeg = self.ffmpeg();
         let report = LibraryImporter::new(&ffmpeg, &self.store)
+            .without_sound(no_sound)
             .posters_in(self.posters())
             .folders_named(FolderPattern::parse(&self.config.folder_pattern)
                 .map_err(|e| LibraryError::Invalid(format!("folderPattern in config.json: {e}")))?)
@@ -908,12 +943,13 @@ impl Library {
         let clean = |cut: &[(PathBuf, PathBuf, SourceFile)]| for (partial, _, _) in cut {
             let _ = std::fs::remove_file(partial);
         };
+        let reduction_source = SourceFile { muted: false, ..plan.file.clone() };
         for (n, &(start, end)) in plan.ranges.iter().enumerate() {
             let destination = free_name(folder, &format!("{stem}-{}", n + 1), &extension);
             let partial = folder.join(format!(".{}.reducing.{extension}",
                                               destination.file_name().unwrap().to_string_lossy()));
             let range = Clip::new(Uuid::nil(), plan.file.id, start, end);
-            let checked = exporter.export_clip(&range, &plan.file, &partial)
+            let checked = exporter.export_clip(&range, &reduction_source, &partial)
                 .map_err(|e| LibraryError::Invalid(e.to_string()))
                 .and_then(|_| probe.probe(&partial).map_err(|e| LibraryError::Invalid(e.to_string())))
                 .and_then(|media| {
@@ -933,6 +969,7 @@ impl Library {
                     let mut piece = SourceFile::new(plan.file.session_id, plan.file.original_path.clone(),
                                                     destination.to_string_lossy(), plan.file.sequence_number,
                                                     MediaInfo { camera: None, ..media });
+                    piece.muted = plan.file.muted;
                     // The checksum of the recording it was cut from, on its
                     // first piece: importing the same card again must not
                     // bring the snow back as a new recording.
@@ -1282,9 +1319,9 @@ impl Library {
             .ok_or_else(|| LibraryError::NotFound(format!("clip {id}")))?;
         let file = self.store.source_file(clip.source_file_id)?
             .ok_or_else(|| LibraryError::NotFound(format!("recording of clip {id}")))?;
-        let last = views::last_frame(&file);
-        let start = start_frame.clamp(0, (last - 1).max(0));
-        let end = end_frame.clamp(start + 1, last.max(start + 1));
+        let last = views::last_frame(&file).max(0);
+        let start = start_frame.clamp(0, last);
+        let end = end_frame.clamp(start + 1, last.saturating_add(1));
         Ok(self.store.update_clip(&Clip { start_frame: start, end_frame: end, ..clip })?)
     }
 
@@ -1362,9 +1399,18 @@ impl Library {
     /// meanwhile (re-segmented, deleted) is passed over; one whose recording
     /// cannot be read is reported once and its other frames skipped.
     pub fn prepare_strips(&self, count: usize, first: Option<&str>,
-                          mut progress: impl FnMut(usize, usize, &str)) -> Result<StripsPrepared> {
-        let missing = self.missing_strip_frames(count, first)?;
-        let mut prepared = StripsPrepared::default();
+                          progress: impl FnMut(usize, usize, &str)) -> Result<StripsPrepared> {
+        self.prepare_strips_up_to(count, first, usize::MAX, progress)
+    }
+
+    /// `prepare_strips`, at most `limit` frames of it: the native app runs one
+    /// library job at a time, so the strips go in batches the other jobs can
+    /// pass between. `more` says frames were left over.
+    pub fn prepare_strips_up_to(&self, count: usize, first: Option<&str>, limit: usize,
+                                mut progress: impl FnMut(usize, usize, &str)) -> Result<StripsPrepared> {
+        let mut missing = self.missing_strip_frames(count, first)?;
+        let mut prepared = StripsPrepared { more: missing.len() > limit, ..Default::default() };
+        missing.truncate(limit);
         let mut broken: HashSet<String> = HashSet::new();
         let budget = self.config.picture_budget_bytes();
         let mut used = self.picture_bytes();
@@ -1584,11 +1630,31 @@ impl Library {
     /// Writes a flight out. Returns the files written.
     pub fn export(&self, flight: &str, destination: &Path, mode: ExportMode) -> Result<Vec<PathBuf>> {
         let (_, _, timeline) = self.flight(flight)?;
+        // Text-entry destinations in the native UI have no OS overwrite
+        // prompt. Check every part before writing any of them.
+        let destinations = if mode == ExportMode::Parts {
+            let stem = destination.file_stem().unwrap_or_default().to_string_lossy();
+            let extension = destination.extension().and_then(|s| s.to_str()).unwrap_or("avi");
+            (1..=timeline.parts.len()).map(|index|
+                destination.with_file_name(format!("{stem} - part{index}.{extension}"))).collect()
+        } else { vec![destination.to_path_buf()] };
+        if let Some(path) = destinations.iter().find(|path| path.exists()) {
+            return Err(LibraryError::Invalid(format!("destination already exists: {}", path.display())));
+        }
         let ffmpeg = self.ffmpeg();
         let exporter = ClipExporter::new(&ffmpeg);
         Ok(match mode {
-            ExportMode::Lossless => vec![exporter.export_flight(&timeline.parts, destination)?],
-            ExportMode::Reencode => vec![exporter.export_flight_reencoded(&timeline.parts, destination, None)?],
+            ExportMode::Lossless => vec![exporter.export_flight_with_mute(
+                &timeline.parts,
+                destination,
+                self.config.mute_videos,
+            )?],
+            ExportMode::Reencode => vec![exporter.export_flight_reencoded_with_mute(
+                &timeline.parts,
+                destination,
+                None,
+                self.config.mute_videos,
+            )?],
             ExportMode::Parts => {
                 let stem = destination.file_stem().map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "flight".into());
@@ -1597,7 +1663,12 @@ impl Library {
                     .map(|(index, (clip, file))| {
                         let path = destination.with_file_name(
                             format!("{stem} - part{}.{extension}", index + 1));
-                        Ok(exporter.export_clip(clip, file, &path)?)
+                        Ok(exporter.export_clip_with_mute(
+                            clip,
+                            file,
+                            &path,
+                            self.config.mute_videos,
+                        )?)
                     })
                     .collect::<Result<_>>()?
             }
@@ -1689,6 +1760,41 @@ impl Library {
     }
 
     // Playback
+
+    /// Full source timeline for non-destructive boundary previews, including
+    /// frames outside the currently selected clip.
+    pub fn native_source_playback(&self, file: &str) -> Result<NativeSegment> {
+        let file = self.store.source_file(parse(file)?)?
+            .ok_or_else(|| LibraryError::NotFound(format!("recording {file}")))?;
+        Ok(NativeSegment {
+            segment: Segment { path: PathBuf::from(&file.imported_path), start: 0.0,
+                end: file.media.duration, offset: 0.0 },
+            width: file.media.width, height: file.media.height,
+            has_audio: file.media.audio_codec.is_some() && !file.muted,
+            all_intra: file.media.is_all_intra(),
+        })
+    }
+
+    /// Native playback reads every codec directly, including DVR MJPEG. Each
+    /// part uses its own source clock, even when adjacent file rates disagree.
+    pub fn native_playback(&self, flight: &str) -> Result<Vec<NativeSegment>> {
+        let (_, _, timeline) = self.flight(flight)?;
+        Ok(timeline.parts.iter().map(|(clip, file)| {
+            let rate = file.media.frame_rate;
+            NativeSegment {
+                segment: Segment {
+                    path: PathBuf::from(&file.imported_path),
+                    start: rate.seconds(clip.start_frame),
+                    end: rate.seconds(clip.end_frame),
+                    offset: timeline.flight_time(clip.start_frame, clip).unwrap_or_default(),
+                },
+                width: file.media.width,
+                height: file.media.height,
+                has_audio: file.media.audio_codec.is_some() && !file.muted,
+                all_intra: file.media.is_all_intra(),
+            }
+        }).collect())
+    }
 
     /// How the player opens a flight. An action-cam take plays from its own
     /// files — H.264 or HEVC in MP4, which the web view decodes itself (in
@@ -1870,6 +1976,20 @@ impl Library {
         let path = ThumbnailGenerator::new(&ffmpeg).generate_for_clip(&clip, &file, &self.posters(), 480)?;
         self.store.update_clip(&Clip { thumbnail_path: Some(path.to_string_lossy().into_owned()), ..clip })?;
         Ok(Thumbnail::made(path))
+    }
+
+    /// Rebuilds a poster after the UI found that the cached image cannot be decoded.
+    pub fn remake_poster(&self, clip_id: &str) -> Result<Thumbnail> {
+        let clip = self.store.clip(parse(clip_id)?)?
+            .ok_or_else(|| LibraryError::NotFound(format!("clip {clip_id}")))?;
+        if let Some(path) = clip.thumbnail_path.as_deref() {
+            let _ = std::fs::remove_file(path);
+        }
+        self.store.update_clip(&Clip {
+            thumbnail_path: None,
+            ..clip
+        })?;
+        self.poster(clip_id)
     }
 }
 

@@ -103,10 +103,17 @@ mod tests {
     fn quotes_apostrophes_for_the_concat_demuxer() {
         let directory = tempfile::tempdir().unwrap();
         let list = directory.path().join("parts.txt");
-        write_concat_list(&[PathBuf::from("/lib/Letz Kwad/part000.avi"),
-                            PathBuf::from("/lib/L'été/part001.avi")], &list).unwrap();
-        assert_eq!(std::fs::read_to_string(list).unwrap(),
-                   "file '/lib/Letz Kwad/part000.avi'\nfile '/lib/L'\\''été/part001.avi'");
+        let (pieces, expected) = if cfg!(windows) {
+            ([PathBuf::from(r"C:\lib\Letz Kwad\part000.avi"),
+              PathBuf::from(r"C:\lib\L'été\part001.avi")],
+             "file 'C:\\lib\\Letz Kwad\\part000.avi'\nfile 'C:\\lib\\L'\\''été\\part001.avi'")
+        } else {
+            ([PathBuf::from("/lib/Letz Kwad/part000.avi"),
+              PathBuf::from("/lib/L'été/part001.avi")],
+             "file '/lib/Letz Kwad/part000.avi'\nfile '/lib/L'\\''été/part001.avi'")
+        };
+        write_concat_list(&pieces, &list).unwrap();
+        assert_eq!(std::fs::read_to_string(list).unwrap(), expected);
     }
 
     #[test]
@@ -125,7 +132,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let list = directory.path().join("parts.txt");
         write_concat_list(&[PathBuf::from("out/part000.avi")], &list).unwrap();
-        let expected = std::env::current_dir().unwrap().join("out/part000.avi");
+        let expected = std::env::current_dir().unwrap().join("out").join("part000.avi");
         assert_eq!(std::fs::read_to_string(list).unwrap(),
                    format!("file '{}'", expected.display()));
     }

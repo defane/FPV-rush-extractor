@@ -21,11 +21,20 @@ impl FfmpegTool {
     /// The executable: in `directory` when the binaries are bundled, else
     /// whatever `PATH` resolves, which is how the devcontainer runs.
     pub fn command(&self, directory: Option<&Path>) -> Command {
-        match directory {
+        let mut command = match directory {
             Some(directory) => Command::new(
                 directory.join(format!("{}{}", self.name(), std::env::consts::EXE_SUFFIX))),
             None => Command::new(self.name()),
+        };
+        // Media children are pipes, not console applications the user opened.
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
+        // Keep the binding mutable only on Windows without a platform warning.
+        let _ = &mut command;
+        command
     }
 }
 

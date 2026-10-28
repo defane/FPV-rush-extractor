@@ -78,3 +78,38 @@ fn keeps_the_sound_on_the_picture_when_cutting_mid_recording() {
     assert!(((at / 2) as i64 - expected).abs() <= 1, "sound starts at sample {}, picture at {expected}", at / 2);
     assert_eq!(&whole[at..at + cut.len()], &cut[..]);
 }
+
+#[test]
+fn mixed_recording_mute_preserves_sound_in_other_parts_and_fills_only_muted_parts_with_silence() {
+    let folder = tempfile::tempdir().unwrap();
+    let recording = folder.path().join("audio.avi");
+    assert!(Command::new("ffmpeg").args(["-v", "error", "-f", "lavfi", "-i",
+        "testsrc2=size=64x48:rate=25:duration=1", "-f", "lavfi", "-i", "sine=duration=1:sample_rate=48000",
+        "-c:v", "mjpeg", "-c:a", "pcm_s16le", "-shortest", "-y"]).arg(&recording).status().unwrap().success());
+    let mut media = MediaInfo::new(64, 48, FrameRate::new(25, 1), 1.0, "mjpeg");
+    media.audio_codec = Some("pcm_s16le".into());
+    let file = SourceFile::new(Uuid::new_v4(), "card", recording.to_string_lossy(), None, media);
+    let original = std::fs::read(&recording).unwrap();
+    let runner = FfmpegRunner::default();
+    let exporter = ClipExporter::new(&runner);
+    for mute_first in [true, false] {
+        let mut first = file.clone(); first.muted = mute_first;
+        let mut second = file.clone(); second.id = Uuid::new_v4(); second.muted = !mute_first;
+        let parts = vec![(Clip::new(Uuid::new_v4(), first.id, 0, 25), first),
+            (Clip::new(Uuid::new_v4(), second.id, 0, 25), second)];
+        for reencode in [false, true] {
+            let out = folder.path().join(format!("mixed-{mute_first}-{reencode}.avi"));
+            if reencode { exporter.export_flight_reencoded(&parts, &out, None).unwrap(); }
+            else { exporter.export_flight(&parts, &out).unwrap(); }
+            assert_eq!(frames(&out), "50");
+            let bytes = samples(&out);
+            let audio: Vec<_> = bytes.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+            assert!(audio.len() >= 48000 * 2 * 2);
+            let (start, end) = if mute_first { (0, 48000 * 2) } else { (48000 * 2, 48000 * 2 * 2) };
+            assert!(audio[start..end].iter().all(|s| *s == 0), "the muted chapter leaked audio");
+            let audible = if mute_first { &audio[end..] } else { &audio[..start] };
+            assert!(audible.iter().any(|s| s.abs() > 100), "the unmuted chapter lost its audio");
+        }
+    }
+    assert_eq!(std::fs::read(recording).unwrap(), original);
+}

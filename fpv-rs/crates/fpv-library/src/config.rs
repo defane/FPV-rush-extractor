@@ -26,6 +26,10 @@ pub struct Config {
     /// How each session's folder is named in the import folder, from
     /// `{date}`, `{session}` and `{source}` — see `fpv_import::FolderPattern`.
     pub folder_pattern: String,
+    /// Omit audio streams from exported video files.
+    pub mute_videos: bool,
+    /// Skip the startup splash screen.
+    pub do_not_show_splash: bool,
 }
 
 impl Default for Config {
@@ -36,6 +40,8 @@ impl Default for Config {
             proxy_budget_gb: 10.0,
             picture_budget_gb: 2.0,
             folder_pattern: fpv_import::FolderPattern::DEFAULT.into(),
+            mute_videos: false,
+            do_not_show_splash: false,
         }
     }
 }

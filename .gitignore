@@ -22,3 +22,6 @@ fpv-rs/crates/fpv-app/gen/
 
 # Installers built by make
 /dist/
+
+# Generated native media tools and their corresponding source archives.
+/packaging/resources/

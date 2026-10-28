@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=FPV Rush
+Comment=FPV DVR flight library
+Exec=fpv-rush
+Icon=fpv-rush
+Terminal=false
+Categories=AudioVideo;Video;

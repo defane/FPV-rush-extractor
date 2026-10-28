@@ -41,8 +41,8 @@ fn proxy_rate(mut rate: FrameRate) -> FrameRate {
     rate
 }
 
-/// Transcodes a flight into one H.264/AAC MP4 the player can open — a web
-/// view's `<video>` can play neither MJPEG-in-AVI nor, on Linux, HEVC.
+/// Optional headless playback derivative. The native GUI reads source files
+/// directly. MPEG-4/AAC uses only built-in LGPL FFmpeg encoders.
 pub struct ProxyGenerator<'a> {
     ffmpeg: &'a dyn FfmpegInvoking,
 }
@@ -111,7 +111,18 @@ impl<'a> ProxyGenerator<'a> {
         let attempt = |hardware: bool| {
             let mut arguments = Self::arguments(part, rate, height, audio, hardware);
             arguments.extend(["-y".into(), output.to_string_lossy().into_owned()]);
-            run_writing(self.ffmpeg, &arguments, output)
+            match run_writing(self.ffmpeg, &arguments, output) {
+                Err(FfmpegError::ToolFailed { ref message, .. })
+                    if message.contains("Unrecognized option 'fps_mode'") => {
+                    // FFmpeg 4 uses -vsync; FFmpeg 9 removed it. Keep the
+                    // modern spelling unless the installed tool rejects it.
+                    let index = arguments.iter().position(|arg| arg == "-fps_mode").unwrap();
+                    arguments[index] = "-vsync".into();
+                    arguments[index + 1] = "0".into();
+                    run_writing(self.ffmpeg, &arguments, output)
+                }
+                result => result,
+            }
         };
         if height <= MAX_PROXY_HEIGHT {
             return Ok(attempt(false)?);
@@ -157,14 +168,13 @@ impl<'a> ProxyGenerator<'a> {
             // 1-pixel outlines. yuv420p because MJPEG decodes to yuvj422p,
             // which hardware decoders do not play.
             "-vf".into(), filter,
-            // superfast where nothing is scaled — the DVR: on 2 min of
-            // PICT0032, 4.0 s against veryfast's 5.5 s for the same size
-            // (ultrafast 3.1 s but 60% larger, against the cache's budget).
-            // A scaled 4K take is decode-bound, and there veryfast measured
-            // faster (9.7 s against superfast's 10.4 s).
-            "-c:v".into(), "libx264".into(), "-preset".into(),
-            if height > MAX_PROXY_HEIGHT { "veryfast" } else { "superfast" }.into(),
-            "-crf".into(), "20".into(), "-pix_fmt".into(), "yuv420p".into(),
+            // MPEG-4 Part 2 limits the encoder timebase denominator to 65535;
+            // DVR rates have denominators in the millions. A 60 kHz encoder
+            // clock represents their timestamps without changing playback speed.
+            "-c:v".into(), "mpeg4".into(), "-q:v".into(), "2".into(),
+            "-enc_time_base".into(), "1:60000".into(),
+            "-fps_mode".into(), "passthrough".into(),
+            "-pix_fmt".into(), "yuv420p".into(),
         ]);
         arguments.extend(match audio {
             // The DVR records pcm_s16le, which MP4 will not carry: -c:a copy
@@ -224,7 +234,7 @@ mod tests {
         let calls = ffmpeg.calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 3);
         for (cut, (clip, file)) in calls[..2].iter().zip(&parts) {
-            assert!(has(cut, "libx264") && has(cut, "yuv420p") && !has(cut, "copy"));
+            assert!(has(cut, "mpeg4") && has(cut, "yuv420p") && !has(cut, "copy"));
             // PCM in the pieces; AAC only once, after the join.
             assert!(!has(cut, "aac") && has(cut, "pcm_s16le"));
             assert!(cut.last().unwrap().ends_with(".mov"));
@@ -236,12 +246,13 @@ mod tests {
             let input = cut.iter().position(|a| a == "-i").unwrap();
             let seek = cut.iter().position(|a| a == "-ss").unwrap();
             assert!(seek < input && cut[input + 1] == file.imported_path);
-            assert!(cut.windows(2).any(|w| w == ["-preset", "superfast"]));
+            assert!(cut.windows(2).any(|w| w == ["-enc_time_base", "1:60000"]));
+            assert!(cut.windows(2).any(|w| w == ["-fps_mode", "passthrough"]));
             let at: f64 = cut[seek + 1].parse().unwrap();
             assert!((at - file.media.frame_rate.seconds(clip.start_frame)).abs() < 0.001);
         }
         let join = &calls[2];
-        assert!(has(join, "concat") && has(join, "copy") && has(join, "aac") && !has(join, "libx264"));
+        assert!(has(join, "concat") && has(join, "copy") && has(join, "aac") && !has(join, "mpeg4"));
         assert_eq!(join.last().unwrap(), &destination.to_string_lossy());
     }
 
@@ -256,7 +267,7 @@ mod tests {
             .unwrap();
         let calls = ffmpeg.calls.lock().unwrap().clone();
         assert_eq!(calls.len(), 1);
-        assert!(has(&calls[0], "libx264") && has(&calls[0], "fps=3125/126") && has(&calls[0], "aac"));
+        assert!(has(&calls[0], "mpeg4") && has(&calls[0], "fps=3125/126") && has(&calls[0], "aac"));
     }
 
     fn take(name: &str, rate: FrameRate, height: i64) -> Vec<String> {
@@ -296,6 +307,28 @@ mod tests {
         let call = take("GX010045.MP4", FrameRate::new(30000, 1001), 720);
         assert_eq!(filter(&call), "fps=30000/1001");
         assert!(!has(&call, "-hwaccel"));
+    }
+
+    #[test]
+    fn supports_ffmpeg_before_fps_mode_was_added() {
+        struct OlderFfmpeg(RecordingFfmpeg);
+        impl FfmpegInvoking for OlderFfmpeg {
+            fn run(&self, tool: FfmpegTool, arguments: &[String]) -> Result<ProcessResult, FfmpegError> {
+                if arguments.iter().any(|arg| arg == "-fps_mode") {
+                    return Ok(ProcessResult { status: 1, stdout: vec![],
+                        stderr: "Unrecognized option 'fps_mode'.".into() });
+                }
+                assert!(arguments.windows(2).any(|pair| pair == ["-vsync", "0"]));
+                self.0.run(tool, arguments)
+            }
+        }
+        let ffmpeg = OlderFfmpeg(RecordingFfmpeg::default());
+        let out = tempfile::tempdir().unwrap();
+        let file = source("PICT0030.AVI", FrameRate::new(30, 1), 480);
+        let destination = out.path().join("take.mp4");
+        ProxyGenerator::new(&ffmpeg)
+            .generate(&[(Clip::new(Uuid::new_v4(), file.id, 0, 30), file)], &destination).unwrap();
+        assert!(destination.is_file());
     }
 
     #[test]
@@ -354,6 +387,6 @@ mod tests {
             .generate(&[(Clip::new(Uuid::new_v4(), file.id, 0, 10), file)],
                       &out.path().join("f.mp4"))
             .unwrap_err();
-        assert!(error.to_string().contains("pcm_s16le") && error.to_string().contains("libx264"));
+        assert!(error.to_string().contains("pcm_s16le") && error.to_string().contains("mpeg4"));
     }
 }

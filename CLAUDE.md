@@ -2,11 +2,25 @@
 
 Project context for AI coding agents. Read this before touching the codebase.
 
+**Current desktop architecture (2026-10-26):** the pilot requested a native Rust
+GUI with no Tauri. `fpv-app` now uses eframe/egui, rfd, image and cpal. Its worker
+owns `fpv-library`; video/audio are bounded FFmpeg pipes in `player.rs`, source
+parts retain their individual clocks. The native player reads recordings directly
+and does not need a proxy. Historical Tauri/Svelte/WebKit measurements below remain
+as history, not implementation instructions. No JavaScript frontend is shipped.
+`packaging/` builds native macOS/Linux/Windows installers with separately compiled
+LGPL-only FFmpeg/ffprobe, their exact sources and build recipe. GitHub Actions
+(2026-10-28): `ci.yml` checks every pull request and every push to `main` — fmt,
+clippy and the tests on Linux, macOS and Windows, against the system's FFmpeg — and
+`packaging.yml` builds the bundled FFmpeg and the installers on each native OS, on
+`main`, `v*` tags, on demand (`make macos-remote`) and on a pull request that touches
+`packaging/`. Runtime ffmpeg binaries are not linked into Rust.
+
 ---
 
 ## 1. Goal
 
-A desktop application — Linux first, Rust + Tauri (§3.1, §9.9) — that:
+A desktop application — Rust + egui on macOS, Linux and Windows — that:
 
 1. **Imports** DVR recordings from an FPV goggle SD card (Fat Shark analog DVR, primary target),
    and action-cam rushes (GoPro, DJI, …) alongside them (§10, "Action-cam rushes").
@@ -45,8 +59,8 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   property does not hold for H.264/HEVC: those are stream-copied only from frame 0 (whole
   action-cam takes); a cut elsewhere is refused rather than opened on a broken GOP.
   Two deliberate exceptions, both chosen, neither a default: the user-requested one-file export
-  of a flight whose parts disagree on their rate (§6, Phase 3), and the **playback proxy** — an
-  H.264/AAC MP4 per flight that exists only because the web view cannot play the source. A
+  of a flight whose parts disagree on their rate (§6, Phase 3), and the optional **CLI proxy** — a
+  MPEG-4/AAC MP4 derivative. The native GUI plays source files directly. A
   proxy is resampled, so its frames are not the recording's: it is **view-only and never an
   export source**, and boundaries are never edited against it.
 - **No platform media framework reads MJPEG-in-AVI reliably** — AVFoundation could not, and the
@@ -61,15 +75,50 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
 - **Rust** (edition 2024, stable) for everything below the window: the `fpv-rs/` workspace,
   one crate per concern (§10, "Rust port"), and the `fpvlib` CLI that drives it headless.
   `fpv-library` is the application layer — every GUI action as a tested method.
-- **Tauri 2** for the desktop shell (`fpv-rs/crates/fpv-app`), **Svelte 5 + TypeScript + Vite**
-  for the UI (`fpv-rs/app`). Linux first (WebKitGTK); nothing in the code is tied to one
-  desktop, and macOS/Windows paths exist for config, cards and tools.
+- **eframe/egui** for the native Rust UI (`fpv-rs/crates/fpv-app`), **rfd** for
+  system dialogs, **image** for cached pictures and **cpal** for audio output.
+  Work is queued on the library's owner thread; the window never runs ffmpeg or
+  disk jobs. Decoder threads have bounded queues and kill/reap their children
+  on close and seek. Audio is the clock when a device is available; otherwise
+  video uses the system clock. Display scaling/rate do not affect source frames.
 - **ffmpeg / ffprobe as external binaries**, invoked via `std::process`, always through the
   `FfmpegInvoking` trait so tests substitute a stub. Resolved from the app's `resources/bin` when
-  both are bundled there, else `PATH` (`tool_directory`); the `.deb` depends on the
-  distribution's ffmpeg. Licence: unmodified binaries, no linking, no distribution (§9.4) — no
-  LGPL/GPL obligation triggers; revisit before handing the app out. (The retired macOS app
-  bundled Homebrew's ffmpeg with a relocation script; that is gone with it.)
+  both are bundled there, else `PATH` (`tool_directory`). Native streaming is
+  implemented beside this request/response trait because its output is unbounded.
+  FFmpeg is now redistributed: `packaging/build-ffmpeg.sh` pins and verifies its
+  archive, disables GPL/nonfree/autodetected third-party components and includes
+  corresponding unmodified source, LGPL license and the exact build recipe in
+  every package. No libav* library is linked into Rust. The optional CLI proxy
+  uses built-in MPEG-4/AAC; the GUI does not transcode playback proxies.
+- Bundled FFmpeg must enable its internal `extract_extradata` bitstream filter:
+  stream probing needs it to retain H.264/HEVC headers before indexed seeks.
+  The player tries input-side seeking, with a sequential fallback if no video
+  frame is emitted. See `docs/player-buffering.md` and the generated AVI fixture.
+- **Long-GOP footage is decoded by the hardware first** (2026-10-28): on the Mac the
+  player asks for VideoToolbox (`HWACCEL`, `attempts` in `player.rs`) — the pilot's
+  4K 10-bit HEVC Osmo takes decode at 30 s in 78 s in software, 10 s through it —
+  then software, then the sequential fallback, each tried only when the one before
+  yields no frame. MJPEG never asks. The Mac's bundled FFmpeg is built with
+  `--enable-videotoolbox` (a system framework, LGPL-compatible) and the build
+  refuses itself without it. Tested on Linux, whose FFmpeg refuses VideoToolbox:
+  the player falls back and plays.
+- **Import audio policy:** schema `v8` adds `sourceFile.muted`, default false for
+  existing recordings. Import's No Sound option marks only new recordings;
+  playback emits silence for their parts and exports honor that choice. Mixed
+  muted/audible flights normalize audio and synthesize silence only for muted
+  parts; lossless exports keep the original video packets. Reduction preserves
+  source audio and carries the policy onto its pieces.
+- `boundary.rs` edits source-frame ranges with left/start and right/exclusive-end
+  handles. Its bounded native source preview decodes at the recording's own
+  cadence without the player's normal display-rate conversion. Decoder restarts
+  are coalesced while dragging; the final requested frame is retained. Only
+  Save this clip persists the draft, through `Library::update_clip`.
+- `about_menu.rs` routes macOS' native About menu action into the same egui
+  About window used by Settings. It reuses the Objective-C binding packages
+  already in the dependency graph, retains the weak menu target, and restores
+  the original target/action on shutdown. The packaged-DMG smoke check invokes
+  the actual Cocoa menu action repeatedly on the app's main thread.
+
 - **SQLite through rusqlite** (`bundled`), on the schema GRDB created for the macOS app (§3.3).
 - **Frame analysis in plain portable code, no SIMD library, no OpenCV** (§9.7). The detector's
   metrics are a per-block Laplacian variance, a lag-1 correlation and a correlation on a
@@ -460,26 +509,25 @@ Tauri app's (§10).
   - **Where the test goes is where the logic lives.** A GUI action is a method on
     `fpv-library`'s `Library`, tested through the real ffmpeg on generated takes; a rule inside
     one concern goes in its crate (the detector, the importer, the store…). The front end's own
-    logic — stores, helpers in `.ts` / `.svelte.ts` modules — is tested with **Vitest**
-    (`*.test.ts` beside the module; Tauri's `invoke`/`listen` mocked, timers faked).
+    logic lives in `fpv-app` Rust modules: browsing rules, source-part seeks,
+    pause/clock handling, bounded decoding and audio samples have Rust tests.
   - **Every crate, the adapters included.** Each crate tests its own rules; the ffmpeg
     boundary, which everything above reaches through stubs, is also run against the real
     binaries (`fpv-media/tests/real_ffmpeg.rs`: pipes drained under load, with a timer so a
     deadlock fails instead of hanging `make check`; failures carrying the full command); the
     `fpvlib` CLI is driven end to end as a user types it (`fpvlib/tests/cli.rs`: the built
     binary on a generated card — import, re-import, segment, tag, export, exit codes).
-  - **Keep logic out of what cannot be tested.** The `#[tauri::command]`s and the Svelte
-    components stay thin; anything with a rule in it moves to `fpv-library` or a `.ts` module
-    first (the import/segmentation progress counting moved out of `main.rs` for this,
-    `fpv_library::progress`). Components themselves are not unit-tested: what only shows in the
-    window is driven headless (Xvfb + xdotool, §10) and what was seen is reported.
+  - **Keep logic out of what cannot be tested.** egui rendering delegates domain
+    actions to `fpv-library` and background jobs to the worker. UI-independent
+    browsing/player rules have unit tests. A real window is smoke-tested under
+    Xvfb with isolated config/cache/media roots (`packaging/smoke.sh`).
   - **A bug fix starts from a test that fails on the bug.** Every new test is seen failing
     once — break the code it guards, watch it go red, restore it — before it is trusted; a test
     that has only ever passed proves nothing.
-  - `make check` runs it all: clippy at `-D warnings`, `cargo test`, Vitest, svelte-check. A
+  - `make check` runs it all: clippy at `-D warnings` and `cargo test`. A
     feature is not done while it is red.
-- Rust: `cargo clippy --workspace --all-targets` at zero warnings; front end: `npm run check` at
-  zero errors and zero warnings, `npm test` (Vitest) green.
+- Rust: `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`,
+  and `cargo fmt -p fpv-app -- --check`. No Node or TypeScript build step.
 
 ---
 
@@ -491,12 +539,16 @@ Tauri app's (§10).
 2. **NTSC vs. PAL: detect at runtime.** Never hardcode the OSD grid geometry.
 3. **Library storage: copy** into an app-managed location. Source files on the card stay
    untouched; disk duplication is accepted.
-4. **Distribution: none — personal use.** No sandbox, no signing or notarization constraints,
-   removable media read freely. A `.deb`/AppImage is built for installing it, not publishing it.
+4. **Distribution: native redistributable packages** (changed 2026-10-26).
+   No application sandbox; removable media is read freely. The Mac bundle uses
+   an ad-hoc identity (`-`) by default, not Developer ID/notarization. Linux deb,
+   tar and AppImage, Mac universal DMG and Windows installer/ZIP are built on
+   native runners. Each bundles independently built LGPL-only FFmpeg tools and
+   their corresponding sources and build recipe. GUI Rust code stays MIT/Apache.
    **The source is public** (2026-10-19), under `MIT OR Apache-2.0` (`LICENSE-MIT`,
-   `LICENSE-APACHE`). Publishing source distributes no ffmpeg: the installers depend on the
-   system's or Homebrew's, so no LGPL/GPL obligation arises — re-check before ever bundling
-   ffmpeg binaries into a release.
+   `LICENSE-APACHE`). Keep the FFmpeg license, exact source archive, SHA-256 and
+   build instructions beside redistributed tools; GPL/nonfree components are
+   forbidden in the bundled FFmpeg build.
 
 ### Settled 2026-09-03
 
@@ -931,7 +983,8 @@ frame-exact boundary editor. Layout:
   A missing `config.json` is written with the defaults; a broken one is refused, not
   overwritten. A `library.sqlite` found in the media folder (where the Swift app and the first
   Rust builds kept it) is moved into the config folder on open — its paths are absolute.
-  `FPV_RUSH_CONFIG` / `FPV_RUSH_LIBRARY` override both folders for one run. The `fpvlib` CLI
+  `FPV_RUSH_CONFIG` / `FPV_RUSH_LIBRARY` override both folders for one run (the native app
+  reads `FPV_CONFIG_DIR` / `FPV_CACHE_DIR` / `FPV_MEDIA_ROOT` first, then these, 2026-10-28). The `fpvlib` CLI
   still takes an explicit `<library>` folder holding `library.sqlite`.
 - **The import folder is chosen in the app** (2026-10-18): Settings (gear in the sidebar), or
   *Change…* under "Copy to" in the import dialog — one setting, `mediaRoot`, saved to
@@ -999,6 +1052,10 @@ frame-exact boundary editor. Layout:
   last download's speed (kept in `localStorage`), and says nothing once that guess has run
   out; the bar never shows done before it is. Seen in the window with a build simulating a slow drive (the `.cloud`
   marker, 300 ms a chunk); how Proton's own downloads report progress is for the Mac to show.
+  **In the native app** (2026-10-28) the wait counts videos only — the pilot's Proton never
+  reported bytes — "Video 1 of 2", the time left at the pace of the videos already down
+  (`cloudwait.rs`, tested), *Continue in Background* (`App::detached`: the download's
+  `Playback` reply then opens nothing). Tested through the window in `ui/tests.rs`.
 - **Batch export** (2026-10-19): *Select* in a session's header ticks cards, *Export N…* writes
   them all into one chosen folder through `Library::export_flights` — one after the other,
   progress as `export-progress` events, each under `<session> — <title>` (`.avi` for DVR,
@@ -1066,6 +1123,13 @@ frame-exact boundary editor. Layout:
   cache — after an import or a segmentation ends, and when the boundary editor closes. A
   cheap `missing_strips` count (a file check per frame) comes first, so nothing shows when
   nothing is missing; one job runs at a time, and requests during it buy exactly one more pass.
+  **In the native app** (2026-10-28) the library has one worker running its jobs in turn, so
+  the strips go in batches of `BATCH` (24) frames (`Library::prepare_strips_up_to`, `more`
+  when frames are left) and whatever was asked meanwhile runs between two (`strips.rs`). A
+  batch is a *quiet* task — a running task otherwise marks the app busy and greys out its
+  forms — and the bar says "Hover strips · N made". It starts at launch and after any task
+  of the pilot's ends; a batch that makes nothing ends the pass, so an unreadable recording
+  never loops, and each failing flight is notified once.
   A flight that vanishes mid-run is passed over, an unreadable recording reported once.
   `STRIP` (24) lives in `strips.ts` for the cards and the job alike: frames are cached by index.
   **On long-GOP takes a strip frame is the nearest keyframe** (`ThumbnailGenerator::generate_near`,
@@ -1132,7 +1196,10 @@ frame-exact boundary editor. Layout:
   typed or the player at a stray click. **Flight tags**
   ("freestyle", "gates") are free labels on a whole flight, beside the figure tags that mark a
   moment: table `flightLabel` (schema `v5`), one label per flight whatever its case, the
-  spelling first used naming it in suggestions; edited in the player. In the code they are
+  spelling first used naming it in suggestions; edited in the player. In the native player
+  (2026-10-28) the tag and figure fields suggest the names in use as one types —
+  `browse::suggest`: flights' and sessions' tags, or figures, each once, those starting
+  with the text first — and Enter adds a tag as it adds a figure. In the code they are
   *labels* (`FlightView.labels`, `add_flight_label`), because *tags* already means figures
   there. Like a flight's title and like, they are lost when a re-segment remakes the flight.
   **A re-segment asks first** (2026-10-23, the pilot's request): it remakes every DVR flight
@@ -1140,7 +1207,8 @@ frame-exact boundary editor. Layout:
   (`resegmentLosses`), hand-corrected boundaries — and what stays (figures, action-cam takes).
   Asked in `segment()` (`lib/sessions.ts`, through `confirm.svelte.ts`), the one path the
   header, the session menu and the detection profile all take; a first segmentation asks
-  nothing.
+  nothing. In the native app (2026-10-28) the Segment and Detection profile dialogs list the
+  same losses (`browse::resegment_losses`, tested) and only then ask for the acknowledgement.
 - **Edit Session…** (2026-10-24, the pilot's request), in a session's menu: name, flying day,
   place, notes (the v1 columns, never shown until now) and **session tags**, saved together by
   `Library::update_session`. The name no longer edits in place on a click: only after
@@ -1202,7 +1270,11 @@ frame-exact boundary editor. Layout:
   web-side permission. On Linux that is D-Bus only (`org.freedesktop.FileManager1.ShowItems`,
   then the OpenURI portal): verified against a stand-in service on a private session bus,
   which received the clicked row's `file://` URI. A desktop with neither shows the error in
-  the session's status line.
+  the session's status line. **In the native app** (2026-10-28) `reveal` in `main.rs` does the same
+  without the plugin: `open -R` on macOS, `explorer /select,` on Windows, `dbus-send …
+  ShowItems` on Linux (URI escaped, commas too: dbus-send splits arrays on them), else the
+  folder opens. The port first passed each recording to `open`/`xdg-open`, which *plays* it.
+  The dbus-send call was checked against a stand-in service on a private bus.
 - **Task bar** (2026-10-20): a strip along the bottom of the window counts the running jobs —
   import, segmentation, export (single and batch), preview transcode — shows their mean
   progress, and lists them (running, then the last 20 finished, ✓/✕ with their result) on a
@@ -1217,7 +1289,9 @@ frame-exact boundary editor. Layout:
   dismiss, *Clear all*) and marks them read. `lib/notices.svelte.ts` (`notify`) replaced the
   red banner in the sidebar, which showed one error at a time and stayed until the next, and
   the `alert()`s of the flight cards. The same error again while unread counts up ("2 times")
-  instead of listing twice; 50 kept.
+  instead of listing twice; 50 kept. **In the native app** (2026-10-28) the same, from `notices.rs` (tested): a
+  *Notifications* button at the bar's right end, red with "(N new)", opening the list (time,
+  "N times", *Dismiss*, *Clear all*) and marking it read; through the window in `ui/tests.rs`.
   **Thumbnails are tasks too, batched** (2026-10-20): posters, hover strips and editor
   previews are many short calls, so `batch(key, …)` counts the calls sharing a key as one task
   ("Posters 7 made", "Hover strip of Flight 1 24 made"). `poster`, `filmstrip_frame` and

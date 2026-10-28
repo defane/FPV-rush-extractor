@@ -8,10 +8,6 @@ RUN mkdir -p /home/vscode/.vscode-server/extensions \
 # Install apt
 RUN apt update
 
-# Install Node.js if not present in your base image
-RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
-    apt-get install -y nodejs
-
 # Install system package
 RUN apt-get install -y build-essential
 
@@ -19,13 +15,10 @@ RUN apt-get install -y build-essential
 # analysis. ffmpeg is a hard dependency of the product itself (see CLAUDE.md 3.1).
 RUN apt-get install -y ffmpeg python3-numpy python3-pil
 
-# The Tauri app (fpv-rs/crates/fpv-app): WebKitGTK and its build deps, the
-# GStreamer plugins the web view needs to play the H.264 proxies, and Xvfb +
-# xdotool to drive the window headless from here.
-RUN apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-    librsvg2-dev libsoup-3.0-dev libxdo-dev libssl-dev file pkg-config \
-    gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav \
-    xvfb xdotool imagemagick
+# Native egui window and CPAL audio; FFmpeg is a separate process. No browser
+# engine, Node, GTK or GStreamer development stack is required.
+RUN apt-get install -y libasound2-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libgl1-mesa-dev \
+    file pkg-config xvfb xdotool imagemagick xz-utils
 
 USER vscode
 

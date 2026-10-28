@@ -47,7 +47,7 @@ mod tests {
         let bin = resources.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(bin.join(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX)), b"").unwrap();
-        assert_eq!(tool_directory(Some(resources.path())), None);
+        assert_eq!(tool_directory(Some(resources.path())), tool_directory(None));
         std::fs::write(bin.join(format!("ffprobe{}", std::env::consts::EXE_SUFFIX)), b"").unwrap();
         assert_eq!(tool_directory(Some(resources.path())), Some(bin));
         // Elsewhere than macOS there is no fallback: the tools come from PATH.

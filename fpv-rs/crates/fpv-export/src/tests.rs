@@ -68,6 +68,18 @@ fn cuts_losslessly_at_the_frames_own_timestamps() {
 }
 
 #[test]
+fn muted_copy_export_keeps_video_and_drops_audio() {
+    let rate = FrameRate::new(250_000, 10009);
+    let mut file = source("PICT0032.AVI", rate, "mjpeg");
+    file.media.audio_codec = Some("pcm_s16le".into());
+    let (clip, _) = part(&file, 100, 500);
+    let arguments = copy_arguments(&clip, &file, true).unwrap();
+    assert!(arguments.windows(2).any(|w| w == ["-c:v", "copy"]));
+    assert!(arguments.iter().any(|arg| arg == "-an"));
+    assert!(!arguments.iter().any(|arg| arg == "-c:a" || arg == "-c"));
+}
+
+#[test]
 fn writes_the_dvrs_pcm_sound_again_so_it_is_cut_on_the_frame() {
     let ffmpeg = RecordingFfmpeg::default();
     let out = tempfile::tempdir().unwrap();
@@ -162,4 +174,15 @@ fn reencoding_a_single_part_flight_stays_lossless() {
     let calls = ffmpeg.calls();
     assert_eq!(calls.len(), 1);
     assert!(!calls[0].contains(&"mjpeg".to_owned()) && calls[0].contains(&"copy".to_owned()));
+}
+
+#[test]
+fn imported_recording_mute_is_honored_without_a_global_mute_setting() {
+    let ffmpeg = RecordingFfmpeg::default();
+    let mut file = source("PICT0030.AVI", FrameRate::new(25, 1), "mjpeg");
+    file.media.audio_codec = Some("pcm_s16le".into());
+    file.muted = true;
+    let out = tempfile::tempdir().unwrap();
+    ClipExporter::new(&ffmpeg).export_clip(&part(&file, 0, 25).0, &file, &out.path().join("muted.avi")).unwrap();
+    assert!(ffmpeg.calls()[0].contains(&"-an".to_owned()));
 }

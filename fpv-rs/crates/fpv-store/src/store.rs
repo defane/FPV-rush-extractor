@@ -591,8 +591,8 @@ fn upsert_source_file(connection: &Connection, file: &SourceFile) -> rusqlite::R
     connection.execute(
         r#"INSERT INTO sourceFile (id, sessionId, originalPath, importedPath,
              sequenceNumber, width, height, frameRateNumerator, frameRateDenominator,
-             frameCount, duration, videoCodec, audioCodec, creationDate, checksum, camera)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+             frameCount, duration, videoCodec, audioCodec, creationDate, checksum, camera, muted)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
            ON CONFLICT(id) DO UPDATE SET sessionId = excluded.sessionId,
              originalPath = excluded.originalPath, importedPath = excluded.importedPath,
              sequenceNumber = excluded.sequenceNumber, width = excluded.width,
@@ -601,12 +601,12 @@ fn upsert_source_file(connection: &Connection, file: &SourceFile) -> rusqlite::R
              frameCount = excluded.frameCount, duration = excluded.duration,
              videoCodec = excluded.videoCodec, audioCodec = excluded.audioCodec,
              creationDate = excluded.creationDate, checksum = excluded.checksum,
-             camera = excluded.camera"#,
+             camera = excluded.camera, muted = excluded.muted"#,
         params![Id(file.id), Id(file.session_id), file.original_path, file.imported_path,
                 file.sequence_number, media.width, media.height,
                 media.frame_rate.numerator, media.frame_rate.denominator,
                 media.frame_count, media.duration, media.video_codec, media.audio_codec,
-                media.creation_date.map(Date), file.checksum, media.camera])?;
+                media.creation_date.map(Date), file.checksum, media.camera, file.muted])?;
     Ok(())
 }
 
@@ -644,7 +644,7 @@ fn clip_params(clip: &Clip) -> impl rusqlite::Params + '_ {
 
 const SOURCE_FILE_COLUMNS: &str = "id, sessionId, originalPath, importedPath, sequenceNumber, \
     width, height, frameRateNumerator, frameRateDenominator, frameCount, duration, videoCodec, \
-    audioCodec, creationDate, checksum, camera";
+    audioCodec, creationDate, checksum, camera, muted";
 
 fn source_file(row: &Row) -> rusqlite::Result<SourceFile> {
     Ok(SourceFile {
@@ -666,6 +666,7 @@ fn source_file(row: &Row) -> rusqlite::Result<SourceFile> {
             camera: row.get::<_, Option<String>>(15)?.filter(|c| !c.is_empty()),
         },
         checksum: row.get(14)?,
+        muted: row.get(16)?,
     })
 }
 

@@ -5,6 +5,50 @@ use std::process::Command;
 
 use super::*;
 
+#[test]
+fn native_playback_exposes_dvr_parts_without_resampling_or_proxy_generation() {
+    use fpv_core::{FrameRate, Clip, Flight, DetectionRun};
+    let root = tempfile::tempdir().unwrap();
+    let library = open(root.path());
+    let session = Session::new("Native DVR", None);
+    library.store.save_session(&session).unwrap();
+    let mut offset = 0.0;
+    let flight = Flight::new(session.id, 1);
+    for (index, rate, start, end) in [(1, FrameRate::new(1_000_000, 33459), 4194, 4217),
+                                    (2, FrameRate::new(1_000_000, 40839), 0, 1475)] {
+        let mut media = MediaInfo::new(640, 480, rate, 180.0, "mjpeg");
+        media.audio_codec = Some("pcm_s16le".into());
+        let file = SourceFile::new(session.id, "card", format!("/not-decoded/PICT{index:04}.AVI"), Some(index), media);
+        library.store.save_source_files(std::slice::from_ref(&file)).unwrap();
+        let clip = Clip::new(flight.id, file.id, start, end);
+        library.store.replace_clips(file.id, &[clip], if index == 1 { std::slice::from_ref(&flight) } else { &[] },
+            &DetectionRun::new(file.id, "test", Default::default())).unwrap();
+        let parts = library.native_playback(&uuid_string(flight.id)).unwrap();
+        let part = parts.last().unwrap();
+        assert!((part.segment.start - rate.seconds(start)).abs() < 1e-9);
+        assert!((part.segment.end - rate.seconds(end)).abs() < 1e-9);
+        assert!((part.segment.offset - offset).abs() < 1e-9);
+        assert!(part.has_audio);
+        assert_eq!((part.width, part.height), (640, 480));
+        offset += rate.seconds(end - start);
+    }
+    assert!(!root.path().join("cache/proxies").exists());
+}
+
+#[test]
+fn refuses_to_overwrite_an_export_and_checks_all_parts_before_writing() {
+    let (fixture, session) = imported();
+    let destination = fixture._root.path().join("keep.mp4");
+    std::fs::write(&destination, b"keep this file").unwrap();
+    assert!(fixture.library.export(&session.flights[0].id, &destination, ExportMode::Lossless).is_err());
+    assert_eq!(std::fs::read(&destination).unwrap(), b"keep this file");
+    let part = destination.with_file_name("keep - part2.mp4");
+    std::fs::write(&part, b"keep part two").unwrap();
+    assert!(fixture.library.export(&session.flights[0].id, &destination, ExportMode::Parts).is_err());
+    assert!(!destination.with_file_name("keep - part1.mp4").exists());
+    assert_eq!(std::fs::read(part).unwrap(), b"keep part two");
+}
+
 /// A library with its configuration and media folders side by side, as the
 /// app lays them out under the user's config and videos directories.
 fn open(root: &Path) -> Library {
@@ -154,7 +198,7 @@ fn edits_titles_likes_names_and_boundaries() {
     fixture.library.set_flight_title(&take.id, "  Bando  ").unwrap();
     assert!(fixture.library.toggle_like(&take.id).unwrap());
     fixture.library.rename_session(&session.id, "Letz Kwad — GoPro").unwrap();
-    // Clamped to the recording: an end past the last frame lands on it.
+    // The end is exclusive, so the final source frame must remain selectable.
     fixture.library.update_clip(&take.clips[0].id, 6, 10_000).unwrap();
 
     let session = fixture.library.snapshot().unwrap().remove(0);
@@ -162,7 +206,7 @@ fn edits_titles_likes_names_and_boundaries() {
     assert_eq!(session.name, "Letz Kwad — GoPro");
     assert_eq!(take.title.as_deref(), Some("Bando"));
     assert!(take.liked);
-    assert_eq!((take.clips[0].start_frame, take.clips[0].end_frame), (6, take.clips[0].last_frame));
+    assert_eq!((take.clips[0].start_frame, take.clips[0].end_frame), (6, take.clips[0].last_frame + 1));
     // A boundary edit re-keys the flight, so its strips and proxy go stale.
     assert!(!take.cache_key.ends_with("-0-30"));
     fixture.library.set_flight_title(&take.id, "").unwrap();
@@ -706,6 +750,18 @@ fn finds_where_a_recording_was_copied_to() {
 }
 
 #[test]
+fn makes_hover_strips_in_batches_other_jobs_can_pass_between() {
+    let (fixture, _) = imported();
+    let batch = fixture.library.prepare_strips_up_to(8, None, 10, |_, _, _| {}).unwrap();
+    assert_eq!((batch.made, batch.more), (10, true));
+    assert_eq!(fixture.library.missing_strip_frames(8, None).unwrap().len(), 6);
+    let batch = fixture.library.prepare_strips_up_to(8, None, 10, |_, _, _| {}).unwrap();
+    assert_eq!((batch.made, batch.more), (6, false));
+    let batch = fixture.library.prepare_strips_up_to(8, None, 10, |_, _, _| {}).unwrap();
+    assert_eq!((batch.made, batch.more), (0, false));
+}
+
+#[test]
 fn makes_every_hover_strip_ahead_of_the_pointer_once() {
     let (fixture, session) = imported();
     // Two takes, nothing made yet.
@@ -1158,6 +1214,9 @@ fn reduces_a_dvr_recording_to_its_flights_and_keeps_everything_on_them() {
     assert!(recording.is_file());
     assert!(!session.reducible);
 
+    let mut policy = library.store.source_file(parse(&session.files[0].id).unwrap()).unwrap().unwrap();
+    policy.muted = true;
+    library.store.save_source_files(&[policy]).unwrap();
     flights_in(&fixture, &session);
     let before = library.snapshot().unwrap().remove(0);
     assert!(before.reducible);
@@ -1179,6 +1238,7 @@ fn reduces_a_dvr_recording_to_its_flights_and_keeps_everything_on_them() {
     assert!(!recording.exists(), "the recording went to the trash");
 
     let after = library.snapshot().unwrap().remove(0);
+    assert!(library.store.source_files(parse(&session.id).unwrap()).unwrap().iter().all(|f| f.muted && f.media.audio_codec.is_some()));
     let names: Vec<_> = after.files.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["PICT0032-1.AVI", "PICT0032-2.AVI"]);
     // 5 s margins at 25 fps: frames 125-725 (A and B merged) and 750-1000.
@@ -1204,6 +1264,7 @@ fn reduces_a_dvr_recording_to_its_flights_and_keeps_everything_on_them() {
     library.export(&after.flights[0].id, &out, ExportMode::Lossless).unwrap();
     let probe = MediaProbe::new(&library.ffmpeg()).probe(&out).unwrap();
     assert_eq!(probe.frame_count, Some(250));
+    assert!(probe.audio_codec.is_none(), "reduced pieces keep the import audio policy");
 
     // Reduced once: never cut again, and segmentation leaves it be.
     assert_eq!(library.reduce_preview(&session.id).unwrap(), ReducePreview::default());
@@ -1330,4 +1391,78 @@ fn moves_a_sessions_recordings_from_an_earlier_import_folder_into_the_current_on
     assert!(out.is_file());
     // Nothing left to move.
     assert_eq!(library.relocation_preview(&session.id).unwrap(), RelocationPreview::default());
+}
+
+#[test]
+fn no_sound_import_persists_and_silences_only_new_recordings_in_playback_and_exports() {
+    let fixture = gopro_card();
+    let normal_card = fixture._root.path().join("normal-card");
+    std::fs::create_dir_all(&normal_card).unwrap();
+    std::fs::copy(fixture.card.join("DCIM/100GOPRO/GH010043.MP4"), normal_card.join("GH010043.MP4")).unwrap();
+    fixture.library.import(&normal_card, "Audio choices", Some("2026-08-23"), false, |_| {}).unwrap();
+    let report = fixture.library.import_with_audio(&fixture.card, "Audio choices", Some("2026-08-23"), false, true, |_| {}).unwrap();
+    assert_eq!((report.imported, report.skipped), (2, 1));
+    assert!(!fixture.library.config.mute_videos);
+    let session = fixture.library.store.sessions().unwrap().remove(0);
+    let files = fixture.library.store.source_files(session.id).unwrap();
+    for file in &files {
+        assert_eq!(file.muted, !file.imported_path.ends_with("GH010043.MP4"));
+        assert!(file.media.audio_codec.is_some(), "retain the source audio metadata");
+        assert_eq!(std::fs::read(&file.original_path).unwrap(), std::fs::read(&file.imported_path).unwrap());
+    }
+    let library = open(fixture._root.path());
+    let session = library.snapshot().unwrap().remove(0);
+    let ffmpeg = library.ffmpeg();
+    let probe = MediaProbe::new(&ffmpeg);
+    for (index, flight) in session.flights.iter().enumerate() {
+        let muted = flight.recordings == 2;
+        assert!(library.native_playback(&flight.id).unwrap().iter().all(|p| p.has_audio != muted));
+        for mode in [ExportMode::Lossless, ExportMode::Parts] {
+            let destination = fixture._root.path().join(format!("flight-{index}-{mode:?}.mp4"));
+            for path in library.export(&flight.id, &destination, mode).unwrap() {
+                assert_eq!(probe.probe(&path).unwrap().audio_codec.is_none(), muted);
+            }
+        }
+    }
+    let muted_flight = session.flights.iter().find(|f| f.recordings == 2).unwrap();
+    let single = session.flights.iter().find(|f| f.recordings == 1).unwrap();
+    let target = fixture._root.path().join("single-reencode.mp4");
+    assert!(probe.probe(&library.export(&single.id, &target, ExportMode::Reencode).unwrap()[0]).unwrap().audio_codec.is_some());
+    let batch = fixture._root.path().join("batch");
+    let ids: Vec<_> = session.flights.iter().map(|f| f.id.clone()).collect();
+    library.export_flights(&ids, &batch, ExportMode::Parts, |_,_,_| {}).unwrap();
+    let exported: Vec<_> = std::fs::read_dir(&batch).unwrap().map(|f| probe.probe(&f.unwrap().path()).unwrap()).collect();
+    assert_eq!(exported.len(), 2);
+    assert_eq!(exported.iter().filter(|m| m.audio_codec.is_none()).count(), 1);
+    let skipped = library.import_with_audio(&fixture.card, "Audio choices", Some("2026-08-23"), false, false, |_| {}).unwrap();
+    assert_eq!((skipped.imported, skipped.skipped), (0, 3));
+    assert!(library.native_playback(&muted_flight.id).unwrap().iter().all(|p| !p.has_audio));
+}
+
+#[test]
+fn source_boundary_previews_and_multipart_edits_are_non_destructive() {
+    let (fixture, session) = imported();
+    let flight = &session.flights[0];
+    assert_eq!(flight.clips.len(), 2);
+    let mut originals = vec![];
+    for clip in &flight.clips {
+        let source = fixture.library.native_source_playback(&clip.file_id).unwrap();
+        assert_eq!((source.segment.start, source.segment.end, source.segment.offset), (0.0, clip.file_duration, 0.0));
+        assert!(source.has_audio);
+        originals.push((source.segment.path.clone(), std::fs::read(&source.segment.path).unwrap()));
+        fixture.library.update_clip(&clip.id, 1, clip.last_frame + 1).unwrap();
+    }
+    // Discarding an unsaved draft leaves the persisted selection untouched.
+    let mut draft = fixture.library.snapshot().unwrap()[0].flights[0].clips[0].clone();
+    draft.start_frame = 9;
+    drop(draft);
+    let reopened = open(fixture._root.path());
+    let snapshot = reopened.snapshot().unwrap();
+    for (edited, original) in snapshot[0].flights[0].clips.iter().zip(&flight.clips) {
+        assert_eq!((edited.start_frame, edited.end_frame), (1, original.last_frame + 1));
+    }
+    for (path, bytes) in originals { assert_eq!(std::fs::read(path).unwrap(), bytes); }
+    let file = fixture.library.store.source_file(parse(&flight.clips[0].file_id).unwrap()).unwrap().unwrap();
+    fixture.library.store.save_source_files(&[SourceFile { muted: true, ..file }]).unwrap();
+    assert!(!fixture.library.native_source_playback(&flight.clips[0].file_id).unwrap().has_audio);
 }

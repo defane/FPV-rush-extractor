@@ -165,7 +165,8 @@ fn names_the_library_folder_after_the_session_by_default() {
     let fixture = Fixture::new(&["PICT0030.AVI"]);
     let store = LibraryStore::in_memory().unwrap();
     let report = fixture.import(&dvr(), &store, "Letz Kwad");
-    assert!(report.imported[0].imported_path.ends_with("/Letz Kwad/PICT0030.AVI"));
+    assert!(Path::new(&report.imported[0].imported_path)
+        .ends_with(Path::new("Letz Kwad").join("PICT0030.AVI")));
 }
 
 #[test]

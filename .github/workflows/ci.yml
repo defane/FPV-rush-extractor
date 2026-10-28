@@ -1,0 +1,72 @@
+# Every pull request and every push to main: formatting, clippy and the whole
+# test suite, on each desktop the app ships to. The FFmpeg tests run against
+# the system's own; packaging.yml builds and tests the bundled one.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+jobs:
+  linux:
+    name: Check (Linux)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          components: clippy,rustfmt
+      - name: Install build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libasound2-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libgl1-mesa-dev ffmpeg
+      - name: Format, lint and test
+        working-directory: fpv-rs
+        run: |
+          cargo fmt -p fpv-app -- --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test --workspace --locked
+
+  macos:
+    name: Check (macOS)
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          components: clippy
+      - name: Install test FFmpeg
+        run: brew install ffmpeg
+      - name: Lint and test
+        working-directory: fpv-rs
+        run: |
+          cargo clippy -p fpv-app --all-targets --locked -- -D warnings
+          cargo test --workspace --locked
+
+  windows:
+    name: Check (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - name: Install test FFmpeg
+        run: choco install ffmpeg -y --no-progress
+      - name: Test
+        working-directory: fpv-rs
+        run: cargo test --workspace --locked

@@ -1,569 +1,726 @@
-//! FPV Rush, the desktop app: a Tauri shell over `fpv-library`. Every command
-//! here is a thin adapter — the work, and its tests, live in the library.
-//!
-//! Anything that touches ffmpeg or the disk runs on a blocking thread, so the
-//! window never waits on a transcode; progress goes back as events.
-
-// No console window behind the app on Windows.
+//! Native desktop front end. All domain actions go through fpv-library.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#[cfg(any(target_os = "macos", test))]
+mod about_menu;
+mod boundary;
+mod browse;
+mod cloudwait;
+mod dialogs;
+mod images;
+mod notices;
+mod player;
+mod strips;
+mod ui;
+mod worker;
 
-mod media_server;
-
+use browse::{Browse, flight_name};
+use dialogs::Dialog;
+use eframe::egui;
+use fpv_library::{Card, Config, FlightView, Library, LibraryError, SessionView};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::time::Duration;
+use worker::{Event, Job, Progress, Reply, Worker};
 
-use fpv_library::{BulkExport, CacheKind, CacheUsage, Card, Config, DownloadSummary, ExportMode, FreeUpSummary, FlightDeletion, RelocationPreview, RelocationSummary, SessionEdit, FolderView, ImportProgress, ReducePreview, ReduceSummary, ImportSummary, Library, LibraryError,
-                  Playback, SegmentProgress, SessionView, Step, StripsPrepared, TagView, Thumbnail, strip_line, detect_cards, ffmpeg_available,
-                  tool_directory};
-use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+struct Task {
+    id: u64,
+    label: String,
+    line: String,
+    done: usize,
+    total: usize,
+    running: bool,
+    failed: bool,
+    quiet: bool,
+    log: Vec<String>,
+    started: std::time::Instant,
+}
 
-use crate::media_server::MediaServer;
+#[derive(Default)]
+struct PlayerWindow {
+    maximized: bool,
+    normal_rect: Option<egui::Rect>,
+    was_expanded: bool,
+}
 
-struct App {
-    /// Written only when the user picks another import folder; read by
-    /// everything else, an import included, which that change waits for.
-    library: RwLock<Library>,
+struct Viewer {
+    flight: FlightView,
+    player: player::Player,
+    texture: Option<egui::TextureHandle>,
+    mark: Option<f64>,
+    figure: String,
+    label: String,
+    volume: f32,
+    remembered_volume: f32,
+    playback_muted: bool,
+    muted: bool,
+    fullscreen: bool,
+    window: PlayerWindow,
+    seek_time: Option<f64>,
+}
+
+pub(crate) struct App {
+    worker: Worker,
+    sessions: Vec<SessionView>,
+    cards: Vec<Card>,
+    config: Config,
+    config_directory: PathBuf,
+    cache_directory: PathBuf,
+    tools: Option<PathBuf>,
     ffmpeg_ok: bool,
-    media: MediaServer,
+    ready: bool,
+    browse: Browse,
+    tasks: Vec<Task>,
+    next_id: u64,
+    dialog: Option<Dialog>,
+    dialog_request: Option<u64>,
+    viewer: Option<Viewer>,
+    /// A flight waiting for its recordings to come down before it plays.
+    cloud_wait: Option<cloudwait::CloudWait>,
+    /// Downloads left to finish in the background: their flight does not open.
+    detached: HashSet<u64>,
+    /// Hover strips made ahead of the pointer, and the batch running now.
+    strips: strips::Strips,
+    strip_batch: Option<u64>,
+    images: images::Images,
+    thumbnails: HashMap<String, String>,
+    requested: HashSet<String>,
+    selected: HashSet<String>,
+    selecting: bool,
+    search: String,
+    notices: notices::Notices,
+    show_notices: bool,
+    show_tasks: bool,
+    exit_after: Option<std::time::Instant>,
+    screenshot_requested: bool,
+    splash_started: Option<std::time::Instant>,
+    splash_texture: egui::TextureHandle,
+    show_about: bool,
+    #[cfg(target_os = "macos")]
+    about_menu: Option<about_menu::AboutMenu>,
+}
+
+pub(crate) const ACCENT: egui::Color32 = egui::Color32::from_rgb(255, 91, 46);
+
+fn splash_image() -> image::RgbaImage {
+    image::load_from_memory(include_bytes!(
+        "../../../../docs/logo-letz_kwad-full-transparent.png"
+    ))
+    .expect("bundled splash logo is a valid image")
+    .thumbnail(512, 512)
+    .to_rgba8()
+}
+
+fn configure_style(ctx: &egui::Context) {
+    ctx.set_visuals(egui::Visuals::dark());
+    let mut style = (*ctx.style()).clone();
+    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+    style.spacing.button_padding = egui::vec2(10.0, 6.0);
+    style.visuals.panel_fill = egui::Color32::from_rgb(24, 26, 32);
+    style.visuals.window_fill = egui::Color32::from_rgb(27, 29, 35);
+    style.visuals.extreme_bg_color = egui::Color32::from_rgb(14, 16, 20);
+    style.visuals.faint_bg_color = egui::Color32::from_rgb(34, 36, 43);
+    style.visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(24, 26, 32);
+    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(39, 41, 48);
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(190, 67, 38);
+    style.visuals.widgets.active.bg_fill = ACCENT;
+    style.visuals.selection.bg_fill = ACCENT;
+    style.visuals.hyperlink_color = ACCENT;
+    style.visuals.override_text_color = Some(egui::Color32::from_rgb(220, 223, 230));
+    style.visuals.weak_text_alpha = 0.65;
+    style.visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(34, 36, 43);
+    style.visuals.widgets.inactive.bg_stroke =
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(48, 52, 62));
+    style.visuals.widgets.noninteractive.bg_stroke = style.visuals.widgets.inactive.bg_stroke;
+    style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(55, 58, 68);
+    style.visuals.widgets.active.weak_bg_fill = ACCENT;
+    style
+        .text_styles
+        .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Heading, egui::FontId::proportional(22.0));
+    ctx.set_style(style);
 }
 
 impl App {
-    fn library(&self) -> RwLockReadGuard<'_, Library> {
-        // A panic mid-command leaves the library as consistent as the store's
-        // transactions do, so a poisoned lock is still usable.
-        self.library.read().unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    fn info(&self) -> Info {
-        let library = self.library();
-        Info {
-            root: library.root.clone(),
-            config_directory: library.config_directory.clone(),
-            cache_directory: library.cache_directory.clone(),
-            folder_pattern: library.config().folder_pattern.clone(),
-            ffmpeg_ok: self.ffmpeg_ok,
-            proxy_budget_gb: library.config().proxy_budget_gb,
-            picture_budget_gb: library.config().picture_budget_gb,
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        configure_style(&cc.egui_ctx);
+        let mut browse: Browse = cc
+            .storage
+            .and_then(|storage| eframe::get_value(storage, "browse"))
+            .unwrap_or_default();
+        browse.page_size = browse.page_size.clamp(12, 96);
+        let exit_after = std::env::var("FPV_SMOKE_SECONDS")
+            .ok()
+            .and_then(|text| text.parse::<u64>().ok())
+            .map(|seconds| std::time::Instant::now() + Duration::from_secs(seconds));
+        let splash_image = splash_image();
+        let splash_pixels = egui::ColorImage::from_rgba_unmultiplied(
+            [
+                splash_image.width() as usize,
+                splash_image.height() as usize,
+            ],
+            splash_image.as_raw(),
+        );
+        let splash_texture =
+            cc.egui_ctx
+                .load_texture("splash-logo", splash_pixels, egui::TextureOptions::LINEAR);
+        Self {
+            worker: Worker::start(cc.egui_ctx.clone()),
+            sessions: vec![],
+            cards: vec![],
+            config: Config::default(),
+            config_directory: PathBuf::new(),
+            cache_directory: PathBuf::new(),
+            tools: None,
+            ffmpeg_ok: true,
+            ready: false,
+            browse,
+            tasks: vec![],
+            next_id: 1,
+            dialog: None,
+            dialog_request: None,
+            viewer: None,
+            cloud_wait: None,
+            detached: HashSet::new(),
+            strips: strips::Strips::default(),
+            strip_batch: None,
+            images: images::Images::new(cc.egui_ctx.clone()),
+            thumbnails: HashMap::new(),
+            requested: HashSet::new(),
+            selected: HashSet::new(),
+            selecting: false,
+            search: String::new(),
+            notices: notices::Notices::default(),
+            show_notices: false,
+            show_tasks: false,
+            exit_after,
+            screenshot_requested: false,
+            splash_started: None,
+            splash_texture,
+            show_about: false,
+            #[cfg(target_os = "macos")]
+            about_menu: about_menu::AboutMenu::install(&cc.egui_ctx),
         }
     }
-}
 
-/// Lets the web view load pictures from every folder the library keeps them
-/// in. The static scope covers the home folder; an import folder on another
-/// disk (/mnt, /media) is added here, at launch and whenever it changes.
-fn allow_images(handle: &AppHandle, library: &Library) {
-    let directories = library.image_directories().unwrap_or_else(|_| vec![library.root.clone()]);
-    for directory in directories {
-        if let Err(error) = handle.asset_protocol_scope().allow_directory(&directory, true) {
-            log::warn!("cannot show pictures from {}: {error}", directory.display());
-        }
-    }
-}
-
-type Shared<'a> = State<'a, Arc<App>>;
-type Reply<T> = Result<T, String>;
-
-/// Runs `work` on a blocking thread with the shared app state.
-async fn blocking<T: Send + 'static>(
-    app: &Arc<App>, work: impl FnOnce(&App) -> Result<T, LibraryError> + Send + 'static,
-) -> Reply<T> {
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || work(&app))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Info {
-    root: PathBuf,
-    config_directory: PathBuf,
-    cache_directory: PathBuf,
-    folder_pattern: String,
-    ffmpeg_ok: bool,
-    /// The playback previews' budget and the pictures', in GB.
-    proxy_budget_gb: f64,
-    picture_budget_gb: f64,
-}
-
-#[tauri::command]
-fn info(app: Shared) -> Info {
-    app.info()
-}
-
-/// Where imports copy recordings to from now on, saved to config.json. What
-/// was imported before stays where it is.
-#[tauri::command]
-async fn set_media_root(handle: AppHandle, app: Shared<'_>, folder: PathBuf) -> Reply<Info> {
-    blocking(&app, move |app| {
-        app.library.write().unwrap_or_else(|poisoned| poisoned.into_inner())
-            .set_media_root(&folder)?;
-        allow_images(&handle, &app.library());
-        Ok(app.info())
-    }).await
-}
-
-/// How the folders of future imports are named, saved to config.json.
-#[tauri::command]
-async fn set_folder_pattern(app: Shared<'_>, pattern: String) -> Reply<Info> {
-    blocking(&app, move |app| {
-        app.library.write().unwrap_or_else(|poisoned| poisoned.into_inner())
-            .set_folder_pattern(&pattern)?;
-        Ok(app.info())
-    }).await
-}
-
-/// What a folder would be called under `pattern`, shown while it is typed.
-#[tauri::command]
-fn folder_preview(pattern: String, session: String) -> Reply<String> {
-    Library::folder_preview(&pattern, &session).map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn snapshot(app: Shared<'_>) -> Reply<Vec<SessionView>> {
-    blocking(&app, |app| app.library().snapshot()).await
-}
-
-#[tauri::command]
-async fn cards() -> Vec<Card> {
-    tauri::async_runtime::spawn_blocking(detect_cards).await.unwrap_or_default()
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Progress {
-    /// The UI's ID for the task this reports on, so two of a kind never mix.
-    task: String,
-    line: String,
-    done: usize,
-    total: usize,
-}
-
-/// A download's `Progress`, with the recording it is on: [n, of].
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DownloadProgress {
-    task: String,
-    line: String,
-    done: usize,
-    total: usize,
-    part: [usize; 2],
-}
-
-#[tauri::command]
-async fn import_card(handle: AppHandle, app: Shared<'_>, task: String, folder: PathBuf, name: String,
-                     date: Option<String>, delete_originals: bool) -> Reply<ImportSummary> {
-    blocking(&app, move |app| {
-        let mut progress = ImportProgress::default();
-        app.library().import(&folder, &name, date.as_deref(), delete_originals, |event| {
-            let Step { line, done, total } = progress.step(event);
-            let _ = handle.emit("import-progress", Progress { task: task.clone(), line, done, total });
-        })
-    }).await
-}
-
-/// The import folder's folders, each with what it holds that is new.
-#[tauri::command]
-async fn import_folder_contents(app: Shared<'_>) -> Reply<Vec<FolderView>> {
-    blocking(&app, |app| app.library().import_folder_contents()).await
-}
-
-/// "Load from destination folder": the chosen folders' recordings the library
-/// does not know, registered where they are; progress as import events.
-#[tauri::command]
-async fn load_import_folder(handle: AppHandle, app: Shared<'_>, task: String, folders: Vec<String>,
-                            restore: Vec<String>) -> Reply<ImportSummary> {
-    blocking(&app, move |app| {
-        let mut progress = ImportProgress::default();
-        app.library().load_import_folders(&folders, &restore, |event| {
-            let Step { line, done, total } = progress.step(event);
-            let _ = handle.emit("import-progress", Progress { task: task.clone(), line, done, total });
-        })
-    }).await
-}
-
-#[tauri::command]
-async fn segment(handle: AppHandle, app: Shared<'_>, task: String, session: String) -> Reply<String> {
-    blocking(&app, move |app| {
-        let total = app.library().snapshot()?.iter().find(|s| s.id == session)
-            .map_or(0, |s| s.files.iter().filter(|f| !f.action_cam).count());
-        let mut progress = SegmentProgress::new(total);
-        let report = app.library().segment(&session, |event| {
-            let Step { line, done, total } = progress.step(event);
-            let _ = handle.emit("segment-progress", Progress { task: task.clone(), line, done, total });
-        })?;
-        let failed = if report.failed.is_empty() { String::new() }
-                     else { format!(" — {} file(s) failed", report.failed.len()) };
-        Ok(format!("{} flight(s), {} clip(s){failed}", report.flights, report.clips))
-    }).await
-}
-
-/// What reducing a session to its flights would do, for its confirmation.
-#[tauri::command]
-async fn reduce_preview(app: Shared<'_>, session: String) -> Reply<ReducePreview> {
-    blocking(&app, move |app| app.library().reduce_preview(&session)).await
-}
-
-/// Cuts a session's DVR recordings down to their flights; progress as events.
-#[tauri::command]
-async fn reduce_session(handle: AppHandle, app: Shared<'_>, task: String, session: String)
-    -> Reply<ReduceSummary> {
-    blocking(&app, move |app| {
-        app.library().reduce_session(&session, |done, total, line| {
-            let _ = handle.emit("reduce-progress", Progress { task: task.clone(), line, done, total });
-        })
-    }).await
-}
-
-/// What moving a session's recordings into the import folder would do.
-#[tauri::command]
-async fn relocation_preview(app: Shared<'_>, session: String) -> Reply<RelocationPreview> {
-    blocking(&app, move |app| app.library().relocation_preview(&session)).await
-}
-
-/// Moves a session's recordings from an earlier import folder into the
-/// current one; progress as events.
-#[tauri::command]
-async fn download_session(handle: AppHandle, app: Shared<'_>, task: String, session: String)
-    -> Reply<DownloadSummary> {
-    blocking(&app, move |app| {
-        app.library().download_session(&session, |step| {
-            let _ = handle.emit("download-progress", DownloadProgress {
-                task: task.clone(), line: step.line, done: step.done, total: step.total, part: [step.file, step.files],
-            });
-        })
-    }).await
-}
-
-#[tauri::command]
-async fn download_flight(handle: AppHandle, app: Shared<'_>, task: String, flight: String)
-    -> Reply<DownloadSummary> {
-    blocking(&app, move |app| {
-        app.library().download_flight(&flight, |step| {
-            let _ = handle.emit("download-progress", DownloadProgress {
-                task: task.clone(), line: step.line, done: step.done, total: step.total, part: [step.file, step.files],
-            });
-        })
-    }).await
-}
-
-#[tauri::command]
-async fn free_up_session(handle: AppHandle, app: Shared<'_>, task: String, session: String)
-    -> Reply<FreeUpSummary> {
-    blocking(&app, move |app| {
-        app.library().free_up_session(&session, |done, total, line| {
-            let _ = handle.emit("free-progress", Progress { task: task.clone(), line, done, total });
-        })
-    }).await
-}
-
-#[tauri::command]
-async fn free_up_flight(handle: AppHandle, app: Shared<'_>, task: String, flight: String)
-    -> Reply<FreeUpSummary> {
-    blocking(&app, move |app| {
-        app.library().free_up_flight(&flight, |done, total, line| {
-            let _ = handle.emit("free-progress", Progress { task: task.clone(), line, done, total });
-        })
-    }).await
-}
-
-#[tauri::command]
-async fn move_session(handle: AppHandle, app: Shared<'_>, task: String, session: String)
-    -> Reply<RelocationSummary> {
-    blocking(&app, move |app| {
-        app.library().move_session_into_import_folder(&session, |done, total, line| {
-            let _ = handle.emit("move-progress", Progress { task: task.clone(), line, done, total });
-        })
-    }).await
-}
-
-/// Saves the Edit Session dialog: name, day, place, notes and tags.
-#[tauri::command]
-async fn update_session(app: Shared<'_>, id: String, edit: SessionEdit) -> Reply<()> {
-    blocking(&app, move |app| app.library().update_session(&id, &edit)).await
-}
-
-#[tauri::command]
-async fn set_detection_profile(app: Shared<'_>, session: String, profile: String) -> Reply<()> {
-    blocking(&app, move |app| app.library().set_detection_profile(&session, &profile)).await
-}
-
-#[tauri::command]
-async fn rename_session(app: Shared<'_>, id: String, name: String) -> Reply<()> {
-    blocking(&app, move |app| app.library().rename_session(&id, &name)).await
-}
-
-#[tauri::command]
-async fn delete_session(app: Shared<'_>, id: String, keep_recordings: bool) -> Reply<()> {
-    blocking(&app, move |app| app.library().delete_session(&id, keep_recordings)).await
-}
-
-#[tauri::command]
-async fn set_flight_title(app: Shared<'_>, id: String, title: String) -> Reply<()> {
-    blocking(&app, move |app| app.library().set_flight_title(&id, &title)).await
-}
-
-/// What deleting a flight would do to its files, for its confirmation.
-#[tauri::command]
-async fn flight_deletion(app: Shared<'_>, id: String) -> Reply<FlightDeletion> {
-    blocking(&app, move |app| app.library().flight_deletion(&id)).await
-}
-
-#[tauri::command]
-async fn delete_flight(app: Shared<'_>, id: String) -> Reply<FlightDeletion> {
-    blocking(&app, move |app| app.library().delete_flight(&id)).await
-}
-
-#[tauri::command]
-async fn toggle_like(app: Shared<'_>, id: String) -> Reply<bool> {
-    blocking(&app, move |app| app.library().toggle_like(&id)).await
-}
-
-#[tauri::command]
-async fn update_clip(app: Shared<'_>, id: String, start_frame: i64, end_frame: i64) -> Reply<()> {
-    blocking(&app, move |app| app.library().update_clip(&id, start_frame, end_frame)).await
-}
-
-#[tauri::command]
-async fn filmstrip_frame(app: Shared<'_>, flight: String, index: usize, count: usize) -> Reply<Thumbnail> {
-    blocking(&app, move |app| app.library().filmstrip_frame(&flight, index, count)).await
-}
-
-/// Reads the camera of takes imported before the library kept it; how many
-/// were named, so the UI refreshes only then.
-#[tauri::command]
-async fn identify_cameras(app: Shared<'_>) -> Reply<usize> {
-    blocking(&app, |app| app.library().identify_cameras()).await
-}
-
-/// How many hover-strip frames the library is missing: a file check each,
-/// so the UI starts a task only when there is work.
-#[tauri::command]
-async fn missing_strips(app: Shared<'_>, count: usize) -> Reply<usize> {
-    blocking(&app, move |app| Ok(app.library().missing_strip_frames(count, None)?.len())).await
-}
-
-/// Makes the missing hover strips ahead of the pointer, `first` session's
-/// first; progress as events.
-#[tauri::command]
-async fn prepare_strips(handle: AppHandle, app: Shared<'_>, task: String, count: usize,
-                        first: Option<String>) -> Reply<StripsPrepared> {
-    blocking(&app, move |app| {
-        app.library().prepare_strips(count, first.as_deref(), |done, total, label| {
-            let line = strip_line(done, total, label);
-            let _ = handle.emit("strips-progress", Progress { task: task.clone(), line, done, total });
-        })
-    }).await
-}
-
-#[tauri::command]
-async fn cache_usage(app: Shared<'_>) -> Reply<CacheUsage> {
-    blocking(&app, move |app| app.library().cache_usage()).await
-}
-
-/// Empties the given kinds of cache; everything in them is made again on demand.
-#[tauri::command]
-async fn clear_cache(app: Shared<'_>, kinds: Vec<CacheKind>) -> Reply<CacheUsage> {
-    blocking(&app, move |app| app.library().clear_cache(&kinds)).await
-}
-
-/// Sets the playback previews' and the pictures' budgets, saved to
-/// config.json; the cache is brought under them at once.
-#[tauri::command]
-async fn set_cache_budgets(app: Shared<'_>, proxies: f64, pictures: f64) -> Reply<Info> {
-    blocking(&app, move |app| {
-        app.library.write().unwrap_or_else(|poisoned| poisoned.into_inner())
-            .set_cache_budgets(proxies, pictures)?;
-        Ok(app.info())
-    }).await
-}
-
-/// A clip's poster, remade when the cache no longer has it.
-#[tauri::command]
-async fn poster(app: Shared<'_>, clip: String) -> Reply<Thumbnail> {
-    blocking(&app, move |app| app.library().poster(&clip)).await
-}
-
-/// Opens the system file manager on a recording, selected where the file
-/// manager can (Nautilus, Dolphin, Finder, Explorer), its folder otherwise.
-/// The UI names the recording; the path never comes from the web view.
-#[tauri::command]
-async fn reveal_file(app: Shared<'_>, file: String) -> Reply<()> {
-    let path = blocking(&app, move |app| app.library().recording_path(&file)).await?;
-    tauri::async_runtime::spawn_blocking(move || tauri_plugin_opener::reveal_item_in_dir(&path)
-        .map_err(|error| format!("cannot show {}: {error}", path.display())))
-        .await
-        .map_err(|error| error.to_string())?
-}
-
-/// Shows a session's recordings in the file manager: each folder they sit in,
-/// with one of them selected.
-#[tauri::command]
-async fn reveal_session(app: Shared<'_>, session: String) -> Reply<()> {
-    let paths = blocking(&app, move |app| app.library().session_folders(&session)).await?;
-    tauri::async_runtime::spawn_blocking(move || {
-        for path in paths {
-            tauri_plugin_opener::reveal_item_in_dir(&path)
-                .map_err(|error| format!("cannot show {}: {error}", path.display()))?;
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|error| error.to_string())?
-}
-
-#[tauri::command]
-async fn preview_frame(app: Shared<'_>, file: String, frame: i64) -> Reply<Thumbnail> {
-    blocking(&app, move |app| app.library().preview_frame(&file, frame)).await
-}
-
-/// A refused lossless export is an answer, not an error: the UI offers the
-/// two ways out (CLAUDE.md 6, Phase 3).
-#[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-enum ExportOutcome {
-    Written { files: Vec<PathBuf> },
-    Mismatch { reason: String },
-}
-
-#[tauri::command]
-async fn export_flight(app: Shared<'_>, flight: String, destination: PathBuf, mode: ExportMode)
-    -> Reply<ExportOutcome> {
-    blocking(&app, move |app| match app.library().export(&flight, &destination, mode) {
-        Ok(files) => Ok(ExportOutcome::Written { files }),
-        Err(LibraryError::Export(error @ fpv_export::ExportError::MismatchedFrameRates(..))) =>
-            Ok(ExportOutcome::Mismatch { reason: error.to_string() }),
-        Err(error) => Err(error),
-    }).await
-}
-
-/// Several flights into one folder, one after the other; progress as events.
-#[tauri::command]
-async fn export_flights(handle: AppHandle, app: Shared<'_>, task: String, flights: Vec<String>,
-                        folder: PathBuf, on_mismatch: ExportMode) -> Reply<BulkExport> {
-    blocking(&app, move |app| {
-        app.library().export_flights(&flights, &folder, on_mismatch, |done, total, name| {
-            let line = if name.is_empty() { "Done".into() } else { format!("Exporting {name}…") };
-            let _ = handle.emit("export-progress", Progress { task: task.clone(), line, done, total });
-        })
-    }).await
-}
-
-#[tauri::command]
-async fn export_labels(app: Shared<'_>, session: String, destination: PathBuf) -> Reply<usize> {
-    blocking(&app, move |app| app.library().export_labels(&session, &destination)).await
-}
-
-/// How the player opens a flight, with each recording it plays directly
-/// handed to the loopback server: the web view gets a URL, never a path.
-#[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-enum PlaybackView {
-    Direct { segments: Vec<SegmentView> },
-    Proxy,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SegmentView {
-    url: String,
-    start: f64,
-    end: f64,
-    offset: f64,
-}
-
-#[tauri::command]
-async fn playback(app: Shared<'_>, flight: String) -> Reply<PlaybackView> {
-    blocking(&app, move |app| Ok(match app.library().playback(&flight)? {
-        Playback::Proxy => PlaybackView::Proxy,
-        Playback::Direct { segments } => PlaybackView::Direct {
-            segments: segments.into_iter().map(|s| SegmentView {
-                url: app.media.share(&s.path), start: s.start, end: s.end, offset: s.offset,
-            }).collect(),
-        },
-    })).await
-}
-
-/// The URL the player loads the flight's proxy from, building it first if
-/// needed — over the loopback server, since WebKitGTK plays no `asset://` video.
-#[tauri::command]
-async fn proxy(app: Shared<'_>, flight: String) -> Reply<String> {
-    blocking(&app, move |app| Ok(app.media.url(&app.library().proxy(&flight)?))).await
-}
-
-#[tauri::command]
-async fn flight_tags(app: Shared<'_>, flight: String) -> Reply<Vec<TagView>> {
-    blocking(&app, move |app| app.library().flight_tags(&flight)).await
-}
-
-#[tauri::command]
-async fn add_tag(app: Shared<'_>, flight: String, label: String, start: f64, end: f64) -> Reply<TagView> {
-    blocking(&app, move |app| app.library().add_tag(&flight, &label, start, end)).await
-}
-
-#[tauri::command]
-async fn delete_tag(app: Shared<'_>, id: String) -> Reply<()> {
-    blocking(&app, move |app| app.library().delete_tag(&id)).await
-}
-
-#[tauri::command]
-async fn tag_labels(app: Shared<'_>) -> Reply<Vec<String>> {
-    blocking(&app, |app| app.library().tag_labels()).await
-}
-
-#[tauri::command]
-async fn add_flight_label(app: Shared<'_>, flight: String, label: String) -> Reply<()> {
-    blocking(&app, move |app| app.library().add_flight_label(&flight, &label)).await
-}
-
-#[tauri::command]
-async fn remove_flight_label(app: Shared<'_>, flight: String, label: String) -> Reply<()> {
-    blocking(&app, move |app| app.library().remove_flight_label(&flight, &label)).await
-}
-
-#[tauri::command]
-async fn flight_label_names(app: Shared<'_>) -> Reply<Vec<String>> {
-    blocking(&app, |app| app.library().flight_label_names()).await
-}
-
-fn main() {
-    // RUST_LOG=debug prints every ffmpeg argument vector (CLAUDE.md 8).
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
-            let tools = tool_directory(app.path().resource_dir().ok().as_deref());
-            // The database and config.json live in the user's config folder
-            // (~/.config/fpv_rush_extractor), proxies and strips in its cache
-            // folder (~/.cache/fpv_rush_extractor), the footage wherever
-            // config.json says. Each can be pointed elsewhere for one run.
-            let config_directory = std::env::var_os("FPV_RUSH_CONFIG").map(PathBuf::from)
-                .unwrap_or_else(Config::default_directory);
-            let cache_directory = std::env::var_os("FPV_RUSH_CACHE").map(PathBuf::from)
-                .unwrap_or_else(Config::default_cache_directory);
-            let mut config = Config::load_or_create(&config_directory)?;
-            if let Some(media) = std::env::var_os("FPV_RUSH_LIBRARY") {
-                config.media_root = PathBuf::from(media);
+    fn submit(
+        &mut self,
+        label: impl Into<String>,
+        quiet: bool,
+        work: impl FnOnce(&mut Library, &Progress) -> Result<Reply, LibraryError> + Send + 'static,
+    ) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.tasks.push(Task {
+            id,
+            label: label.into(),
+            quiet,
+            log: vec![],
+            line: "Queued".into(),
+            done: 0,
+            total: 0,
+            running: true,
+            failed: false,
+            started: std::time::Instant::now(),
+        });
+        if self
+            .worker
+            .sender
+            .send(Job {
+                id,
+                work: Box::new(work),
+            })
+            .is_err()
+        {
+            self.notices
+                .push("The library worker is unavailable. Restart the application.");
+            if let Some(task) = self.tasks.last_mut() {
+                task.running = false;
+                task.failed = true;
             }
-            let library = Library::open_with(&config_directory, &cache_directory, config,
-                                             tools.clone())?;
-            let media = MediaServer::start(&library.cache_directory)?;
-            allow_images(app.handle(), &library);
-            app.manage(Arc::new(App {
-                library: RwLock::new(library), ffmpeg_ok: ffmpeg_available(tools.as_deref()), media,
-            }));
-            Ok(())
+        }
+        id
+    }
+    fn busy(&self) -> bool {
+        self.tasks.iter().any(|task| task.running && !task.quiet)
+    }
+
+    fn receive(&mut self, ctx: &egui::Context) {
+        while let Ok(event) = self.worker.events.try_recv() {
+            match event {
+                Event::Ready {
+                    sessions,
+                    config,
+                    config_directory,
+                    cache_directory,
+                    tools,
+                    ffmpeg_ok,
+                } => {
+                    self.sessions = sessions;
+                    self.config = config;
+                    if !self.config.do_not_show_splash {
+                        self.splash_started = Some(std::time::Instant::now());
+                    }
+                    self.config_directory = config_directory;
+                    self.cache_directory = cache_directory;
+                    self.tools = tools;
+                    self.ffmpeg_ok = ffmpeg_ok;
+                    self.ready = true;
+                    self.submit("Identify cameras", true, |library, _| {
+                        Ok(Reply::Done(format!(
+                            "Identified {} camera(s)",
+                            library.identify_cameras()?
+                        )))
+                    });
+                    // Also covers a cache emptied since the last run.
+                    self.request_strips();
+                }
+                Event::Progress { id, step } => {
+                    if let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) {
+                        task.line = step.line;
+                        if task.log.last() != Some(&task.line) {
+                            task.log.push(task.line.clone());
+                            if task.log.len() > 200 {
+                                task.log.remove(0);
+                            }
+                        }
+                        task.done = step.done;
+                        task.total = step.total;
+                    }
+                }
+                Event::Finished { id, result } => {
+                    if self.cloud_wait.as_ref().is_some_and(|wait| wait.task == id) {
+                        self.cloud_wait = None;
+                    }
+                    let detached = self.detached.remove(&id);
+                    let strip_batch = self.strip_batch == Some(id);
+                    if strip_batch {
+                        self.strip_batch = None;
+                    }
+                    // Whatever the pilot ran may have made or re-keyed flights:
+                    // their strips are made before the pointer asks.
+                    let changed = !strip_batch
+                        && result.is_ok()
+                        && self.tasks.iter().any(|task| task.id == id && !task.quiet);
+                    if self
+                        .dialog
+                        .as_mut()
+                        .is_some_and(|dialog| dialog.finished(id, result.is_ok()))
+                    {
+                        self.dialog = None;
+                    }
+                    if let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) {
+                        task.running = false;
+                        task.failed = result.is_err();
+                        task.line = match &result {
+                            Ok(Reply::Done(text)) => text.clone(),
+                            Ok(_) => "Done".into(),
+                            Err(error) => error.clone(),
+                        };
+                    }
+                    match result {
+                        Err(error) if strip_batch => {
+                            self.strips.failed();
+                            self.notices.push(format!("Hover strips: {error}"));
+                        }
+                        Err(error) => self.notices.push(error),
+                        Ok(Reply::Strips(prepared)) => {
+                            let (next, failed) =
+                                self.strips
+                                    .finished(prepared.made, prepared.more, prepared.failed);
+                            for (flight, reason) in failed {
+                                self.notices
+                                    .push(format!("Hover strip of {flight}: {reason}"));
+                            }
+                            if let Some(first) = next {
+                                self.strip_batch_start(first);
+                            }
+                        }
+                        Ok(Reply::Done(_)) => {}
+                        Ok(Reply::VideoPreferences {
+                            mute_videos,
+                            do_not_show_splash,
+                        }) => {
+                            self.config.mute_videos = mute_videos;
+                            self.config.do_not_show_splash = do_not_show_splash;
+                        }
+                        // Downloaded in the background, as asked: nothing opens.
+                        Ok(Reply::Playback { .. }) if detached => {}
+                        Ok(Reply::Playback { flight, at, parts }) => {
+                            if let Some(flight) = self
+                                .sessions
+                                .iter()
+                                .flat_map(|s| &s.flights)
+                                .find(|f| f.id == flight)
+                            {
+                                let muted = self.config.mute_videos
+                                    || parts.iter().all(|part| !part.has_audio);
+                                let player = player::Player::new_with_volume(
+                                    parts,
+                                    self.tools.clone(),
+                                    at,
+                                    ctx.clone(),
+                                    if muted { 0.0 } else { 1.0 },
+                                );
+                                self.viewer = Some(Viewer {
+                                    flight: flight.clone(),
+                                    player,
+                                    texture: None,
+                                    mark: None,
+                                    figure: String::new(),
+                                    label: String::new(),
+                                    volume: if muted { 0.0 } else { 1.0 },
+                                    remembered_volume: 1.0,
+                                    playback_muted: false,
+                                    muted,
+                                    fullscreen: false,
+                                    window: PlayerWindow::default(),
+                                    seek_time: None,
+                                });
+                            }
+                        }
+                        Ok(Reply::Image { key, thumbnail }) => {
+                            self.thumbnails
+                                .insert(key, thumbnail.path.to_string_lossy().into_owned());
+                        }
+                        Ok(reply) => {
+                            if self.dialog_request == Some(id)
+                                && let Some(dialog) = &mut self.dialog
+                            {
+                                dialog.reply(reply);
+                            }
+                        }
+                    }
+                    if changed {
+                        self.request_strips();
+                    }
+                }
+                Event::Snapshot(sessions, config) => {
+                    self.sessions = sessions;
+                    self.config = config;
+                    if let Some(viewer) = &mut self.viewer {
+                        if let Some(flight) = self
+                            .sessions
+                            .iter()
+                            .flat_map(|s| &s.flights)
+                            .find(|f| f.id == viewer.flight.id)
+                        {
+                            viewer.flight = flight.clone();
+                        } else {
+                            self.viewer = None;
+                        }
+                    }
+                    self.selected.retain(|id| {
+                        self.sessions
+                            .iter()
+                            .any(|s| s.flights.iter().any(|f| &f.id == id))
+                    });
+                }
+                Event::Cards(cards) => self.cards = cards,
+                Event::Fatal(error) => self.notices.push(error),
+            }
+        }
+        if self.tasks.len() > 200 {
+            let keep_from = self.tasks.len() - 100;
+            let mut index = 0;
+            self.tasks.retain(|task| {
+                let keep = task.running || index >= keep_from;
+                index += 1;
+                keep
+            });
+        }
+    }
+    /// Asks for the strips the library lacks, the session on screen first.
+    fn request_strips(&mut self) {
+        if !self.ffmpeg_ok {
+            return;
+        }
+        if let Some(first) = self.strips.request(self.browse.session.clone()) {
+            self.strip_batch_start(first);
+        }
+    }
+
+    fn strip_batch_start(&mut self, first: Option<String>) {
+        // Quiet: a batch must not mark the app busy, which disables forms.
+        let id = self.submit("Hover strips", true, move |library, progress| {
+            Ok(Reply::Strips(library.prepare_strips_up_to(
+                strips::STRIP,
+                first.as_deref(),
+                strips::BATCH,
+                |done, total, label| progress.count(done, total, label),
+            )?))
+        });
+        self.strip_batch = Some(id);
+    }
+
+    fn play(&mut self, flight: &FlightView, at: f64) {
+        self.viewer = None;
+        let id = flight.id.clone();
+        let task = self.submit(
+            format!("Open {}", flight_name(flight)),
+            false,
+            move |library, progress| {
+                let report = library.download_flight(&id, |step| {
+                    progress.count(
+                        if step.done == step.total {
+                            step.files
+                        } else {
+                            step.file.saturating_sub(1)
+                        },
+                        step.files,
+                        step.line,
+                    );
+                })?;
+                if !report.failed.is_empty() {
+                    return Err(LibraryError::Invalid(format!(
+                        "Cloud download failed: {:?}",
+                        report.failed
+                    )));
+                }
+                Ok(Reply::Playback {
+                    parts: library.native_playback(&id)?,
+                    flight: id,
+                    at,
+                })
+            },
+        );
+        if flight.cloud {
+            self.cloud_wait = Some(cloudwait::CloudWait {
+                task,
+                flight: flight_name(flight),
+            });
+        }
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.receive(ctx);
+        #[cfg(target_os = "macos")]
+        {
+            if self.about_menu.is_none() {
+                self.about_menu = about_menu::AboutMenu::install(ctx);
+            }
+            if let Some(menu) = &mut self.about_menu {
+                if self.ready {
+                    menu.smoke_test_if_requested();
+                }
+                if menu.take_request() {
+                    self.show_about = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+            }
+        }
+        self.task_bar(ctx);
+        self.sidebar(ctx);
+        self.browser(ctx);
+        self.player_window(ctx);
+        self.dialog_window(ctx);
+        self.cloud_wait_window(ctx);
+        self.splash_window(ctx);
+        self.about_window(ctx);
+        if let Some(path) = std::env::var_os("FPV_SMOKE_SCREENSHOT") {
+            let capture_due = self.exit_after.is_none_or(|end| {
+                end.saturating_duration_since(std::time::Instant::now()) <= Duration::from_secs(1)
+            });
+            if self.ready && !self.screenshot_requested && capture_due {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+                self.screenshot_requested = true;
+            }
+            ctx.input(|input| {
+                for event in &input.events {
+                    if let egui::Event::Screenshot { image, .. } = event {
+                        let pixels: Vec<u8> = image
+                            .pixels
+                            .iter()
+                            .flat_map(|pixel| pixel.to_array())
+                            .collect();
+                        if let Err(error) = image::save_buffer(
+                            &path,
+                            &pixels,
+                            image.width() as u32,
+                            image.height() as u32,
+                            image::ColorType::Rgba8,
+                        ) {
+                            log::warn!("Could not save smoke screenshot: {error}");
+                        }
+                    }
+                }
+            });
+        }
+        if self
+            .exit_after
+            .is_some_and(|end| std::time::Instant::now() >= end)
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if self.busy() || self.exit_after.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+    }
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, "browse", &self.browse);
+    }
+}
+
+fn day(date: &Option<String>) -> String {
+    date.as_ref()
+        .and_then(|date| chrono::DateTime::parse_from_rfc3339(date).ok())
+        .map(|date| {
+            date.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d")
+                .to_string()
         })
-        .invoke_handler(tauri::generate_handler![
-            info, set_media_root, set_folder_pattern, folder_preview, snapshot, cards, import_card, load_import_folder, import_folder_contents,
-            segment, reduce_preview, reduce_session, update_session, relocation_preview, move_session, download_session, download_flight, free_up_session, free_up_flight, set_detection_profile, rename_session, delete_session,
-            set_flight_title, toggle_like, flight_deletion, delete_flight, update_clip, filmstrip_frame, poster, preview_frame, reveal_file, reveal_session,
-            missing_strips, prepare_strips, identify_cameras, cache_usage, clear_cache, set_cache_budgets,
-            export_flight, export_flights, export_labels, playback, proxy, flight_tags, add_tag, delete_tag, tag_labels,
-            add_flight_label, remove_flight_label, flight_label_names,
-        ])
-        .run(tauri::generate_context!())
-        .expect("the FPV Rush window could not start");
+        .unwrap_or_default()
+}
+
+/// Shows a recording selected in the system's file manager — never opens it,
+/// which would play it — else opens the folder it is in.
+fn reveal(path: &std::path::Path) -> Result<(), LibraryError> {
+    if cfg!(target_os = "windows") {
+        // Explorer exits 1 even when it selected the file: its status says nothing.
+        std::process::Command::new("explorer.exe")
+            .arg("/select,")
+            .arg(path)
+            .spawn()?;
+        return Ok(());
+    }
+    let (program, arguments) = reveal_command(path);
+    match std::process::Command::new(&program)
+        .args(&arguments)
+        .status()
+    {
+        Ok(status) if status.success() => Ok(()),
+        outcome => {
+            log::debug!("{program} {arguments:?}: {outcome:?}; opening the folder instead");
+            open_folder(path.parent().unwrap_or(path))
+        }
+    }
+}
+
+/// macOS selects with `open -R`; Linux asks the file manager over D-Bus, the
+/// interface every desktop's file manager answers (Files, Dolphin, Thunar…).
+fn reveal_command(path: &std::path::Path) -> (String, Vec<String>) {
+    if cfg!(target_os = "macos") {
+        return (
+            "open".into(),
+            vec!["-R".into(), path.to_string_lossy().into_owned()],
+        );
+    }
+    (
+        "dbus-send".into(),
+        vec![
+            "--session".into(),
+            "--dest=org.freedesktop.FileManager1".into(),
+            "--type=method_call".into(),
+            "--print-reply".into(),
+            "/org/freedesktop/FileManager1".into(),
+            "org.freedesktop.FileManager1.ShowItems".into(),
+            format!("array:string:{}", file_uri(path)),
+            "string:".into(),
+        ],
+    )
+}
+
+/// `file://` and the path, every byte but unreserved ones and `/` escaped —
+/// commas too, since dbus-send splits an array on them.
+fn file_uri(path: &std::path::Path) -> String {
+    let mut uri = String::from("file://");
+    for byte in path.to_string_lossy().bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~/".contains(&byte) {
+            uri.push(byte as char);
+        } else {
+            uri.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    uri
+}
+
+fn open_folder(path: &std::path::Path) -> Result<(), LibraryError> {
+    let mut command = if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else if cfg!(target_os = "windows") {
+        std::process::Command::new("explorer.exe")
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    command.arg(path).spawn()?;
+    Ok(())
+}
+
+fn main() -> eframe::Result {
+    env_logger::init();
+    if std::env::args().any(|arg| arg == "--version") {
+        println!("FPV Rush {} (native egui)", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    let icon = image::load_from_memory(include_bytes!("../icons/128x128.png"))
+        .ok()
+        .map(|image| {
+            let image = image.to_rgba8();
+            egui::IconData {
+                width: image.width(),
+                height: image.height(),
+                rgba: image.into_raw(),
+            }
+        });
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("FPV Rush")
+        .with_inner_size([1280.0, 820.0])
+        .with_min_inner_size([900.0, 600.0]);
+    if let Some(icon) = icon {
+        viewport = viewport.with_icon(icon);
+    }
+    eframe::run_native(
+        "FPV Rush",
+        eframe::NativeOptions {
+            viewport,
+            ..Default::default()
+        },
+        Box::new(|cc| Ok(Box::new(App::new(cc)))),
+    )
+}
+
+#[cfg(test)]
+mod reveal_tests {
+    use super::*;
+
+    #[test]
+    fn writes_a_file_uri_dbus_can_carry() {
+        assert_eq!(
+            file_uri(std::path::Path::new(
+                "/home/pilot/Videos/FPV Rush/L'été, 1/GH010042.MP4"
+            )),
+            "file:///home/pilot/Videos/FPV%20Rush/L%27%C3%A9t%C3%A9%2C%201/GH010042.MP4"
+        );
+    }
+
+    #[test]
+    fn selects_the_recording_instead_of_opening_it() {
+        let path = std::path::Path::new("/media/FPV Rush/PICT0032.AVI");
+        let (program, arguments) = reveal_command(path);
+        if cfg!(target_os = "macos") {
+            assert_eq!((program.as_str(), arguments[0].as_str()), ("open", "-R"));
+        } else {
+            assert_eq!(program, "dbus-send");
+            assert!(arguments.contains(&"org.freedesktop.FileManager1.ShowItems".to_string()));
+            assert!(
+                arguments
+                    .contains(&"array:string:file:///media/FPV%20Rush/PICT0032.AVI".to_string())
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod branding_tests {
+    #[test]
+    fn branded_logo_fits_the_software_renderer_and_retains_transparency() {
+        let image = super::splash_image();
+        assert!(image.width() > 0 && image.width() <= 512);
+        assert!(image.height() > 0 && image.height() <= 512);
+        assert!(image.pixels().any(|pixel| pixel[3] == 0));
+        assert!(image.pixels().any(|pixel| pixel[3] == 255));
+    }
 }

@@ -64,6 +64,10 @@ pub(crate) const MIGRATIONS: &[(&str, &str)] = &[
     ("v7", r#"
         CREATE TABLE "deletedRecording" ("path" TEXT PRIMARY KEY NOT NULL);
     "#),
+    // A per-import audio policy, independent of the recording's actual audio codec.
+    ("v8", r#"
+        ALTER TABLE "sourceFile" ADD COLUMN "muted" INTEGER NOT NULL DEFAULT 0 CHECK ("muted" IN (0, 1));
+    "#),
 ];
 
 /// Applies every migration not yet in the ledger, up to and including

@@ -1,6 +1,5 @@
-//! The application layer: everything the GUI does, minus the GUI. The Tauri
-//! shell is a thin set of commands over `Library`, so all of this is tested
-//! without a web view — and a second front end would reuse it whole.
+//! The application layer: everything the native GUI does, minus the window.
+//! Domain operations are tested without a graphics or audio device.
 
 mod cards;
 mod config;
@@ -17,3 +16,4 @@ pub use library::{BulkExport, CacheKind, CacheUsage, DownloadStep, DownloadSumma
 pub use progress::{ImportProgress, SegmentProgress, Step, strip_line};
 pub use tools::{ffmpeg_available, tool_directory};
 pub use views::{ClipView, FileView, FlightView, SessionView, TagView};
+pub use library::NativeSegment;

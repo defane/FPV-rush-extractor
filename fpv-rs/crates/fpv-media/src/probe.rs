@@ -78,7 +78,10 @@ impl<'a> MediaProbe<'a> {
             audio_codec: audio.and_then(|a| a.codec_name.clone()),
             creation_date: output.format.tags.as_ref()
                 .and_then(|tags| tags.get("creation_time"))
-                .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
+                // FFmpeg 9 combines duplicate MP4 header/mdta timestamps
+                // into one semicolon-separated metadata value.
+                .and_then(|text| text.split(';')
+                    .find_map(|stamp| DateTime::parse_from_rfc3339(stamp.trim()).ok()))
                 .map(|date| date.with_timezone(&Utc)),
             camera: output.format.tags.as_ref().and_then(camera_name),
         })
@@ -139,13 +142,13 @@ mod tests {
 
     /// Stands in for the bundled binaries so the parsing can be tested without
     /// media. This is the boundary CLAUDE.md 3.1 exists to make mockable.
-    struct StubFfmpeg {
+    struct StubFfmpeg<'a> {
         status: i32,
-        output: &'static str,
+        output: &'a str,
         error: &'static str,
     }
 
-    impl FfmpegInvoking for StubFfmpeg {
+    impl FfmpegInvoking for StubFfmpeg<'_> {
         fn run(&self, _: FfmpegTool, _: &[String]) -> Result<ProcessResult, FfmpegError> {
             Ok(ProcessResult {
                 status: self.status, stdout: self.output.as_bytes().to_vec(),
@@ -166,7 +169,7 @@ mod tests {
       "format": { "format_name": "avi", "duration": "141.096603" }
     }"#;
 
-    fn probe(output: &'static str) -> Result<MediaInfo, FfmpegError> {
+    fn probe(output: &str) -> Result<MediaInfo, FfmpegError> {
         let stub = StubFfmpeg { status: 0, output, error: "" };
         MediaProbe::new(&stub).probe(Path::new("/cards/PICT0030.AVI"))
     }
@@ -217,6 +220,9 @@ mod tests {
                         "tags": { "creation_time": "2026-08-23T10:15:00.000000Z" } } }"#;
         let date = probe(json).unwrap().creation_date.unwrap();
         assert_eq!(date.to_rfc3339(), "2026-08-23T10:15:00+00:00");
+        let duplicated = json.replace("2026-08-23T10:15:00.000000Z",
+            "2026-08-23T10:15:00.000000Z;2026-08-23T10:15:00Z");
+        assert_eq!(probe(&duplicated).unwrap().creation_date, Some(date));
     }
 
     fn tags(pairs: &[(&str, &str)]) -> HashMap<String, String> {

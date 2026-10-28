@@ -65,6 +65,9 @@ pub struct SourceFile {
     pub sequence_number: Option<i64>,
     pub media: MediaInfo,
     pub checksum: Option<String>,
+    /// Silence this recording during playback/export while keeping its bytes intact.
+    #[serde(default)]
+    pub muted: bool,
 }
 
 impl SourceFile {
@@ -73,7 +76,7 @@ impl SourceFile {
                media: MediaInfo) -> Self {
         Self {
             id: Uuid::new_v4(), session_id, original_path: original_path.into(),
-            imported_path: imported_path.into(), sequence_number, media, checksum: None,
+            imported_path: imported_path.into(), sequence_number, media, checksum: None, muted: false,
         }
     }
 }

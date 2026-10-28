@@ -68,11 +68,18 @@ pub struct LibraryImporter<'a> {
     store: &'a LibraryStore,
     posters: Option<PathBuf>,
     folders: FolderPattern,
+    muted: bool,
 }
 
 impl<'a> LibraryImporter<'a> {
     pub fn new(ffmpeg: &'a dyn FfmpegInvoking, store: &'a LibraryStore) -> Self {
-        Self { ffmpeg, store, posters: None, folders: FolderPattern::session_only() }
+        Self { ffmpeg, store, posters: None, folders: FolderPattern::session_only(), muted: false }
+    }
+
+    /// Persist an audio policy only for recordings newly registered by this import.
+    pub fn without_sound(mut self, muted: bool) -> Self {
+        self.muted = muted;
+        self
     }
 
     /// How session folders are named in the import folder. Without it, the
@@ -220,6 +227,7 @@ impl<'a> LibraryImporter<'a> {
                         let mut record = SourceFile::new(
                             session.id, file.path.to_string_lossy(), destination.to_string_lossy(),
                             file.sequence_number.or(file.gopro.map(|g| g.order_key())), media);
+                        record.muted = self.muted;
                         record.checksum = checksum;
                         report.imported.push(record.clone());
                         progress(ImportEvent::Imported(Box::new(record.clone())));
@@ -281,6 +289,7 @@ impl<'a> LibraryImporter<'a> {
             let path = file.path.to_string_lossy().into_owned();
             let mut record = SourceFile::new(session.id, path.clone(), path,
                                              file.sequence_number.or(file.gopro.map(|g| g.order_key())), media);
+            record.muted = self.muted;
             record.checksum = checksum;
             report.imported.push(record.clone());
             progress(ImportEvent::Imported(Box::new(record.clone())));
