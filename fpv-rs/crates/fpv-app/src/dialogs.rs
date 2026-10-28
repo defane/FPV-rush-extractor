@@ -60,6 +60,8 @@ pub(crate) struct Dialog {
     relocation: Option<RelocationPreview>,
     deletion: Option<FlightDeletion>,
     cache: Option<CacheUsage>,
+    /// Kinds of cache the pilot asked to empty, waiting for the yes.
+    emptying: Option<(Vec<CacheKind>, String)>,
     saving: Option<u64>,
     restore: HashSet<String>,
     budgets: [f64; 2],
@@ -106,6 +108,7 @@ impl Dialog {
             saving: None,
             restore: HashSet::new(),
             budgets: [10.0, 2.0],
+            emptying: None,
             mute_videos: false,
             do_not_show_splash: false,
             editor_clip: 0,
@@ -404,8 +407,16 @@ impl App {
                 if ui.button("Choose folder…").clicked() {
                     self.pick_path(false, String::new());
                 }
-                ui.label("Folder naming pattern: {date}, {session}, {source}");
-                ui.text_edit_singleline(&mut dialog.name);
+                ui.label("Folder names");
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(&mut dialog.name);
+                    if ui.button("Default").clicked() {
+                        dialog.name = Config::default().folder_pattern;
+                    }
+                });
+                ui.add(egui::Label::new(egui::RichText::new(
+                    "{date} the flying day (left out when there is none), {session} the session's name, {source} what recorded it — FATSHARK, GOPRO, DJI, INSTA360 or CAM. With {source}, a session holding DVR and GoPro footage gets one folder for each.",
+                ).small().weak()).wrap());
                 match fpv_library::Library::folder_preview(&dialog.name, "Alpes") {
                     Ok(preview) => {
                         ui.small(format!("Preview: {preview}"));
@@ -422,50 +433,97 @@ impl App {
                     "Rebuildable cache: {}",
                     self.cache_directory.display()
                 ));
-                if let Some(cache) = &dialog.cache {
-                    ui.label(format!("Cache: {:.1} MB", cache.total() as f64 / 1e6));
+                ui.separator();
+                ui.strong("Cache");
+                ui.small("All of it is made again when needed, so any of it can be emptied at any time. Over its budget, the oldest goes first.");
+                let usage = dialog.cache.unwrap_or_default();
+                let mut ask = None;
+                egui::Grid::new("cache-kinds")
+                    .num_columns(3)
+                    .spacing([16.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.strong("Pictures");
+                        ui.add(
+                            egui::DragValue::new(&mut dialog.budgets[1])
+                                .range(0.1..=10000.0)
+                                .prefix("budget ")
+                                .suffix(" GB"),
+                        );
+                        ui.end_row();
+                        for (kind, what, bytes) in [
+                            (CacheKind::Strips, "hover strips", usage.strips),
+                            (CacheKind::Posters, "posters", usage.posters),
+                            (CacheKind::Previews, "editor frames", usage.previews),
+                        ] {
+                            ui.label(format!("   {}", what[..1].to_uppercase() + &what[1..]));
+                            ui.label(crate::browse::size(bytes));
+                            if ui
+                                .add_enabled(bytes > 0, egui::Button::new("Empty…").small())
+                                .clicked()
+                            {
+                                ask =
+                                    Some((vec![kind], crate::browse::empty_question(what, bytes)));
+                            }
+                            ui.end_row();
+                        }
+                        ui.strong("Playback previews");
+                        ui.add(
+                            egui::DragValue::new(&mut dialog.budgets[0])
+                                .range(0.1..=10000.0)
+                                .prefix("budget ")
+                                .suffix(" GB"),
+                        );
+                        ui.end_row();
+                        ui.label("");
+                        ui.label(crate::browse::size(usage.proxies));
+                        if ui
+                            .add_enabled(usage.proxies > 0, egui::Button::new("Empty…").small())
+                            .clicked()
+                        {
+                            ask = Some((
+                                vec![CacheKind::Proxies],
+                                crate::browse::empty_question("playback previews", usage.proxies),
+                            ));
+                        }
+                        ui.end_row();
+                    });
+                if ui
+                    .add_enabled(
+                        usage.total() > 0,
+                        egui::Button::new(format!(
+                            "Empty All ({})…",
+                            crate::browse::size(usage.total())
+                        )),
+                    )
+                    .clicked()
+                {
+                    ask = Some((
+                        CacheKind::ALL.to_vec(),
+                        crate::browse::empty_question("the whole cache", usage.total()),
+                    ));
                 }
-                ui.add(
-                    egui::DragValue::new(&mut dialog.budgets[0])
-                        .range(0.1..=10000.0)
-                        .prefix("Preview budget: ")
-                        .suffix(" GB"),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut dialog.budgets[1])
-                        .range(0.1..=10000.0)
-                        .prefix("Picture budget: ")
-                        .suffix(" GB"),
-                );
-                ui.horizontal_wrapped(|ui| {
-                    for (kind, label) in [
-                        (CacheKind::Proxies, "Empty previews"),
-                        (CacheKind::Strips, "Empty hover frames"),
-                        (CacheKind::Posters, "Empty posters"),
-                        (CacheKind::Previews, "Empty editor frames"),
-                    ] {
-                        if ui.small_button(label).clicked() {
+                if let Some(ask) = ask {
+                    dialog.emptying = Some(ask);
+                }
+                if let Some((kinds, question)) = dialog.emptying.clone() {
+                    ui.colored_label(egui::Color32::from_rgb(230, 160, 60), question);
+                    ui.horizontal(|ui| {
+                        if ui.button("Empty").clicked() {
+                            dialog.emptying = None;
                             self.viewer = None;
                             self.thumbnails.clear();
                             self.requested.clear();
                             self.images = crate::images::Images::new(ui.ctx().clone());
                             self.dialog_request =
-                                Some(self.submit(label, false, move |library, _| {
-                                    library.clear_cache(&[kind])?;
+                                Some(self.submit("Empty cache", false, move |library, _| {
+                                    library.clear_cache(&kinds)?;
                                     Ok(Reply::Cache(library.cache_usage()?))
                                 }));
                         }
-                    }
-                });
-                if ui.button("Empty cache").clicked() {
-                    self.viewer = None;
-                    self.thumbnails.clear();
-                    self.requested.clear();
-                    self.images = crate::images::Images::new(ui.ctx().clone());
-                    self.dialog_request = Some(self.submit("Empty cache", false, |library, _| {
-                        library.clear_cache(&CacheKind::ALL)?;
-                        Ok(Reply::Cache(library.cache_usage()?))
-                    }));
+                        if ui.button("Cancel").clicked() {
+                            dialog.emptying = None;
+                        }
+                    });
                 }
                 if ui.button("Save settings").clicked() {
                     let (path, pattern) = (PathBuf::from(&dialog.path), dialog.name.clone());

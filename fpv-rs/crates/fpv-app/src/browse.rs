@@ -195,6 +195,27 @@ pub fn labels(text: &str) -> Vec<String> {
     result
 }
 
+/// A size as people read it: "548 KB", "7.5 MB", "1.2 GB".
+pub fn size(bytes: u64) -> String {
+    let bytes = bytes as f64;
+    if bytes < 1e6 {
+        format!("{:.0} KB", bytes / 1e3)
+    } else if bytes < 1e9 {
+        format!("{:.1} MB", bytes / 1e6)
+    } else {
+        format!("{:.1} GB", bytes / 1e9)
+    }
+}
+
+/// What emptying part of the cache asks first: what goes, how much, and
+/// that nothing is lost.
+pub fn empty_question(what: &str, bytes: u64) -> String {
+    format!(
+        "Empty {what} ({})? Nothing is lost: they are made again when needed.",
+        size(bytes)
+    )
+}
+
 /// The figure button: a point at the playhead, or — Mark In set — the range
 /// from the mark to it.
 pub fn add_figure_label(mark: Option<f64>, now: f64) -> String {
@@ -390,6 +411,17 @@ mod tests {
             cloud: false,
             freeable: false,
         }
+    }
+
+    #[test]
+    fn sizes_read_as_people_say_them_and_emptying_asks_with_the_size() {
+        assert_eq!(size(548_000), "548 KB");
+        assert_eq!(size(7_500_000), "7.5 MB");
+        assert_eq!(size(1_234_000_000), "1.2 GB");
+        assert_eq!(
+            empty_question("hover strips", 7_500_000),
+            "Empty hover strips (7.5 MB)? Nothing is lost: they are made again when needed."
+        );
     }
 
     #[test]

@@ -1148,7 +1148,10 @@ frame-exact boundary editor. Layout:
   kept; `missing_strip_frames` reports nothing once there is no room for one more frame
   (weighed as the average frame on disk), so a full cache starts no job at every launch.
   Settings shows each kind with its own *Empty…* and *Empty All…*
-  (`clear_cache(kinds)`, `CacheKind`).
+  (`clear_cache(kinds)`, `CacheKind`). The native Settings show it as a table again (2026-10-28,
+  #12): Pictures (hover strips, posters, editor frames, each with its size) under their
+  budget, Playback previews under theirs, and every *Empty…* asks first with the size
+  (`browse::empty_question`); the folder pattern has *Default* and its tokens explained.
 - **Hover strips are made ahead of the pointer** (2026-10-20, the pilot's request: on a
   long 4K take, a strip made on hover kept the user waiting). `Library::prepare_strips` makes
   every missing strip frame of the library, the session on screen first, as one "Hover strips"

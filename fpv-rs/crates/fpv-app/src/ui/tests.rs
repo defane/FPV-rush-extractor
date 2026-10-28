@@ -2388,3 +2388,76 @@ fn the_boundary_editor_nudges_by_frame_and_resets_to_what_is_saved() {
     );
     assert!(!shown(&mut app, "changed — not saved"));
 }
+
+#[test]
+fn settings_show_each_cache_kind_and_ask_before_emptying_one() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, _events) = app_with_worker(&ctx);
+    let config = fpv_library::Config {
+        folder_pattern: "{session}".into(),
+        ..Default::default()
+    };
+    let mut dialog = crate::dialogs::Dialog::settings(&config);
+    dialog.reply(crate::worker::Reply::Cache(fpv_library::CacheUsage {
+        proxies: 257_000_000,
+        strips: 7_500_000,
+        posters: 548_000,
+        previews: 0,
+    }));
+    app.dialog = Some(dialog);
+    // Tall enough to show the dialog whole.
+    let size = egui::vec2(1280.0, 1400.0);
+    let texts = |app: &mut App| {
+        let mut texts = vec![];
+        for _ in 0..3 {
+            let output = ctx.run(input(size), |ctx| app.dialog_window(ctx));
+            texts = text_positions(&output.shapes);
+        }
+        texts
+    };
+    let click = |app: &mut App, label: &str| {
+        let at = texts(app)
+            .into_iter()
+            .find(|(text, _)| text == label)
+            .unwrap_or_else(|| panic!("{label} is not on screen"))
+            .1
+            + egui::vec2(5.0, 5.0);
+        for pressed in [true, false] {
+            let mut raw = input(size);
+            raw.events = vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ];
+            let _ = ctx.run(raw, |ctx| app.dialog_window(ctx));
+        }
+    };
+    let shown = |app: &mut App, label: &str| texts(app).iter().any(|(text, _)| text == label);
+    for expected in [
+        "   Hover strips",
+        "7.5 MB",
+        "548 KB",
+        "257.0 MB",
+        "Empty All (265.0 MB)…",
+    ] {
+        assert!(shown(&mut app, expected), "{expected}");
+    }
+    click(&mut app, "Empty…");
+    assert!(jobs.try_recv().is_err(), "it asks first");
+    assert!(shown(
+        &mut app,
+        "Empty hover strips (7.5 MB)? Nothing is lost: they are made again when needed."
+    ));
+    click(&mut app, "Empty");
+    assert!(jobs.try_recv().is_ok(), "emptied once agreed");
+
+    click(&mut app, "Default");
+    assert!(
+        shown(&mut app, "{date} {session} {source}"),
+        "the default pattern is back"
+    );
+}
