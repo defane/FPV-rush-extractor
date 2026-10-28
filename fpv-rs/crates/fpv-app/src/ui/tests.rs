@@ -2797,3 +2797,87 @@ fn moving_to_the_import_folder_is_offered_only_for_recordings_elsewhere() {
         "{texts:?}"
     );
 }
+
+#[test]
+fn the_detection_profile_saves_alone_and_a_re_segment_says_it_is_running() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, _events) = app_with_worker(&ctx);
+    let mut letz = session_of(vec![FlightView {
+        action_cam: false,
+        ..flight()
+    }]);
+    letz.segmentable = true;
+    app.sessions = vec![letz];
+    app.dialog = Some(crate::dialogs::Dialog::profile(&app.sessions[0]));
+    let dialog: fn(&mut App, &egui::Context) = |app, ctx| app.dialog_window(ctx);
+    let texts = shown_texts(&ctx, &mut app, dialog);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t == "A change applies at the next segmentation."),
+        "{texts:?}"
+    );
+    click_text(&ctx, &mut app, "Save", dialog);
+    let saved: Vec<_> = jobs.try_iter().collect();
+    assert!(
+        saved.iter().any(|job| app
+            .tasks
+            .iter()
+            .any(|t| t.id == job.id && t.label == "Save detection profile")),
+        "saved without segmenting"
+    );
+
+    app.dialog = None;
+    app.browse.session = Some("session".into());
+    let browser: fn(&mut App, &egui::Context) = |app, ctx| app.browser(ctx);
+    assert!(
+        shown_texts(&ctx, &mut app, browser)
+            .iter()
+            .any(|t| t == "Re-segment")
+    );
+    app.submit_in(
+        crate::Scope::Session("session".into()),
+        "Segment session",
+        false,
+        |_, _| unreachable!(),
+    );
+    let texts = shown_texts(&ctx, &mut app, browser);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t == "Re-segmenting — the flights below are replaced when it ends"),
+        "{texts:?}"
+    );
+}
+
+#[test]
+fn a_session_of_takes_offers_no_detection_profile() {
+    for segmentable in [false, true] {
+        let ctx = egui::Context::default();
+        let (mut app, _jobs, _events) = app_with_worker(&ctx);
+        let mut session = session_of(vec![flight()]);
+        session.segmentable = segmentable;
+        app.sessions = vec![session];
+        let draw: fn(&mut App, &egui::Context) = |app, ctx| app.sidebar(ctx);
+        let _ = shown_texts(&ctx, &mut app, draw);
+        let output = ctx.run(input(egui::vec2(1280.0, 820.0)), |ctx| draw(&mut app, ctx));
+        let row = text_positions(&output.shapes)
+            .into_iter()
+            .find(|(text, _)| text == "Test session")
+            .unwrap()
+            .1;
+        right_click(&ctx, &mut app, row + egui::vec2(5.0, 5.0), draw);
+        let texts = shown_texts(&ctx, &mut app, draw);
+        assert!(texts.iter().any(|t| t == "Edit session…"), "{texts:?}");
+        assert_eq!(
+            texts.iter().any(|t| t == "Detection profile…"),
+            segmentable,
+            "{texts:?}"
+        );
+        assert_eq!(
+            texts.iter().any(|t| t == "Export labels…"),
+            segmentable,
+            "{texts:?}"
+        );
+    }
+}

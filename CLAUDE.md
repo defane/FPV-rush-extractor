@@ -1271,6 +1271,11 @@ frame-exact boundary editor. Layout:
   **A re-segment asks first** (2026-10-23, the pilot's request): it remakes every DVR flight
   of the session, so the confirmation names what goes — titles, likes and tags counted
   (`resegmentLosses`), hand-corrected boundaries — and what stays (figures, action-cam takes).
+  In the native app (2026-10-28, #19) the header's button reads "Re-segment" once DVR
+  flights exist (`browse::segment_label`), the session shows "Re-segmenting — the flights
+  below are replaced when it ends" with its progress, the profile dialog describes each
+  profile and saves it alone ("A change applies at the next segmentation") beside saving and
+  segmenting, and Detection profile… / Export labels… show only for DVR sessions.
   Asked in `segment()` (`lib/sessions.ts`, through `confirm.svelte.ts`), the one path the
   header, the session menu and the detection profile all take; a first segmentation asks
   nothing. In the native app (2026-10-28) the Segment and Detection profile dialogs list the

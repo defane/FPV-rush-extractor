@@ -620,7 +620,26 @@ impl App {
             Kind::Profile | Kind::Segment => {
                 if dialog.kind == Kind::Profile {
                     ui.radio_value(&mut dialog.profile, "standard".into(), "Standard");
+                    ui.indent("standard", |ui| {
+                        ui.small("The tuned thresholds, measured on the reference card's footage.");
+                    });
                     ui.radio_value(&mut dialog.profile, "textured".into(), "Textured terrain");
+                    ui.indent("textured", |ui| {
+                        ui.small("Rock faces, alpine slopes: a clean picture the standard profile reads as snow. Absorbs dropouts under 1 s.");
+                    });
+                    ui.small("A change applies at the next segmentation.");
+                    if ui.button("Save").clicked() {
+                        let (id, profile) = (dialog.id.clone(), dialog.profile.clone());
+                        dialog.saving = Some(self.submit_in(
+                            Scope::Session(id.clone()),
+                            "Save detection profile",
+                            false,
+                            move |library, _| {
+                                library.set_detection_profile(&id, &profile)?;
+                                Ok(Reply::Done(format!("Detection profile: {profile}")))
+                            },
+                        ));
+                    }
                 }
                 let losses = self
                     .sessions

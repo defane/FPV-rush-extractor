@@ -221,6 +221,16 @@ pub fn labels(text: &str) -> Vec<String> {
     result
 }
 
+/// The session header's button: "Re-segment" once DVR flights exist — a
+/// re-segment remakes them — "Segment" before.
+pub fn segment_label(session: &SessionView) -> &'static str {
+    if session.flights.iter().any(|f| !f.action_cam) {
+        "Re-segment"
+    } else {
+        "Segment"
+    }
+}
+
 /// What an empty grid offers to do about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmptyAction {
@@ -507,6 +517,18 @@ mod tests {
         assert_eq!(page, 1, "another session opened: followed");
         follow(&ids, None, &mut followed, &mut page, 10);
         assert_eq!(page, 1, "closing it moves nothing");
+    }
+
+    #[test]
+    fn the_button_says_re_segment_once_dvr_flights_exist() {
+        let take = FlightView {
+            action_cam: true,
+            ..flight("take", 1, false, &[], 60.0)
+        };
+        let mut letz = session("letz", None, vec![take], &[]);
+        assert_eq!(segment_label(&letz), "Segment", "takes are not remade");
+        letz.flights.push(flight("dvr", 2, false, &[], 60.0));
+        assert_eq!(segment_label(&letz), "Re-segment");
     }
 
     #[test]

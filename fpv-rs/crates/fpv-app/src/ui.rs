@@ -935,14 +935,33 @@ impl App {
                 if ui
                     .add_enabled(
                         session.segmentable && self.ffmpeg_ok,
-                        egui::Button::new("Segment"),
+                        egui::Button::new(browse::segment_label(session)),
                     )
+                    .on_hover_text("Action-cam takes are left as they are")
                     .clicked()
                 {
                     self.dialog = Some(Dialog::segment(session));
                 }
             });
         });
+        // The flights shown are about to be replaced: say so, with the progress.
+        if let Some(task) = self.tasks.iter().find(|task| {
+            task.running
+                && task.scope == Scope::Session(session.id.clone())
+                && task.label == "Segment session"
+        }) {
+            ui.horizontal_wrapped(|ui| {
+                ui.spinner();
+                ui.label("Re-segmenting — the flights below are replaced when it ends");
+                if task.total > 0 {
+                    ui.add(
+                        egui::ProgressBar::new(task.done as f32 / task.total as f32)
+                            .desired_width(160.0)
+                            .text(task.line.clone()),
+                    );
+                }
+            });
+        }
         if let Some(location) = &session.location
             && !location.is_empty()
         {
@@ -1009,7 +1028,7 @@ impl App {
             self.dialog = Some(Dialog::session(session));
             ui.close();
         }
-        if ui.button("Detection profile…").clicked() {
+        if session.segmentable && ui.button("Detection profile…").clicked() {
             self.dialog = Some(Dialog::profile(session));
             ui.close();
         }
@@ -1024,7 +1043,7 @@ impl App {
             });
             ui.close();
         }
-        if ui.button("Export labels…").clicked() {
+        if session.segmentable && ui.button("Export labels…").clicked() {
             let id = session.id.clone();
             self.submit("Export labels", false, move |library, _| {
                 let Some(path) = rfd::FileDialog::new()
