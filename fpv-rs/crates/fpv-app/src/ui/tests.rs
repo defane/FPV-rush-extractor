@@ -1987,3 +1987,48 @@ fn escape_closes_a_dialog_then_the_player_then_the_panels() {
     press(&mut app);
     assert!(!app.show_notices, "then the lists");
 }
+
+#[test]
+fn an_export_across_rates_asks_how_instead_of_failing() {
+    let ctx = egui::Context::default();
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| {
+        app.receive(ctx);
+        app.dialog_window(ctx)
+    };
+    for action_cam in [false, true] {
+        let (mut app, jobs, events) = app_with_worker(&ctx);
+        let dvr = FlightView {
+            action_cam,
+            recordings: 2,
+            ..flight()
+        };
+        app.sessions = vec![session_of(vec![dvr.clone()])];
+        let mut dialog = crate::dialogs::Dialog::export("Test session", &dvr);
+        dialog.reply(crate::worker::Reply::Picked(Some("/tmp/out.avi".into())));
+        app.dialog = Some(dialog);
+        click_text(&ctx, &mut app, "Export", draw);
+        let export = jobs.try_recv().expect("a lossless export first");
+        events
+            .send(crate::worker::Event::Finished {
+                id: export.id,
+                result: Ok(crate::worker::Reply::Mismatch(
+                    "the recordings run at 29.887 and 24.486 fps".into(),
+                )),
+            })
+            .unwrap();
+        let texts = shown_texts(&ctx, &mut app, draw);
+        assert!(app.dialog.is_some(), "the dialog stays to ask");
+        assert!(
+            texts.iter().any(|t| t == "Different frame rates"),
+            "{texts:?}"
+        );
+        assert!(texts.iter().any(|t| t.contains("29.887")), "{texts:?}");
+        assert_eq!(
+            texts.iter().any(|t| t == "Re-encode into one file"),
+            !action_cam,
+            "re-encoding is the DVR's: {texts:?}"
+        );
+        click_text(&ctx, &mut app, "Export 2 parts separately", draw);
+        assert!(jobs.try_recv().is_ok(), "exported in parts");
+    }
+}

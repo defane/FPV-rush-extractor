@@ -49,6 +49,10 @@ pub(crate) struct Dialog {
     mode: ExportMode,
     acknowledged: bool,
     flight: Option<FlightView>,
+    /// The reason a lossless export was refused, while the dialog asks how.
+    mismatch: Option<String>,
+    /// The file name an export proposes: "<session> — <title>.avi".
+    file_name: String,
     flights: Vec<String>,
     folders: Option<Vec<FolderView>>,
     chosen: HashSet<String>,
@@ -86,6 +90,8 @@ impl Dialog {
             mode: ExportMode::Lossless,
             acknowledged: false,
             flight: None,
+            mismatch: None,
+            file_name: String::new(),
             flights: vec![],
             folders: None,
             chosen: HashSet::new(),
@@ -201,8 +207,14 @@ impl Dialog {
     pub fn editor(flight: &FlightView) -> Self {
         Self::of_flight(Kind::Editor, "Edit source boundaries", flight)
     }
-    pub fn export(flight: &FlightView) -> Self {
-        Self::of_flight(Kind::Export, "Export", flight)
+    pub fn export(session: &str, flight: &FlightView) -> Self {
+        let (name, extension) =
+            fpv_library::export_name(session, &flight_name(flight), !flight.action_cam);
+        Self {
+            mode: ExportMode::Lossless,
+            file_name: format!("{name}.{extension}"),
+            ..Self::of_flight(Kind::Export, "Export", flight)
+        }
     }
     pub fn bulk(flights: Vec<String>) -> Self {
         Self {
@@ -224,6 +236,7 @@ impl Dialog {
             Reply::Deletion(preview) => self.deletion = Some(preview),
             Reply::Cache(usage) => self.cache = Some(usage),
             Reply::Picked(Some(path)) => self.path = path.to_string_lossy().into_owned(),
+            Reply::Mismatch(reason) => self.mismatch = Some(reason),
             _ => {}
         }
     }
@@ -778,54 +791,65 @@ impl App {
                     &mut dialog.path,
                 );
                 if ui.button("Choose destination…").clicked() {
-                    let extension = dialog
-                        .flight
-                        .as_ref()
-                        .map(|f| if f.action_cam { "mp4" } else { "avi" })
-                        .unwrap_or("avi");
-                    self.pick_path(
-                        dialog.kind == Kind::Export,
-                        format!(
-                            "{}.{}",
-                            dialog
-                                .flight
-                                .as_ref()
-                                .map(flight_name)
-                                .unwrap_or_else(|| "Flight".into()),
-                            extension
-                        ),
-                    );
+                    let name = if dialog.kind == Kind::Export {
+                        dialog.file_name.clone()
+                    } else {
+                        "Flights".into()
+                    };
+                    self.pick_path(dialog.kind == Kind::Export, name);
                 }
-                ui.label("For recordings with different frame rates:");
-                if dialog.kind == Kind::Export {
+                // A single export goes lossless and asks only when the
+                // recordings disagree on their rate; a batch cannot ask per
+                // flight, so it is answered up front.
+                let mut chosen = None;
+                if let Some(reason) = dialog.mismatch.clone() {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(230, 160, 60),
+                        "Different frame rates",
+                    );
+                    ui.label(reason);
+                    let parts = dialog.flight.as_ref().map_or(2, |f| f.recordings);
+                    if ui
+                        .button(format!("Export {parts} parts separately"))
+                        .clicked()
+                    {
+                        chosen = Some(ExportMode::Parts);
+                    }
+                    // Re-encoding resamples MJPEG: the DVR's footage only.
+                    if dialog.flight.as_ref().is_some_and(|f| !f.action_cam)
+                        && ui.button("Re-encode into one file").clicked()
+                    {
+                        chosen = Some(ExportMode::Reencode);
+                    }
+                } else if dialog.kind == Kind::Bulk {
+                    ui.label("For recordings with different frame rates:");
                     ui.radio_value(
                         &mut dialog.mode,
-                        ExportMode::Lossless,
-                        "One lossless file (refuse incompatible frame rates)",
+                        ExportMode::Parts,
+                        "One lossless file per recording",
+                    );
+                    ui.radio_value(
+                        &mut dialog.mode,
+                        ExportMode::Reencode,
+                        "One file re-encoded at the dominant rate (DVR only)",
                     );
                 }
-                ui.radio_value(
-                    &mut dialog.mode,
-                    ExportMode::Parts,
-                    "One lossless file per recording",
-                );
-                ui.radio_value(
-                    &mut dialog.mode,
-                    ExportMode::Reencode,
-                    "One file re-encoded at the dominant rate",
-                );
-                if ui
-                    .add_enabled(
-                        !dialog.path.is_empty() && self.ffmpeg_ok,
-                        egui::Button::new("Export"),
-                    )
-                    .clicked()
+                if dialog.mismatch.is_none()
+                    && ui
+                        .add_enabled(
+                            !dialog.path.is_empty() && self.ffmpeg_ok,
+                            egui::Button::new("Export"),
+                        )
+                        .clicked()
                 {
-                    let (id, ids, path, mode, bulk) = (
+                    chosen = Some(dialog.mode);
+                }
+                if let Some(mode) = chosen {
+                    dialog.mismatch = None;
+                    let (id, ids, path, bulk) = (
                         dialog.id.clone(),
                         dialog.flights.clone(),
                         PathBuf::from(&dialog.path),
-                        dialog.mode,
                         dialog.kind == Kind::Bulk,
                     );
                     dialog.saving =
@@ -851,15 +875,7 @@ impl App {
                                     )))
                                 } else {
                                     // Library::export also refuses overwrite, for all modes.
-                                    let files = library.export(&id, &path, mode)?;
-                                    Ok(Reply::Done(format!(
-                                        "Exported {}",
-                                        files
-                                            .iter()
-                                            .map(|p| p.display().to_string())
-                                            .collect::<Vec<_>>()
-                                            .join(", ")
-                                    )))
+                                    export_reply(library.export(&id, &path, mode))
                                 }
                             }),
                         );
@@ -1059,6 +1075,93 @@ fn date_picker(
 
 fn format_date(date: Option<NaiveDate>) -> Option<String> {
     date.map(|date| date.format("%Y-%m-%d").to_string())
+}
+
+/// What a single export says: the files written, or — when a lossless one
+/// met recordings at different rates — the library's reason, for the dialog
+/// to ask how instead of failing.
+fn export_reply(
+    written: Result<Vec<PathBuf>, fpv_library::LibraryError>,
+) -> Result<Reply, fpv_library::LibraryError> {
+    match written {
+        Err(
+            error @ fpv_library::LibraryError::Export(
+                fpv_export::ExportError::MismatchedFrameRates(..),
+            ),
+        ) => Ok(Reply::Mismatch(error.to_string())),
+        Err(error) => Err(error),
+        Ok(files) => Ok(Reply::Done(format!(
+            "Exported {}",
+            files
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::*;
+
+    #[test]
+    fn an_export_proposes_the_session_and_the_flight_title() {
+        let flight = FlightView {
+            id: "f".into(),
+            order: 3,
+            title: Some("Bando".into()),
+            liked: false,
+            duration: 60.0,
+            clips: vec![],
+            recordings: 2,
+            action_cam: false,
+            source: "DVR".into(),
+            format: String::new(),
+            reduced: false,
+            cloud: false,
+            freeable: false,
+            cache_key: "f".into(),
+            labels: vec![],
+            figures: vec![],
+        };
+        let dialog = Dialog::export("Alpes", &flight);
+        assert_eq!(dialog.file_name, "Alpes — Bando.avi");
+        assert_eq!(
+            dialog.mode,
+            ExportMode::Lossless,
+            "lossless first, asked on a mismatch"
+        );
+        let take = FlightView {
+            title: None,
+            action_cam: true,
+            ..flight
+        };
+        assert_eq!(
+            Dialog::export("Alpes", &take).file_name,
+            "Alpes — Flight 3.mp4"
+        );
+    }
+
+    #[test]
+    fn a_rate_mismatch_is_a_question_not_a_failure() {
+        use fpv_core::FrameRate;
+        let mismatch =
+            fpv_library::LibraryError::Export(fpv_export::ExportError::MismatchedFrameRates(
+                FrameRate::new(1000000, 33459),
+                FrameRate::new(1000000, 40839),
+            ));
+        let Ok(Reply::Mismatch(reason)) = export_reply(Err(mismatch)) else {
+            panic!("asked, not failed");
+        };
+        assert!(!reason.is_empty());
+        let other = fpv_library::LibraryError::Invalid("disk full".into());
+        assert!(export_reply(Err(other)).is_err());
+        assert!(matches!(
+            export_reply(Ok(vec!["/tmp/a.avi".into()])),
+            Ok(Reply::Done(done)) if done == "Exported /tmp/a.avi"
+        ));
+    }
 }
 
 #[cfg(test)]

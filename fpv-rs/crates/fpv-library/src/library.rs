@@ -250,6 +250,13 @@ pub struct DownloadStep {
     pub line: String,
 }
 
+/// The file an export writes a flight to, and its extension: "<session> —
+/// <title>", cleaned of path separators, `.avi` for the DVR, `.mp4` for an
+/// action cam — the batch export's names, and the single export's default.
+pub fn export_name(session: &str, title: &str, dvr: bool) -> (String, &'static str) {
+    (fpv_import::folder_name(&format!("{session} — {title}")), if dvr { "avi" } else { "mp4" })
+}
+
 /// A session's details as the Edit Session dialog sends them back.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1698,7 +1705,8 @@ impl Library {
                         .unwrap_or_else(|| format!("Flight {}", flight.order_in_session));
                     let dvr = timeline.parts.iter().any(|(_, f)| f.media.needs_segmentation());
                     let intra = timeline.parts.iter().all(|(_, f)| f.media.is_all_intra());
-                    Some((format!("{session} — {title}"), if dvr { "avi" } else { "mp4" }, intra))
+                    let (name, extension) = export_name(session, &title, dvr);
+                    Some((name, extension, intra))
                 }
                 Err(_) => None,
             };
@@ -1707,7 +1715,7 @@ impl Library {
                 continue;
             };
             progress(index, flights.len(), &name);
-            let destination = free_name(folder, &fpv_import::folder_name(&name), extension);
+            let destination = free_name(folder, &name, extension);
             let written = match self.export(id, &destination, ExportMode::Lossless) {
                 // Re-encoding resamples MJPEG; an action cam's long-GOP take
                 // cannot go that way, so it gets its lossless parts instead.

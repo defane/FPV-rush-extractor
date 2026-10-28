@@ -390,10 +390,12 @@ impl App {
                     let changed = !strip_batch
                         && result.is_ok()
                         && self.tasks.iter().any(|task| task.id == id && !task.quiet);
+                    // A refused lossless export keeps its dialog open, to ask how.
+                    let done = matches!(&result, Ok(reply) if !matches!(reply, Reply::Mismatch(_)));
                     if self
                         .dialog
                         .as_mut()
-                        .is_some_and(|dialog| dialog.finished(id, result.is_ok()))
+                        .is_some_and(|dialog| dialog.finished(id, done))
                     {
                         self.dialog = None;
                     }
@@ -412,6 +414,11 @@ impl App {
                             self.notices.push(format!("Hover strips: {error}"));
                         }
                         Err(error) => self.notices.push(error),
+                        Ok(Reply::Mismatch(reason)) => {
+                            if let Some(dialog) = &mut self.dialog {
+                                dialog.reply(Reply::Mismatch(reason));
+                            }
+                        }
                         Ok(Reply::Strips(prepared)) => {
                             let (next, failed) =
                                 self.strips

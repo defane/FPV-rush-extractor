@@ -39,6 +39,9 @@ pub enum Reply {
     },
     Picked(Option<PathBuf>),
     Strips(fpv_library::StripsPrepared),
+    /// A lossless export met recordings at different rates: the library's
+    /// reason, for the dialog to ask how instead.
+    Mismatch(String),
 }
 
 pub struct Job {

@@ -16,4 +16,4 @@ pub use library::{BulkExport, CacheKind, CacheUsage, DownloadStep, DownloadSumma
 pub use progress::{ImportProgress, SegmentProgress, Step, strip_line};
 pub use tools::{ffmpeg_available, tool_directory};
 pub use views::{ClipView, FileView, FlightView, SessionView, TagView};
-pub use library::NativeSegment;
+pub use library::{NativeSegment, export_name};

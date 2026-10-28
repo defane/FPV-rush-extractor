@@ -1086,6 +1086,12 @@ frame-exact boundary editor. Layout:
   flight is listed in the summary and the batch goes on. Verified in the app on the reference
   pair: flight 1 came out as two lossless parts at 29.887 and 24.486 fps, flight 2 as 19.276 s,
   the GoPro take as `.mp4`.
+  **A single export asks on a rate mismatch** (native app, 2026-10-28, #6): it goes lossless,
+  and when the recordings disagree the dialog shows the library's reason and offers "Export
+  N parts separately" or, for the DVR, "Re-encode into one file" (`export_reply`, the
+  `Mismatch` reply); its default name is the batch's, "<session> — <title>"
+  (`fpv_library::export_name`). The port made the mode a radio chosen up front and a
+  mismatch only a notification.
 - **Action-cam takes play from their own files** (2026-10-21, the pilot's call: a rush
   library, not an editor). `Library::playback` answers `Direct` with one segment per recording
   (its own seconds, and its offset on the flight's clock, through each file's rate) for any

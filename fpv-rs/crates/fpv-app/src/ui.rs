@@ -1209,7 +1209,12 @@ impl App {
                     ui.close();
                 }
                 if ui.button("Export…").clicked() {
-                    self.dialog = Some(Dialog::export(flight));
+                    let name = self
+                        .sessions
+                        .iter()
+                        .find(|s| s.id == session)
+                        .map_or("Session", |s| s.name.as_str());
+                    self.dialog = Some(Dialog::export(name, flight));
                     ui.close();
                 }
                 if ui.button("Delete flight…").clicked() {
