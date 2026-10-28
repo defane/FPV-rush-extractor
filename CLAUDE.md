@@ -1285,6 +1285,14 @@ frame-exact boundary editor. Layout:
   cards show inherited tags dashed. Suggestions are one vocabulary across both tables
   (`flight_label_names`). Kept apart from the flights' tags so a re-segment, which remakes the
   flights, leaves them.
+- **The native confirmations say what they do again** (2026-10-28, #18): *Delete Flight*
+  names what leaves the library, the files that go to the trash (as a warning), the pieces
+  kept for another flight and the recordings kept whole, with "Delete and Trash" or
+  "Delete" (`deletion_text`); *Remove session* counts the recordings kept and offers "Keep
+  the Videos" / "Also Trash the Videos"; *Reduce* says "X → Y — about Z freed over N
+  recordings" and "This cannot be undone", or that there is nothing to reduce
+  (`reduce_summary`); *Move to Import Folder…* is offered only with recordings elsewhere
+  and explains the rename/copy, with nothing to move when all are in place.
 - **Delete Flight…** (2026-10-24, the pilot's request), in a card's ⋯ menu, behind a
   confirmation that names what goes (`Library::flight_deletion`, the same plan
   `delete_flight` carries out). **A file it took along is remembered** (`deletedRecording`, schema `v7`, by

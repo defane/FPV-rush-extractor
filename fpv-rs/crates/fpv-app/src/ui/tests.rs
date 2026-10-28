@@ -2708,3 +2708,92 @@ fn loading_folders_reads_pages_and_selects_all_new_at_once() {
         "{texts:?}"
     );
 }
+
+#[test]
+fn confirmations_say_what_they_do_and_offer_nothing_pointless() {
+    let ctx = egui::Context::default();
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| app.dialog_window(ctx);
+    for button in ["Keep the Videos", "Also Trash the Videos"] {
+        let (mut app, jobs, _events) = app_with_worker(&ctx);
+        app.sessions = vec![session_of(vec![flight()])];
+        app.dialog = Some(crate::dialogs::Dialog::remove_session(&app.sessions[0]));
+        click_text(&ctx, &mut app, button, draw);
+        assert!(jobs.try_recv().is_ok(), "{button} removes it");
+    }
+
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    app.sessions = vec![session_of(vec![flight()])];
+    let mut reduce = crate::dialogs::Dialog::reduce(&app.sessions[0]);
+    reduce.reply(crate::worker::Reply::Reduce(Default::default()));
+    app.dialog = Some(reduce);
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(
+        texts.iter().any(|t| t.starts_with("Nothing to reduce")),
+        "{texts:?}"
+    );
+    assert!(!texts.iter().any(|t| t == "Reduce recordings"), "{texts:?}");
+
+    let mut relocate = crate::dialogs::Dialog::relocate(&app.sessions[0]);
+    relocate.reply(crate::worker::Reply::Relocation(Default::default()));
+    app.dialog = Some(relocate);
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.starts_with("Every recording of this session is already")),
+        "{texts:?}"
+    );
+    assert!(!texts.iter().any(|t| t == "Move recordings"), "{texts:?}");
+}
+
+#[test]
+fn moving_to_the_import_folder_is_offered_only_for_recordings_elsewhere() {
+    let menu = |elsewhere: Option<&str>| {
+        // A context each: a menu left open in one would be closed by the next click.
+        let ctx = egui::Context::default();
+        let (mut app, _jobs, _events) = app_with_worker(&ctx);
+        let mut session = session_of(vec![flight()]);
+        session.files = vec![fpv_library::FileView {
+            id: "f".into(),
+            name: "GH010042.MP4".into(),
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            duration: 60.0,
+            codec: "h264".into(),
+            action_cam: true,
+            source: "GoPro".into(),
+            format: String::new(),
+            reduced: false,
+            elsewhere: elsewhere.map(Into::into),
+            cloud: false,
+            freeable: false,
+        }];
+        app.sessions = vec![session];
+        let draw: fn(&mut App, &egui::Context) = |app, ctx| app.sidebar(ctx);
+        // Settled layout first: the row's place on the very first frame moves.
+        let _ = shown_texts(&ctx, &mut app, draw);
+        let output = ctx.run(input(egui::vec2(1280.0, 820.0)), |ctx| draw(&mut app, ctx));
+        let row = text_positions(&output.shapes)
+            .into_iter()
+            .find(|(text, _)| text == "Test session")
+            .unwrap()
+            .1;
+        right_click(&ctx, &mut app, row + egui::vec2(5.0, 5.0), draw);
+        shown_texts(&ctx, &mut app, draw)
+    };
+    let texts = menu(None);
+    assert!(
+        texts.iter().any(|t| t == "Edit session…"),
+        "the menu is open: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t == "Move to import folder…"),
+        "{texts:?}"
+    );
+    let texts = menu(Some("/Volumes/Old"));
+    assert!(
+        texts.iter().any(|t| t == "Move to import folder…"),
+        "{texts:?}"
+    );
+}

@@ -1040,7 +1040,9 @@ impl App {
             });
             ui.close();
         }
-        if ui.button("Move to import folder…").clicked() {
+        // Only when some of its recordings are in an earlier import folder.
+        if !browse::elsewhere(session).is_empty() && ui.button("Move to import folder…").clicked()
+        {
             self.dialog = Some(Dialog::relocate(session));
             let id = session.id.clone();
             self.dialog_request =

@@ -684,17 +684,29 @@ impl App {
                 }
             }
             Kind::RemoveSession => {
-                ui.label("Remove this session and its flights from the library?");
-                ui.checkbox(
-                    &mut dialog.flag,
-                    "Keep recordings on disk (can be loaded again later)",
-                );
-                if !dialog.flag {
-                    ui.label("Its recordings will be moved to the system trash.");
-                }
-                if ui.button("Remove session").clicked() {
+                let recordings = self
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == dialog.id)
+                    .map_or(0, |s| s.files.len());
+                ui.label("Its flights, titles, likes, tags and figures leave the library. The SD card is not touched.");
+                ui.label(format!(
+                    "Keep the Videos leaves its {recordings} recording{} where {} — importing the same card again brings the session back without copying.",
+                    if recordings == 1 { "" } else { "s" },
+                    if recordings == 1 { "it is" } else { "they are" }
+                ));
+                let mut choice = None;
+                ui.horizontal(|ui| {
+                    if ui.button("Keep the Videos").clicked() {
+                        choice = Some(true);
+                    }
+                    if ui.button("Also Trash the Videos").clicked() {
+                        choice = Some(false);
+                    }
+                });
+                if let Some(keep) = choice {
                     self.viewer = None;
-                    let (id, keep) = (dialog.id.clone(), dialog.flag);
+                    let id = dialog.id.clone();
                     dialog.saving = Some(self.submit_in(
                         Scope::Session(id.clone()),
                         "Remove session",
@@ -708,12 +720,15 @@ impl App {
             }
             Kind::Reduce => {
                 if let Some(preview) = &dialog.reduction {
-                    ui.label(format!(
-                        "{} recordings · {:.1} MB → approximately {:.1} MB",
-                        preview.recordings,
-                        preview.bytes_now as f64 / 1e6,
-                        preview.bytes_after as f64 / 1e6
-                    ));
+                    let Some(summary) = reduce_summary(preview) else {
+                        ui.label("Nothing to reduce: no segmented DVR recording here holds snow to cut away.");
+                        return;
+                    };
+                    ui.strong(summary);
+                    ui.colored_label(
+                        egui::Color32::from_rgb(230, 160, 60),
+                        "This cannot be undone.",
+                    );
                     ui.label(format!("{} empty recordings removed; {} never-segmented recordings left alone; {} figures in discarded footage lost.", preview.emptied, preview.unsegmented, preview.figures_lost));
                     ui.label("Keeps flights with 5 seconds on each side. Originals go to the trash. Missed flights are lost and this footage cannot be re-segmented. Titles, likes, tags and figures inside kept footage remain.");
                     ui.checkbox(
@@ -758,11 +773,19 @@ impl App {
             }
             Kind::Relocate => {
                 if let Some(preview) = &dialog.relocation {
+                    if preview.recordings == 0 {
+                        ui.label(
+                            "Every recording of this session is already in the import folder.",
+                        );
+                        return;
+                    }
                     ui.label(format!(
-                        "Move {} recordings ({:.1} MB)",
+                        "Move {} recording{} ({})",
                         preview.recordings,
-                        preview.bytes as f64 / 1e6
+                        if preview.recordings == 1 { "" } else { "s" },
+                        crate::browse::size(preview.bytes)
                     ));
+                    ui.small("On the same disk each is renamed; to another disk it is copied, checked, then removed. Nothing is ever written over.");
                     ui.label(format!(
                         "From: {}\nTo: {}",
                         preview.from.join("\n"),
@@ -796,8 +819,15 @@ impl App {
             }
             Kind::DeleteFlight => {
                 if let Some(preview) = &dialog.deletion {
-                    ui.label(format!("Whole DVR recordings kept: {}\nShared reduced pieces kept: {}\nFiles moved to trash:\n{}", preview.recordings.len(), preview.shared.len(), preview.trashed.join("\n")));
-                    if ui.button("Delete flight").clicked() {
+                    let (lines, button) = deletion_text(preview);
+                    for (warning, line) in lines {
+                        if warning {
+                            ui.colored_label(egui::Color32::from_rgb(230, 160, 60), line);
+                        } else {
+                            ui.label(line);
+                        }
+                    }
+                    if ui.button(button).clicked() {
                         self.viewer = None;
                         let id = dialog.id.clone();
                         dialog.saving =
@@ -1265,6 +1295,76 @@ fn format_date(date: Option<NaiveDate>) -> Option<String> {
     date.map(|date| date.format("%Y-%m-%d").to_string())
 }
 
+/// What deleting a flight does, line by line, and its button: the flight's
+/// own data goes; a file that held only it goes to the trash (a warning);
+/// a piece another flight lies in stays; a whole recording stays, where a
+/// re-segment would find the flight again.
+fn deletion_text(plan: &FlightDeletion) -> (Vec<(bool, String)>, &'static str) {
+    let mut lines = vec![(
+        false,
+        "Its title, like, tags and figures are removed from the library.".to_owned(),
+    )];
+    if !plan.trashed.is_empty() {
+        lines.push((
+            true,
+            format!(
+                "{} nothing but this flight and {} to the trash: {}",
+                if plan.trashed.len() == 1 {
+                    "This file holds"
+                } else {
+                    "These files hold"
+                },
+                if plan.trashed.len() == 1 {
+                    "goes"
+                } else {
+                    "go"
+                },
+                plan.trashed.join(", ")
+            ),
+        ));
+    }
+    if !plan.shared.is_empty() {
+        lines.push((
+            false,
+            format!(
+                "Kept because another flight lies in it: {}",
+                plan.shared.join(", ")
+            ),
+        ));
+    }
+    if !plan.recordings.is_empty() {
+        lines.push((
+            false,
+            format!(
+                "The recording stays whole — re-segmenting would find this flight again: {}",
+                plan.recordings.join(", ")
+            ),
+        ));
+    }
+    (
+        lines,
+        if plan.trashed.is_empty() {
+            "Delete"
+        } else {
+            "Delete and Trash"
+        },
+    )
+}
+
+/// What reducing a session would free, or that there is nothing to reduce.
+fn reduce_summary(preview: &ReducePreview) -> Option<String> {
+    (preview.recordings > 0).then(|| {
+        format!(
+            "{} → {} — about {} freed over {} recording{}",
+            crate::browse::size(preview.bytes_now),
+            crate::browse::size(preview.bytes_after),
+            crate::browse::size(preview.bytes_now.saturating_sub(preview.bytes_after)),
+            preview.recordings,
+            if preview.recordings == 1 { "" } else { "s" }
+        )
+    })
+}
+
 /// Folders a page in the Load from Destination Folder dialog.
 const FOLDERS_PER_PAGE: usize = 10;
 
@@ -1328,6 +1428,45 @@ fn export_reply(
                 .collect::<Vec<_>>()
                 .join(", ")
         ))),
+    }
+}
+
+#[cfg(test)]
+mod confirm_tests {
+    use super::*;
+
+    #[test]
+    fn deleting_a_flight_says_what_goes_where() {
+        let only_its_own = FlightDeletion {
+            trashed: vec!["GH010042.MP4".into(), "GH020042.MP4".into()],
+            ..Default::default()
+        };
+        let (lines, button) = deletion_text(&only_its_own);
+        assert_eq!(button, "Delete and Trash");
+        assert!(lines.contains(&(true, "These files hold nothing but this flight and go to the trash: GH010042.MP4, GH020042.MP4".to_owned())));
+        let in_a_recording = FlightDeletion {
+            recordings: vec!["PICT0032.AVI".into()],
+            ..Default::default()
+        };
+        let (lines, button) = deletion_text(&in_a_recording);
+        assert_eq!(button, "Delete");
+        assert!(lines.iter().any(|(warning, line)| !warning
+            && line.contains("re-segmenting would find this flight again")));
+    }
+
+    #[test]
+    fn reducing_says_what_it_frees_or_that_there_is_nothing() {
+        assert_eq!(reduce_summary(&ReducePreview::default()), None);
+        let preview = ReducePreview {
+            recordings: 2,
+            bytes_now: 829_000_000,
+            bytes_after: 508_000_000,
+            ..Default::default()
+        };
+        assert_eq!(
+            reduce_summary(&preview).as_deref(),
+            Some("829.0 MB → 508.0 MB — about 321.0 MB freed over 2 recordings")
+        );
     }
 }
 
