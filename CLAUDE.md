@@ -1085,6 +1085,11 @@ frame-exact boundary editor. Layout:
   (`cloudwait.rs`, tested), *Continue in Background* (`App::detached`: the download's
   `Playback` reply then opens nothing). Tested through the window in `ui/tests.rs`. Cards say *In the cloud* (cloud icon, accent colour), the session list *in the cloud* /
   *partly in the cloud* (`browse::cloud_state`), as the Tauri app did.
+- **Native batch export and filters** (2026-10-28, #20): the batch dialog says each flight
+  becomes "<session> — <title>" and nothing is written over; its result names the files
+  written and each failed flight with its reason (`bulk_summary`). The filter panel gives
+  each tag or figure name with what it would list (`browse::label_counts`), "N flights /
+  figures match" (`match_count`), and the sessions with their day.
 - **Batch export** (2026-10-19): *Select* in a session's header ticks cards, *Export N…* writes
   them all into one chosen folder through `Library::export_flights` — one after the other,
   progress as `export-progress` events, each under `<session> — <title>` (`.avi` for DVR,

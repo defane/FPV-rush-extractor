@@ -221,6 +221,48 @@ pub fn labels(text: &str) -> Vec<String> {
     result
 }
 
+/// The names a filter offers, each with what picking it would list: in All
+/// flights, how many flights carry the tag (theirs or their session's, each
+/// flight once); in Figures, how many figures bear the name. Sorted by name,
+/// in the spelling first met.
+pub fn label_counts(sessions: &[SessionView], view: View) -> Vec<(String, usize)> {
+    let mut counts: Vec<(String, usize)> = vec![];
+    let mut count = |name: &str| match counts.iter_mut().find(|(known, _)| same(known, name)) {
+        Some((_, n)) => *n += 1,
+        None => counts.push((name.to_owned(), 1)),
+    };
+    for session in sessions {
+        for flight in &session.flights {
+            if view == View::Figures {
+                flight
+                    .figures
+                    .iter()
+                    .for_each(|figure| count(&figure.label));
+            } else {
+                card_labels(flight, session)
+                    .iter()
+                    .for_each(|(label, _)| count(label));
+            }
+        }
+    }
+    counts.sort_by_key(|(name, _)| name.to_lowercase());
+    counts
+}
+
+/// How many flights — or figures, in Figures — the filters let through.
+pub fn match_count(browse: &Browse, sessions: &[SessionView]) -> usize {
+    let flights = browse.flights(sessions);
+    if browse.view != View::Figures {
+        return flights.len();
+    }
+    let names = &browse.figures.labels;
+    flights
+        .iter()
+        .flat_map(|(_, flight)| &flight.figures)
+        .filter(|figure| names.is_empty() || names.iter().any(|name| same(name, &figure.label)))
+        .count()
+}
+
 /// The session header's button: "Re-segment" once DVR flights exist — a
 /// re-segment remakes them — "Segment" before.
 pub fn segment_label(session: &SessionView) -> &'static str {
@@ -517,6 +559,48 @@ mod tests {
         assert_eq!(page, 1, "another session opened: followed");
         follow(&ids, None, &mut followed, &mut page, 10);
         assert_eq!(page, 1, "closing it moves nothing");
+    }
+
+    #[test]
+    fn a_filter_counts_what_each_name_would_list_and_what_matches() {
+        let tagged = |id: &str, labels: &[&str]| flight(id, 1, false, labels, 60.0);
+        let mut one = tagged("one", &["Gates", "freestyle"]);
+        one.figures.push(fpv_library::TagView {
+            id: "t".into(),
+            label: "power loop".into(),
+            note: None,
+            start: 1.0,
+            end: 2.0,
+            marker: false,
+        });
+        let sessions = vec![
+            session(
+                "race",
+                None,
+                vec![one, tagged("two", &["gates"])],
+                &["gates"],
+            ),
+            session("alps", None, vec![tagged("three", &[])], &["Gates"]),
+        ];
+        assert_eq!(
+            label_counts(&sessions, View::Flights),
+            [("freestyle".to_owned(), 1), ("Gates".to_owned(), 3)],
+            "each flight once, its session's tag included"
+        );
+        assert_eq!(
+            label_counts(&sessions, View::Figures),
+            [("power loop".to_owned(), 1)]
+        );
+        let mut browse = Browse {
+            view: View::Flights,
+            ..Browse::default()
+        };
+        browse.flights.labels = vec!["freestyle".into()];
+        assert_eq!(match_count(&browse, &sessions), 1);
+        browse.view = View::Figures;
+        assert_eq!(match_count(&browse, &sessions), 1);
+        browse.figures.labels = vec!["split-s".into()];
+        assert_eq!(match_count(&browse, &sessions), 0);
     }
 
     #[test]

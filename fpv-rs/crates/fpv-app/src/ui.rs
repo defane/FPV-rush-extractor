@@ -838,10 +838,15 @@ impl App {
                         .show_ui(ui, |ui| {
                             ui.selectable_value(filter, None, "All sessions");
                             for session in sessions {
+                                let day = day(&session.date);
                                 ui.selectable_value(
                                     filter,
                                     Some(session.id.clone()),
-                                    &session.name,
+                                    if day.is_empty() {
+                                        session.name.clone()
+                                    } else {
+                                        format!("{} · {day}", session.name)
+                                    },
                                 );
                             }
                         });
@@ -862,38 +867,20 @@ impl App {
                     }
                     return;
                 }
-                let mut names = Vec::<String>::new();
-                for session in &self.sessions {
-                    let labels: Vec<&String> = if self.browse.view == View::Figures {
-                        session
-                            .flights
-                            .iter()
-                            .flat_map(|f| f.figures.iter().map(|tag| &tag.label))
-                            .collect()
-                    } else {
-                        session
-                            .labels
-                            .iter()
-                            .chain(session.flights.iter().flat_map(|f| &f.labels))
-                            .collect()
-                    };
-                    for label in labels {
-                        if !names.iter().any(|known| browse::same(known, label)) {
-                            names.push(label.clone());
-                        }
-                    }
-                }
-                names.sort_by_key(|name| name.to_lowercase());
+                let names = browse::label_counts(&self.sessions, self.browse.view);
                 let chosen = &mut self.browse.filters_mut().labels;
                 let mut changed = false;
                 egui::ScrollArea::vertical()
                     .id_salt("labels")
                     .max_height(160.0)
                     .show(ui, |ui| {
-                        for label in names {
+                        for (label, count) in names {
                             let mut checked =
                                 chosen.iter().any(|selected| browse::same(selected, &label));
-                            if ui.checkbox(&mut checked, &label).changed() {
+                            if ui
+                                .checkbox(&mut checked, format!("{label} ({count})"))
+                                .changed()
+                            {
                                 if checked {
                                     chosen.push(label);
                                 } else {
@@ -913,6 +900,16 @@ impl App {
                 {
                     self.browse.page = 0;
                 }
+                let matching = browse::match_count(&self.browse, &self.sessions);
+                ui.small(format!(
+                    "{matching} {} match",
+                    match (self.browse.view == View::Figures, matching == 1) {
+                        (true, true) => "figure",
+                        (true, false) => "figures",
+                        (false, true) => "flight",
+                        (false, false) => "flights",
+                    }
+                ));
                 if ui.small_button("Reset filters").clicked() {
                     let sort = self.browse.filters().sort;
                     *self.browse.filters_mut() = browse::Filters {

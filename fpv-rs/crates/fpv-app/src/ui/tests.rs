@@ -1962,7 +1962,7 @@ fn the_tag_filters_belong_to_all_flights_not_to_a_session() {
     app.browse.view = crate::browse::View::Flights;
     let texts = shown_texts(&ctx, &mut app, draw);
     assert!(texts.iter().any(|t| t == "Match all tags"), "{texts:?}");
-    assert!(texts.iter().any(|t| t == "gates"), "{texts:?}");
+    assert!(texts.iter().any(|t| t == "gates (1)"), "{texts:?}");
 }
 
 #[test]
@@ -2880,4 +2880,31 @@ fn a_session_of_takes_offers_no_detection_profile() {
             "{texts:?}"
         );
     }
+}
+
+#[test]
+fn the_filters_count_what_each_name_lists_and_what_matches() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    let mut alpes = session_of(vec![FlightView {
+        labels: vec!["gates".into()],
+        ..flight()
+    }]);
+    alpes.date = Some("2026-10-17T00:00:00+02:00".into());
+    app.sessions = vec![alpes];
+    app.browse.view = crate::browse::View::Flights;
+    let texts = shown_texts(&ctx, &mut app, |app, ctx| app.sidebar(ctx));
+    for expected in ["gates (1)", "1 flight match"] {
+        assert!(texts.iter().any(|t| t == expected), "{expected}: {texts:?}");
+    }
+    let mut dialog = crate::dialogs::Dialog::bulk(vec!["test-flight".into()]);
+    dialog.reply(crate::worker::Reply::Picked(Some("/out".into())));
+    app.dialog = Some(dialog);
+    let texts = shown_texts(&ctx, &mut app, |app, ctx| app.dialog_window(ctx));
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.starts_with("1 flight: each becomes")),
+        "{texts:?}"
+    );
 }

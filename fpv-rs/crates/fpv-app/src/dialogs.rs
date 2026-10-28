@@ -945,6 +945,13 @@ impl App {
                 }
             }
             Kind::Export | Kind::Bulk => {
+                if dialog.kind == Kind::Bulk {
+                    ui.add(egui::Label::new(format!(
+                        "{} flight{}: each becomes \"<session> — <title>\" in the chosen folder; nothing is ever written over.",
+                        dialog.flights.len(),
+                        if dialog.flights.len() == 1 { "" } else { "s" }
+                    )).wrap());
+                }
                 field(
                     ui,
                     if dialog.kind == Kind::Bulk {
@@ -1026,17 +1033,9 @@ impl App {
                                         mode,
                                         |done, total, line| progress.count(done, total, line),
                                     )?;
-                                    if !report.failed.is_empty() {
-                                        return Err(fpv_library::LibraryError::Invalid(format!(
-                                            "{} written; failures: {:?}",
-                                            report.written.len(),
-                                            report.failed
-                                        )));
-                                    }
-                                    Ok(Reply::Done(format!(
-                                        "{} files exported",
-                                        report.written.len()
-                                    )))
+                                    bulk_summary(&report)
+                                        .map(Reply::Done)
+                                        .map_err(fpv_library::LibraryError::Invalid)
                                 } else {
                                     // Library::export also refuses overwrite, for all modes.
                                     export_reply(library.export(&id, &path, mode))
@@ -1426,6 +1425,48 @@ fn import_summary(report: &fpv_library::ImportSummary) -> String {
     parts.join(", ")
 }
 
+/// What a batch export says: the files it wrote, or — when some flights
+/// failed — those written, then each failure with its reason, for the
+/// notification.
+fn bulk_summary(report: &fpv_library::BulkExport) -> Result<String, String> {
+    let names = || {
+        report
+            .written
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let written = format!(
+        "{} file{} written",
+        report.written.len(),
+        if report.written.len() == 1 { "" } else { "s" }
+    );
+    if report.failed.is_empty() {
+        return Ok(if report.written.is_empty() {
+            written
+        } else {
+            format!("{written}: {}", names())
+        });
+    }
+    let failures: Vec<String> = report
+        .failed
+        .iter()
+        .map(|(flight, reason)| format!("FAILED {flight}: {reason}"))
+        .collect();
+    Err(format!(
+        "{written}, {} flight{} failed\n{}",
+        report.failed.len(),
+        if report.failed.len() == 1 { "" } else { "s" },
+        failures.join("\n")
+    ))
+}
+
 /// What a single export says: the files written, or — when a lossless one
 /// met recordings at different rates — the library's reason, for the dialog
 /// to ask how instead of failing.
@@ -1447,6 +1488,34 @@ fn export_reply(
                 .collect::<Vec<_>>()
                 .join(", ")
         ))),
+    }
+}
+
+#[cfg(test)]
+mod bulk_tests {
+    use super::*;
+
+    #[test]
+    fn a_batch_names_what_it_wrote_and_each_failure() {
+        let done = fpv_library::BulkExport {
+            written: vec![
+                "/out/Alpes — Flight 1.mp4".into(),
+                "/out/Alpes — Bando.mp4".into(),
+            ],
+            failed: vec![],
+        };
+        assert_eq!(
+            bulk_summary(&done).as_deref(),
+            Ok("2 files written: Alpes — Flight 1.mp4, Alpes — Bando.mp4")
+        );
+        let partly = fpv_library::BulkExport {
+            written: vec!["/out/Alpes — Flight 1.mp4".into()],
+            failed: vec![("Alpes — Flight 2".into(), "disk full".into())],
+        };
+        assert_eq!(
+            bulk_summary(&partly).unwrap_err(),
+            "1 file written, 1 flight failed\nFAILED Alpes — Flight 2: disk full"
+        );
     }
 }
 
