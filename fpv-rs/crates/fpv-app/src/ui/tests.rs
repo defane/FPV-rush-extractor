@@ -1014,7 +1014,7 @@ fn video_click_buttons_and_space_share_playback_state() {
     let output = player_input(&ctx, &mut app, vec![]);
     let field = text_positions(&output.shapes)
         .into_iter()
-        .find(|(s, _)| s == "Add a tag…")
+        .find(|(s, _)| s == "Tag the flight: freestyle, gates…")
         .unwrap()
         .1;
     click_player(&ctx, &mut app, field + egui::vec2(8.0, 6.0));
@@ -2273,4 +2273,45 @@ fn a_cards_title_is_renamed_in_place_and_its_export_is_a_click_away() {
         let _ = ctx.run(raw, |ctx| draw(&mut app, ctx));
     }
     assert!(app.dialog.is_some(), "the export dialog");
+}
+
+#[test]
+fn the_player_says_its_chapter_and_how_to_mark_a_figure() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    let chapter = |offset: f64| fpv_library::NativeSegment {
+        segment: fpv_library::Segment {
+            path: "/nonexistent/GH010042.MP4".into(),
+            start: 0.0,
+            end: 30.0,
+            offset,
+        },
+        width: 1920,
+        height: 1080,
+        has_audio: false,
+        all_intra: false,
+    };
+    let mut viewer = viewer_of(&ctx, flight());
+    viewer.player = Player::new(vec![chapter(0.0), chapter(30.0)], None, 0.0, ctx.clone());
+    viewer.player.pause(true);
+    app.viewer = Some(viewer);
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| app.player_window(ctx);
+    let texts = shown_texts(&ctx, &mut app, draw);
+    for expected in [
+        "chapter 1/2",
+        "No tags yet.",
+        "No figures yet.",
+        "Add Point",
+        "Mark In (or I) at the start, play to the end, name it, Enter.",
+        "Figure name (split-s, power loop…)",
+    ] {
+        assert!(texts.iter().any(|t| t == expected), "{expected}: {texts:?}");
+    }
+    app.viewer.as_mut().unwrap().mark = Some(0.0);
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(texts.iter().any(|t| t == "● Marked at 0:00.0"), "{texts:?}");
+    assert!(
+        texts.iter().any(|t| t.starts_with("Add Range to ")),
+        "{texts:?}"
+    );
 }

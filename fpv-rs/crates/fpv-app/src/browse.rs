@@ -195,6 +195,15 @@ pub fn labels(text: &str) -> Vec<String> {
     result
 }
 
+/// The figure button: a point at the playhead, or — Mark In set — the range
+/// from the mark to it.
+pub fn add_figure_label(mark: Option<f64>, now: f64) -> String {
+    match mark {
+        Some(_) => format!("Add Range to {}", clock(now)),
+        None => "Add Point".into(),
+    }
+}
+
 /// "2 chapters" for an action cam's take in chapters, "2 recordings" for a
 /// DVR flight across the DVR's cuts; nothing for a flight in one file.
 pub fn parts_label(flight: &FlightView) -> Option<String> {
@@ -381,6 +390,12 @@ mod tests {
             cloud: false,
             freeable: false,
         }
+    }
+
+    #[test]
+    fn the_figure_button_says_point_or_range() {
+        assert_eq!(add_figure_label(None, 12.3), "Add Point");
+        assert_eq!(add_figure_label(Some(4.7), 12.3), "Add Range to 0:12.3");
     }
 
     #[test]

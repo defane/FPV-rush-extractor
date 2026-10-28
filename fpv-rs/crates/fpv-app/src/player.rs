@@ -364,6 +364,11 @@ impl Player {
         latest
     }
 
+    /// The part playing now, of how many (`part_at`).
+    pub fn part(&self) -> Option<(usize, usize)> {
+        part_at(&self.parts, self.position())
+    }
+
     pub fn warnings(&self) -> Vec<String> {
         self.state
             .warnings
@@ -397,6 +402,22 @@ pub fn dimensions(width: i64, height: i64) -> (usize, usize) {
         (width * ratio).round().max(1.0) as usize,
         (height * ratio).round().max(1.0) as usize,
     )
+}
+
+/// Which of a flight's parts plays `at` flight seconds in, 1-based, and of
+/// how many — "chapter 2/2"; nothing for a flight in one file. A part's end
+/// belongs to the next, as in `remaining`.
+pub fn part_at(parts: &[NativeSegment], at: f64) -> Option<(usize, usize)> {
+    if parts.len() < 2 {
+        return None;
+    }
+    let index = parts
+        .iter()
+        .position(|part| {
+            at < part.segment.offset + (part.segment.end - part.segment.start).max(0.0)
+        })
+        .unwrap_or(parts.len() - 1);
+    Some((index + 1, parts.len()))
 }
 
 /// The seek instant belongs to the next part at an exact chapter boundary.
@@ -1022,6 +1043,36 @@ mod tests {
         );
         player.set_volume(0.8);
         assert!(!player.audio_enabled());
+    }
+
+    #[test]
+    fn says_which_chapter_plays() {
+        let part = |offset: f64, length: f64| NativeSegment {
+            segment: Segment {
+                path: "GH010042.MP4".into(),
+                start: 0.0,
+                end: length,
+                offset,
+            },
+            width: 1920,
+            height: 1080,
+            has_audio: true,
+            all_intra: false,
+        };
+        assert_eq!(
+            part_at(&[part(0.0, 60.0)], 10.0),
+            None,
+            "one file: nothing to say"
+        );
+        let chapters = [part(0.0, 60.0), part(60.0, 30.0)];
+        assert_eq!(part_at(&chapters, 0.0), Some((1, 2)));
+        assert_eq!(part_at(&chapters, 59.9), Some((1, 2)));
+        assert_eq!(
+            part_at(&chapters, 60.0),
+            Some((2, 2)),
+            "the cut is the next chapter's"
+        );
+        assert_eq!(part_at(&chapters, 999.0), Some((2, 2)));
     }
 
     #[test]

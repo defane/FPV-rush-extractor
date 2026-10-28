@@ -1115,7 +1115,11 @@ frame-exact boundary editor. Layout:
   (segment, file time), the move to the next chapter, a stop at a trimmed end — so a GoPro take
   in chapters plays one file after the other, with a short pause at each cut (accepted: not an
   editor; a second preloading `<video>` would hide it). The native controls show the file's
-  time; an overlay shows the flight's ("0:04.7 / 0:07.0 · chapter 2/2"). If the web view
+  time; an overlay shows the flight's ("0:04.7 / 0:07.0 · chapter 2/2"). The native player says
+  "chapter 2/2" (a take) or "recording 2/2" (the DVR) beside its buttons (`player::part_at`,
+  2026-10-28, #10), and its figure panel is the Tauri one's again: "Add Point" or "Add Range
+  to 0:12.3" (`browse::add_figure_label`), "● Marked at …", the Mark In hint, "No tags yet." /
+  "No figures yet.", and the example placeholders. If the web view
   refuses a file, the player builds the proxy and carries on from the same flight time, saying
   so. **WebKitGTK does play HEVC** — 4K 10-bit, with `gstreamer1.0-libav` installed, as in the
   devcontainer; the earlier note that it would not was wrong. The fallback was exercised with

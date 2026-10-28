@@ -1683,6 +1683,14 @@ impl App {
                 viewer.player.pause(!viewer.player.paused());
             }
             ui.horizontal_wrapped(|ui| {
+                if let Some((part, of)) = viewer.player.part() {
+                    let what = if viewer.flight.action_cam {
+                        "chapter"
+                    } else {
+                        "recording"
+                    };
+                    ui.small(format!("{what} {part}/{of}"));
+                }
                 if !viewer.fullscreen
                     && ui
                         .button(if viewer.player.paused() {
@@ -1710,6 +1718,9 @@ impl App {
         };
         let show_metadata = |this: &mut Self, ui: &mut egui::Ui, viewer: &mut Viewer| {
             ui.heading("Tags");
+            if viewer.flight.labels.is_empty() {
+                ui.weak("No tags yet.");
+            }
             ui.horizontal_wrapped(|ui| {
                 for label in viewer.flight.labels.clone() {
                     if ui.button(format!("{label} ×")).clicked() {
@@ -1724,7 +1735,7 @@ impl App {
             ui.horizontal(|ui| {
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut viewer.label)
-                        .hint_text("Add a tag…")
+                        .hint_text("Tag the flight: freestyle, gates…")
                         .desired_width((ui.available_width() - 80.0).max(20.0)),
                 );
                 let enter =
@@ -1749,6 +1760,9 @@ impl App {
             suggestions(ui, &mut viewer.label, found);
             ui.separator();
             ui.heading("Figures");
+            if viewer.flight.figures.is_empty() {
+                ui.weak("No figures yet.");
+            }
             egui::ScrollArea::vertical()
                 .max_height((ui.available_height() - 170.0).max(100.0))
                 .show(ui, |ui| {
@@ -1782,30 +1796,36 @@ impl App {
                     viewer.mark = Some(viewer.player.position());
                 }
                 if let Some(mark) = viewer.mark {
-                    ui.label(format!("From {}", clock(mark)));
+                    ui.label(RichText::new(format!("● Marked at {}", clock(mark))).color(ACCENT));
                     if ui.small_button("Cancel").clicked() {
                         viewer.mark = None;
                     }
                 }
             });
+            // The button first, from the right: "Add Range to 0:12.3" is
+            // wider than "Add Point", and the field takes what is left.
             ui.horizontal(|ui| {
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut viewer.figure)
-                        .hint_text("Figure name")
-                        .desired_width((ui.available_width() - 80.0).max(20.0)),
-                );
-                let enter =
-                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                if (ui.button("Add").clicked() || enter) && !viewer.figure.trim().is_empty() {
-                    let id = viewer.flight.id.clone();
-                    let label = std::mem::take(&mut viewer.figure);
-                    let end = viewer.player.position();
-                    let start = viewer.mark.take().unwrap_or(end);
-                    this.submit("Add figure", true, move |library, _| {
-                        library.add_tag(&id, &label, start, end)?;
-                        Ok(Reply::Done("Figure added".into()))
-                    });
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let add = browse::add_figure_label(viewer.mark, viewer.player.position());
+                    let clicked = ui.button(add).clicked();
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut viewer.figure)
+                            .hint_text("Figure name (split-s, power loop…)")
+                            .desired_width(ui.available_width().max(20.0)),
+                    );
+                    let enter = response.lost_focus()
+                        && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                    if (clicked || enter) && !viewer.figure.trim().is_empty() {
+                        let id = viewer.flight.id.clone();
+                        let label = std::mem::take(&mut viewer.figure);
+                        let end = viewer.player.position();
+                        let start = viewer.mark.take().unwrap_or(end);
+                        this.submit("Add figure", true, move |library, _| {
+                            library.add_tag(&id, &label, start, end)?;
+                            Ok(Reply::Done("Figure added".into()))
+                        });
+                    }
+                })
             });
             let names = this
                 .sessions
@@ -1815,6 +1835,13 @@ impl App {
                 .map(|figure| figure.label.as_str());
             let found = browse::suggest(names, &viewer.figure, &[]);
             suggestions(ui, &mut viewer.figure, found);
+            ui.add(
+                egui::Label::new(
+                    RichText::new("Mark In (or I) at the start, play to the end, name it, Enter.")
+                        .weak(),
+                )
+                .wrap(),
+            );
         };
 
         if available.x < 720.0 {
