@@ -955,7 +955,12 @@ frame-exact boundary editor. Layout:
   `make tools`, a prerequisite of every build target, checks for cargo, npm and (macOS) the
   Xcode command-line tools and prints how to install what is missing — the first `make macos`
   on the pilot's Mac died inside the Tauri CLI with "failed to run 'cargo metadata'", Rust
-  having only ever been installed in the container. `make check` is clippy at
+  having only ever been installed in the container. **`make macos` checks its Rust targets first**
+  (`mac-targets`, 2026-10-28): the universal DMG needs `aarch64-apple-darwin` *and*
+  `x86_64-apple-darwin`, and the pilot's first native `make macos` built FFmpeg for minutes
+  before cargo stopped on the missing Intel one. It now stops at once with the
+  `rustup target add …` to run, or `make macos TARGET=aarch64-apple-darwin` for that Mac
+  only (tested with a stand-in `rustup`). `make check` is clippy at
   `-D warnings`, the tests and svelte-check at `--fail-on-warnings`. `tauri.conf.json` asks
   for `"all"` bundles; the targets pass `--bundles`. Verified on Linux: the arm64 `.deb`
   installs with apt (depends on ffmpeg, the GStreamer plugins, WebKitGTK), the installed app

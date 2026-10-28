@@ -1,6 +1,6 @@
 # FPV Rush — native Rust GUI. Installers are built on their destination OS.
 .DEFAULT_GOAL := help
-.PHONY: help tools deps check test app run cli media-tools package linux macos windows macos-remote clean dist-clean
+.PHONY: help tools deps check test app run cli media-tools package linux macos mac-targets windows macos-remote clean dist-clean
 
 ifeq ($(wildcard fpv-rs/Cargo.toml),)
 $(error run make from the repository root)
@@ -11,6 +11,8 @@ TARGET ?=
 GIT_REF ?= $(shell git branch --show-current)
 MAC_ARCH := $(if $(TARGET),$(patsubst %-apple-darwin,%,$(TARGET)),universal)
 TARGET_FLAG := $(if $(TARGET),--target $(TARGET))
+# The Rust targets a DMG of MAC_ARCH is compiled for.
+MAC_TARGETS := $(if $(filter universal,$(MAC_ARCH)),aarch64-apple-darwin x86_64-apple-darwin,$(MAC_ARCH)-apple-darwin)
 export PATH := $(HOME)/.cargo/bin:$(PATH)
 
 help: ## list build targets
@@ -59,8 +61,21 @@ linux: ## Linux deb, tar.gz and AppImage (downloads verified packaging tools)
 
 macos: ## macOS DMG (universal Intel + Apple Silicon by default)
 	@test "$(HOST)" = Darwin || { echo "Use make macos-remote from this host"; exit 1; }
+	$(MAKE) mac-targets
 	$(MAKE) media-tools
 	bash packaging/package.sh macos $(MAC_ARCH)
+
+mac-targets: ## check the Rust targets the DMG needs, before anything is built
+	@installed="$$(rustup target list --installed 2>/dev/null)"; missing=""; \
+	for target in $(MAC_TARGETS); do \
+		printf '%s\n' "$$installed" | grep -qx "$$target" || missing="$$missing $$target"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		echo "Missing Rust target(s) for a $(MAC_ARCH) DMG:$$missing"; \
+		echo "  rustup target add$$missing"; \
+		echo "or build for this Mac only: make macos TARGET=aarch64-apple-darwin"; \
+		exit 1; \
+	fi
 
 windows: ## Windows installer and portable ZIP (run on Windows with NSIS/MSYS2)
 	powershell -ExecutionPolicy Bypass -File packaging/windows/package.ps1
