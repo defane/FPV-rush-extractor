@@ -313,10 +313,22 @@ impl Player {
         *self.state.volume.lock().unwrap()
     }
 
-    pub fn set_volume(&self, volume: f32) {
+    /// A player opened muted runs no audio at all: turning the sound up starts
+    /// it, from where the video is, so the sound can always come back.
+    pub fn set_volume(&mut self, volume: f32) {
         if let Ok(mut gain) = self.state.volume.lock() {
             *gain = volume.clamp(0.0, 1.0);
         }
+        if volume > 0.0 && !self.audio_enabled && self.parts.iter().any(|part| part.has_audio) {
+            self.audio_enabled = true;
+            // Restarts the decoders where the video is, paused or not.
+            self.seek(self.position());
+        }
+    }
+
+    #[cfg(test)]
+    pub fn audio_enabled(&self) -> bool {
+        self.audio_enabled
     }
 
     pub fn seek(&mut self, at: f64) {
@@ -964,6 +976,52 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(player.warnings().is_empty(), "{:?}", player.warnings());
+    }
+
+    #[test]
+    fn turning_the_sound_up_starts_the_audio_a_muted_opening_left_out() {
+        let part = NativeSegment {
+            segment: Segment {
+                path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/h264-initial-headers.avi"),
+                start: 0.0,
+                end: 3.0,
+                offset: 0.0,
+            },
+            width: 64,
+            height: 48,
+            has_audio: true,
+            all_intra: false,
+        };
+        let mut player = Player::new_with_volume(
+            vec![part.clone()],
+            test_tools(),
+            1.0,
+            eframe::egui::Context::default(),
+            0.0,
+        );
+        player.pause(true);
+        assert!(!player.audio_enabled());
+        player.set_volume(0.8);
+        assert!(player.audio_enabled(), "the sound comes back");
+        assert_eq!(player.volume(), 0.8);
+        assert!(player.paused(), "still paused where it was");
+        assert_eq!(player.position(), 1.0);
+
+        // A flight with no sound at all has nothing to start.
+        let silent = NativeSegment {
+            has_audio: false,
+            ..part
+        };
+        let mut player = Player::new_with_volume(
+            vec![silent],
+            test_tools(),
+            0.0,
+            eframe::egui::Context::default(),
+            0.0,
+        );
+        player.set_volume(0.8);
+        assert!(!player.audio_enabled());
     }
 
     #[test]

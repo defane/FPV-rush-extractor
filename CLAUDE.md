@@ -111,6 +111,11 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   refuses itself without it. Tested on Linux, whose FFmpeg refuses VideoToolbox:
   the player falls back and plays. **Verified by the pilot on their Apple Silicon Mac (2026-10-28):
   the 4K Osmo takes play** in the native app built with `make macos`.
+- **The sound can always come back in the player** (2026-10-28, the pilot's report):
+  a player opened muted ran no audio at all and the speaker was greyed out, so
+  *Mute videos* left no way back. Now only a flight with no sound to play (no audio
+  track, or imported with No Sound) is silent; *Mute videos* opens it muted, and the
+  speaker or the volume restarts the audio where the video is (`Player::set_volume`).
 - **Import audio policy:** schema `v8` adds `sourceFile.muted`, default false for
   existing recordings. Import's No Sound option marks only new recordings;
   playback emits silence for their parts and exports honor that choice. Mixed

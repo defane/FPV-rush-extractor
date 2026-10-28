@@ -46,6 +46,22 @@ fn suggestions(ui: &mut egui::Ui, field: &mut String, names: Vec<String>) {
     });
 }
 
+/// The speaker: mutes, or brings the sound back at the volume it had.
+fn toggle_mute(viewer: &mut Viewer) {
+    if viewer.volume <= 0.001 {
+        viewer.volume = viewer.remembered_volume.max(0.01);
+        viewer.playback_muted = false;
+    } else {
+        viewer.remembered_volume = viewer.volume;
+        viewer.playback_muted = !viewer.playback_muted;
+    }
+    viewer.player.set_volume(if viewer.playback_muted {
+        0.0
+    } else {
+        viewer.volume
+    });
+}
+
 fn player_speaker(ui: &mut egui::Ui, viewer: &mut Viewer) -> egui::Response {
     let response = ui.add_enabled(
         !viewer.muted,
@@ -54,18 +70,7 @@ fn player_speaker(ui: &mut egui::Ui, viewer: &mut Viewer) -> egui::Response {
             .min_size(egui::vec2(26.0, 26.0)),
     );
     if response.clicked() {
-        if viewer.volume <= 0.001 {
-            viewer.volume = viewer.remembered_volume.max(0.01);
-            viewer.playback_muted = false;
-        } else {
-            viewer.remembered_volume = viewer.volume;
-            viewer.playback_muted = !viewer.playback_muted;
-        }
-        viewer.player.set_volume(if viewer.playback_muted {
-            0.0
-        } else {
-            viewer.volume
-        });
+        toggle_mute(viewer);
     }
     let muted = viewer.muted || viewer.playback_muted || viewer.volume <= 0.001;
     paint_metadata_icon(ui, MetadataIcon::Speaker(muted), response.rect.shrink(3.0));

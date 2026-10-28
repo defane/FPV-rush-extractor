@@ -1833,3 +1833,41 @@ fn the_session_list_and_the_cards_say_what_is_only_in_the_cloud() {
         "the card: {texts:?}"
     );
 }
+
+#[test]
+fn a_flight_opened_muted_by_the_setting_can_be_unmuted_from_the_speaker() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, events) = app_with_worker(&ctx);
+    app.config.mute_videos = true;
+    app.sessions = vec![session_of(vec![flight()])];
+    let part = fpv_library::NativeSegment {
+        segment: fpv_library::Segment {
+            path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/h264-initial-headers.avi"),
+            start: 0.0,
+            end: 3.0,
+            offset: 0.0,
+        },
+        width: 64,
+        height: 48,
+        has_audio: true,
+        all_intra: false,
+    };
+    events
+        .send(crate::worker::Event::Finished {
+            id: 99,
+            result: Ok(crate::worker::Reply::Playback {
+                flight: flight().id,
+                at: 0.0,
+                parts: vec![part],
+            }),
+        })
+        .unwrap();
+    app.receive(&ctx);
+    let viewer = app.viewer.as_mut().unwrap();
+    assert!(!viewer.muted, "it has sound: the speaker stays usable");
+    assert!(viewer.playback_muted && !viewer.player.audio_enabled());
+    super::toggle_mute(viewer);
+    assert!(!viewer.playback_muted);
+    assert!(viewer.player.audio_enabled(), "the sound comes back");
+}

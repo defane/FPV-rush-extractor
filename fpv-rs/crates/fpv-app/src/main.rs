@@ -354,8 +354,11 @@ impl App {
                                 .flat_map(|s| &s.flights)
                                 .find(|f| f.id == flight)
                             {
-                                let muted = self.config.mute_videos
-                                    || parts.iter().all(|part| !part.has_audio);
+                                // No sound to play: no audio track, or imported
+                                // with No Sound. Mute videos only starts muted:
+                                // the speaker brings the sound back.
+                                let silent = parts.iter().all(|part| !part.has_audio);
+                                let muted = silent || self.config.mute_videos;
                                 let player = player::Player::new_with_volume(
                                     parts,
                                     self.tools.clone(),
@@ -370,10 +373,10 @@ impl App {
                                     mark: None,
                                     figure: String::new(),
                                     label: String::new(),
-                                    volume: if muted { 0.0 } else { 1.0 },
+                                    volume: if silent { 0.0 } else { 1.0 },
                                     remembered_volume: 1.0,
-                                    playback_muted: false,
-                                    muted,
+                                    playback_muted: muted && !silent,
+                                    muted: silent,
                                     fullscreen: false,
                                     window: PlayerWindow::default(),
                                     seek_time: None,
