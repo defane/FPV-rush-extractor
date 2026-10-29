@@ -1,5 +1,7 @@
 # Unreleased
 
+- Keep export image-integrity checks compatible with modern FFmpeg and the older Linux tools used by CI.
+
 - Fix EV300D H.264/ADPCM AVI exports to MP4: preserve video packets and convert only incompatible audio to AAC, avoiding the reproduced zero-byte muxer failure (official #21).
 
 - Add a full-original-video filmstrip to Edit boundaries, independent hover/scrub preview, selected-range shading and draggable start/end handles; load images incrementally (official #24).

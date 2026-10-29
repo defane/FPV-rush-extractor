@@ -170,9 +170,16 @@ fn h264_avi_exports_to_mp4_with_video_unchanged_and_incompatible_audio_converted
         assert!(audio.status.success());
         assert_eq!(String::from_utf8_lossy(&audio.stdout).trim(), if muted { "" } else { "aac" });
         let video_hashes = |path: &std::path::Path| {
-            let output = Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(path)
-                .args(["-map", "0:v:0", "-vsync", "0", "-f", "framemd5", "-"]).output().unwrap();
-            assert!(output.status.success());
+            let hash = |flag, mode| Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(path)
+                .args(["-map", "0:v:0", flag, mode, "-f", "framemd5", "-"]).output().unwrap();
+            let mut output = hash("-fps_mode", "passthrough");
+            // Match the proxy's compatibility path: FFmpeg 4 predates fps_mode,
+            // while FFmpeg 9 removed vsync. Never resample frames for comparison.
+            if !output.status.success() && String::from_utf8_lossy(&output.stderr)
+                .contains("Unrecognized option 'fps_mode'") {
+                output = hash("-vsync", "0");
+            }
+            assert!(output.status.success(), "frame hash failed for {}: {}", path.display(), String::from_utf8_lossy(&output.stderr));
             String::from_utf8_lossy(&output.stdout).lines().filter(|line| !line.starts_with('#'))
                 .map(|line| line.rsplit(',').next().unwrap().trim().to_owned()).collect::<Vec<_>>()
         };
