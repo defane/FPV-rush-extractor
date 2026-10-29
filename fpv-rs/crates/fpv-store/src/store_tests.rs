@@ -546,3 +546,34 @@ fn upgrading_v7_keeps_existing_recordings_audible() {
     assert!(!file.muted);
     assert_eq!(file.media.audio_codec.as_deref(), Some("pcm_s16le"));
 }
+
+#[test]
+fn playback_mute_migrates_from_v8_is_per_flight_and_survives_reopening() {
+    let root = std::env::temp_dir().join(format!("fpv-mute-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("library.sqlite");
+    let store = LibraryStore::with_connection(Connection::open(&path).unwrap(), Some("v8")).unwrap();
+    let (session, source) = session_with_one_file(&store, "PICT0001.AVI", 1);
+    let (first, _) = one_clip(&store, &source, 0, 100);
+    let second_source = file(&session, "PICT0002.AVI", 2);
+    store.save_source_files(std::slice::from_ref(&second_source)).unwrap();
+    let (second, _) = one_clip(&store, &second_source, 0, 100);
+    drop(store);
+    let store = LibraryStore::open(&path).unwrap();
+    assert_eq!(store.playback_mute(first.id).unwrap(), None);
+    store.set_playback_mute(first.id, true).unwrap();
+    store.set_playback_mute(second.id, false).unwrap();
+    drop(store);
+    let store = LibraryStore::open(&path).unwrap();
+    assert_eq!(store.playback_mute(first.id).unwrap(), Some(true));
+    assert_eq!(store.playback_mute(second.id).unwrap(), Some(false));
+    store.set_playback_mute(first.id, false).unwrap();
+    assert_eq!(store.playback_mute(first.id).unwrap(), Some(false));
+    assert_eq!(store.source_file(source.id).unwrap().unwrap(), source, "export/import policy unchanged");
+    store.delete_flight(first.id, &[]).unwrap();
+    assert_eq!(store.playback_mute(first.id).unwrap(), None, "deleted flights leave no preference");
+    assert!(store.set_playback_mute(Uuid::new_v4(), true).is_err());
+    assert_eq!(store.playback_mute(second.id).unwrap(), Some(false));
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}

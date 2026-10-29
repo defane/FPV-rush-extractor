@@ -1520,6 +1520,7 @@ fn a_flight_in_the_cloud_waits_for_its_videos_then_plays() {
         .send(crate::worker::Event::Finished {
             id: job.id,
             result: Ok(crate::worker::Reply::Playback {
+                playback_mute: None,
                 flight: in_cloud.id.clone(),
                 at: 0.0,
                 parts: vec![],
@@ -1562,6 +1563,7 @@ fn continuing_in_the_background_leaves_the_flight_unplayed() {
         .send(crate::worker::Event::Finished {
             id: job.id,
             result: Ok(crate::worker::Reply::Playback {
+                playback_mute: None,
                 flight: in_cloud.id.clone(),
                 at: 0.0,
                 parts: vec![],
@@ -1916,6 +1918,7 @@ fn a_flight_opened_muted_by_the_setting_can_be_unmuted_from_the_speaker() {
         .send(crate::worker::Event::Finished {
             id: 99,
             result: Ok(crate::worker::Reply::Playback {
+                playback_mute: None,
                 flight: flight().id,
                 at: 0.0,
                 parts: vec![part],
@@ -3464,4 +3467,109 @@ fn info_displays_each_sources_exact_rate_and_exclusive_bounds_and_fits_small_win
         close.x >= 0.0 && close.x < 360.0 && close.y >= 0.0 && close.y < 480.0,
         "Close remains visible: {close:?}"
     );
+}
+
+#[test]
+fn reopening_clips_restores_their_own_playback_mute_and_keeps_no_sound_authoritative() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, events) = app_with_worker(&ctx);
+    let a = flight();
+    let b = FlightView {
+        id: "other-flight".into(),
+        ..flight()
+    };
+    app.sessions = vec![session_of(vec![a.clone(), b.clone()])];
+    for (id, saved, has_audio, default, expected) in [
+        (&a.id, Some(true), true, false, true),
+        (&b.id, Some(false), true, false, false),
+        (&a.id, Some(true), true, false, true),
+        (&a.id, Some(false), true, true, false),
+        (&b.id, None, true, true, true),
+        (&a.id, Some(false), false, false, true),
+    ] {
+        app.config.mute_videos = default;
+        events
+            .send(crate::worker::Event::Finished {
+                id: 999,
+                result: Ok(Reply::Playback {
+                    flight: id.clone(),
+                    at: 0.0,
+                    playback_mute: saved,
+                    parts: vec![fpv_library::NativeSegment {
+                        segment: fpv_library::Segment {
+                            path: "not-decoded".into(),
+                            start: 0.0,
+                            end: 1.0,
+                            offset: 0.0,
+                        },
+                        width: 64,
+                        height: 48,
+                        has_audio,
+                        all_intra: true,
+                    }],
+                }),
+            })
+            .unwrap();
+        app.receive(&ctx);
+        let viewer = app.viewer.as_ref().unwrap();
+        assert_eq!(viewer.player.volume() == 0.0, expected);
+        assert_eq!(viewer.muted, !has_audio);
+        app.viewer = None;
+    }
+}
+
+#[test]
+fn speaker_changes_submit_a_playback_preference_without_waiting_for_close() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, _events) = app_with_worker(&ctx);
+    app.viewer = Some(test_viewer(&ctx));
+    for expected in [true, false] {
+        let mut output = ctx.run(input(egui::vec2(1280.0, 820.0)), |ctx| {
+            app.player_window(ctx)
+        });
+        for _ in 0..8 {
+            output = ctx.run(input(egui::vec2(1280.0, 820.0)), |ctx| {
+                app.player_window(ctx)
+            });
+        }
+        let (pos, width) = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t)
+                    if t.galley.job.text == "Play" || t.galley.job.text == "Pause" =>
+                {
+                    Some((t.pos, t.galley.size().x))
+                }
+                _ => None,
+            })
+            .unwrap();
+        let spacing = ctx.style().spacing.clone();
+        let point = pos
+            + egui::vec2(
+                width + spacing.button_padding.x + spacing.item_spacing.x + 13.0,
+                8.0,
+            );
+        for pressed in [true, false] {
+            let mut raw = input(egui::vec2(1280.0, 820.0));
+            raw.events = vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ];
+            let _ = ctx.run(raw, |ctx| app.player_window(ctx));
+        }
+        assert_eq!(app.viewer.as_ref().unwrap().playback_muted, expected);
+        let job = jobs.try_recv().expect("mute preference queued immediately");
+        assert!(
+            app.tasks
+                .iter()
+                .any(|t| t.id == job.id && t.label == "Remember playback mute")
+        );
+        assert!(jobs.try_recv().is_err(), "one write per change");
+    }
 }

@@ -1135,6 +1135,15 @@ impl Library {
         Ok(self.store.save_session(&Session { detection_profile: profile, ..session })?)
     }
 
+    pub fn playback_mute(&self, id: &str) -> Result<Option<bool>> {
+        Ok(self.store.playback_mute(parse(id)?)?)
+    }
+
+    /// Playback only; never changes source audio or export policy.
+    pub fn set_playback_mute(&self, id: &str, muted: bool) -> Result<()> {
+        Ok(self.store.set_playback_mute(parse(id)?, muted)?)
+    }
+
     /// Sets or clears a flight's title; empty falls back to "Flight N".
     pub fn set_flight_title(&self, id: &str, title: &str) -> Result<()> {
         let (flight, _, _) = self.flight(id)?;

@@ -101,7 +101,8 @@ Tags and figures are shown beside the video.
 | **I** | Mark the start of a figure |
 | **Enter** in the figure-name field | Save a point or complete the marked range |
 
-Playback mute does not change export audio settings. Import's **No Sound**
+Playback mute is remembered for each flight, including after restarting the
+application. It does not change export audio settings. Import's **No Sound**
 recordings remain silent.
 
 Choose **… → Info** on a thumbnail to view the original file name, original and

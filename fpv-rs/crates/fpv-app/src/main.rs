@@ -495,7 +495,12 @@ impl App {
                         }
                         // Downloaded in the background, as asked: nothing opens.
                         Ok(Reply::Playback { .. }) if detached => {}
-                        Ok(Reply::Playback { flight, at, parts }) => {
+                        Ok(Reply::Playback {
+                            flight,
+                            at,
+                            parts,
+                            playback_mute,
+                        }) => {
                             if let Some(flight) = self
                                 .sessions
                                 .iter()
@@ -506,7 +511,8 @@ impl App {
                                 // with No Sound. Mute videos only starts muted:
                                 // the speaker brings the sound back.
                                 let silent = parts.iter().all(|part| !part.has_audio);
-                                let muted = silent || self.config.mute_videos;
+                                let muted =
+                                    silent || playback_mute.unwrap_or(self.config.mute_videos);
                                 let player = player::Player::new_with_volume(
                                     parts,
                                     self.tools.clone(),
@@ -666,6 +672,7 @@ impl App {
                 }
                 Ok(Reply::Playback {
                     parts: library.native_playback(&id)?,
+                    playback_mute: library.playback_mute(&id)?,
                     flight: id,
                     at,
                 })

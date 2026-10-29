@@ -1,5 +1,7 @@
 # Unreleased
 
+- Remember each flight's playback mute across navigation and restarts, independently of import/export audio policies (official #25).
+
 - Add thumbnail Info with copyable original/library paths, stored media metadata, availability and source-relative start/exclusive-end times for every recording (official #23).
 
 - Close submitted export panels immediately, keep progress/errors in Tasks and reopen frame-rate recovery without interrupting another dialog (official #22).

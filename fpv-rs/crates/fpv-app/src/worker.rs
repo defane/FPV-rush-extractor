@@ -19,6 +19,7 @@ pub enum Reply {
         flight: String,
         at: f64,
         parts: Vec<NativeSegment>,
+        playback_mute: Option<bool>,
     },
     BoundarySource {
         clip: String,

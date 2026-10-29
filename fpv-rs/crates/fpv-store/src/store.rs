@@ -200,6 +200,18 @@ impl LibraryStore {
         not_found_unless(changed, "clip", clip.id)
     }
 
+    /// None means no explicit playback preference; use the app's default.
+    pub fn playback_mute(&self, flight: Uuid) -> Result<Option<bool>> {
+        Ok(self.db().query_row("SELECT muted FROM flightPlayback WHERE flightId = ?",
+            [Id(flight)], |row| row.get(0)).optional()?)
+    }
+
+    pub fn set_playback_mute(&self, flight: Uuid, muted: bool) -> Result<()> {
+        self.db().execute("INSERT INTO flightPlayback (flightId, muted) VALUES (?1, ?2) \
+            ON CONFLICT(flightId) DO UPDATE SET muted = excluded.muted", params![Id(flight), muted])?;
+        Ok(())
+    }
+
     /// Persists a user edit to a flight — its rating or title.
     pub fn update_flight(&self, flight: &Flight) -> Result<()> {
         let changed = self.db().execute(

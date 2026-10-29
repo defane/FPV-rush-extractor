@@ -1630,6 +1630,7 @@ impl App {
                     Some(ctx.load_texture("video", image, egui::TextureOptions::LINEAR));
             }
         }
+        let previous_mute = viewer.playback_muted || viewer.volume <= 0.001;
         let mut open = true;
         let fullscreen = viewer.fullscreen;
         let expanded = fullscreen || viewer.window.maximized;
@@ -1717,6 +1718,14 @@ impl App {
             viewer.window.normal_rect = Some(shown.response.rect);
         }
         viewer.window.was_expanded = expanded;
+        let muted = viewer.playback_muted || viewer.volume <= 0.001;
+        if !viewer.muted && muted != previous_mute {
+            let id = viewer.flight.id.clone();
+            self.submit("Remember playback mute", true, move |library, _| {
+                library.set_playback_mute(&id, muted)?;
+                Ok(Reply::Done("Playback mute saved".into()))
+            });
+        }
         if viewer.fullscreen && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
             viewer.fullscreen = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));

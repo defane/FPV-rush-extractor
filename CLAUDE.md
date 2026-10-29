@@ -122,6 +122,11 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   muted/audible flights normalize audio and synthesize silence only for muted
   parts; lossless exports keep the original video packets. Reduction preserves
   source audio and carries the policy onto its pieces.
+- Schema `v9` adds `flightPlayback`, a per-flight persisted playback mute override.
+  Missing preferences follow Settings' initial mute default; explicit speaker/volume
+  choices survive player navigation and app restart. Import No Sound remains
+  authoritative. Playback preferences never change export audio policy, and are
+  deleted by cascade with their flight.
 - `boundary.rs` edits source-frame ranges with left/start and right/exclusive-end
   handles, and (2026-10-28, #11) the Tauri editor's nudges again: Start/End, −1 s, −¼ s,
   −1 fr, +1 fr, +¼ s, +1 s at the recording's own rate (`nudge_steps`, `nudge`), the edge's
