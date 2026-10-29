@@ -23,6 +23,9 @@ pub struct Step {
 pub struct ImportProgress {
     done: usize,
     total: usize,
+    imported: usize,
+    skipped: usize,
+    failed: usize,
 }
 
 impl ImportProgress {
@@ -35,20 +38,25 @@ impl ImportProgress {
             ImportEvent::Copying(path) => format!("Copying {}…", name_of(&path)),
             ImportEvent::Imported(file) => {
                 self.done += 1;
+                self.imported += 1;
                 format!("Imported {} — {}, {:.1} s", name_of(Path::new(&file.imported_path)),
                         file.media.frame_rate, file.media.duration)
             }
             ImportEvent::Skipped(path) => {
                 self.done += 1;
+                self.skipped += 1;
                 format!("Skipped {} (already in library)", name_of(&path))
             }
             ImportEvent::Failed(path, reason) => {
                 self.done += 1;
+                self.failed += 1;
                 format!("FAILED {}: {reason}", name_of(&path))
             }
             ImportEvent::Flight { order, parts, .. } =>
                 format!("Flight {order}: action-cam take, {parts} file(s)"),
         };
+        let line = format!("{}/{} videos imported · {} skipped · {} failed — {line}",
+            self.imported, self.total, self.skipped, self.failed);
         Step { line, done: self.done, total: self.total }
     }
 }
@@ -147,17 +155,17 @@ mod tests {
     fn counts_an_imported_skipped_or_failed_file_and_takes_the_total_from_discovery() {
         let mut progress = ImportProgress::default();
         let step = progress.step(ImportEvent::Discovered { count: 3, sessions: 1 });
-        assert_eq!((step.line.as_str(), step.done, step.total), ("3 recording(s) → 1 session(s)", 0, 3));
+        assert_eq!((step.line.as_str(), step.done, step.total), ("0/3 videos imported · 0 skipped · 0 failed — 3 recording(s) → 1 session(s)", 0, 3));
         let step = progress.step(ImportEvent::Copying(PathBuf::from("/card/PICT0003.AVI")));
-        assert_eq!((step.line.as_str(), step.done), ("Copying PICT0003.AVI…", 0));
+        assert_eq!((step.line.as_str(), step.done), ("0/3 videos imported · 0 skipped · 0 failed — Copying PICT0003.AVI…", 0));
         let step = progress.step(ImportEvent::Imported(Box::new(recording("PICT0003.AVI"))));
         assert_eq!(step.done, 1);
-        assert!(step.line.starts_with("Imported PICT0003.AVI — "), "{}", step.line);
+        assert!(step.line.starts_with("1/3 videos imported · 0 skipped · 0 failed — Imported PICT0003.AVI — "), "{}", step.line);
         assert!(step.line.ends_with(", 372.7 s"), "{}", step.line);
         assert_eq!(progress.step(ImportEvent::Skipped(PathBuf::from("/card/PICT0004.AVI"))).done, 2);
         let step = progress.step(ImportEvent::Failed(PathBuf::from("/card/PICT0005.AVI"), "unreadable".into()));
-        assert_eq!((step.line.as_str(), step.done, step.total), ("FAILED PICT0005.AVI: unreadable", 3, 3));
+        assert_eq!((step.line.as_str(), step.done, step.total), ("1/3 videos imported · 1 skipped · 1 failed — FAILED PICT0005.AVI: unreadable", 3, 3));
         let step = progress.step(ImportEvent::Flight { session: "Alpes".into(), order: 2, parts: 1 });
-        assert_eq!((step.line.as_str(), step.done), ("Flight 2: action-cam take, 1 file(s)", 3));
+        assert_eq!((step.line.as_str(), step.done), ("1/3 videos imported · 1 skipped · 1 failed — Flight 2: action-cam take, 1 file(s)", 3));
     }
 }

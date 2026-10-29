@@ -38,6 +38,35 @@ fn metadata_icon(ui: &mut egui::Ui, kind: MetadataIcon) {
     });
 }
 
+pub(crate) fn import_task_status(ui: &mut egui::Ui, task: &crate::Task) {
+    ui.horizontal_wrapped(|ui| {
+        if task.running {
+            ui.spinner();
+        }
+        ui.strong(if task.running {
+            "Importing videos"
+        } else if task.failed {
+            "Import failed"
+        } else {
+            "Import finished"
+        });
+        if task.running && task.total == 0 {
+            ui.label("Scanning videos…");
+        }
+        if task.failed {
+            ui.colored_label(Color32::LIGHT_RED, &task.line);
+        } else {
+            ui.label(&task.line);
+        }
+    });
+    if task.running && task.total > 0 {
+        ui.add(
+            egui::ProgressBar::new((task.done as f32 / task.total as f32).clamp(0.0, 1.0))
+                .text(format!("{}/{} videos processed", task.done, task.total)),
+        );
+    }
+}
+
 /// A view tab: a block of the column's width and a fixed height, its name
 /// centred on one line and how many centred below — drawn here, since egui's
 /// button places a centred two-line text off its middle.
@@ -2136,6 +2165,15 @@ impl App {
                     }
                 });
             });
+            if let Some(task) = self
+                .tasks
+                .iter()
+                .rev()
+                .find(|t| t.label == "Import recordings")
+            {
+                ui.separator();
+                import_task_status(ui, task);
+            }
             if self.show_notices {
                 ui.separator();
                 ui.horizontal(|ui| {

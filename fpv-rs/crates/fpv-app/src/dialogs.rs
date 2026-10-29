@@ -393,11 +393,17 @@ impl App {
                         ui.add_enabled_ui(enabled, |ui| self.dialog_form(ui, &mut dialog));
                     });
             }
-            if dialog.saving.is_some() {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Working… progress is shown in Tasks.");
-                });
+            if let Some(id) = dialog.saving {
+                if dialog.kind == Kind::Import {
+                    if let Some(task) = self.tasks.iter().find(|t| t.id == id) {
+                        crate::ui::import_task_status(ui, task);
+                    }
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Working… progress is shown in Tasks.");
+                    });
+                }
             }
             ui.horizontal(|ui| {
                 if dialog.kind == Kind::Editor

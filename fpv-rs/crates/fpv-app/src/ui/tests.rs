@@ -3736,3 +3736,88 @@ fn batch_deletion_holds_each_affected_session_until_finished() {
     assert!(app.busy_with(&crate::Scope::Sessions(vec!["two".into(), "three".into()])));
     assert!(!app.busy_with(&crate::Scope::Sessions(vec!["other".into()])));
 }
+
+#[test]
+fn import_counter_remains_visible_when_tasks_are_collapsed_and_another_job_runs() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, events) = app_with_worker(&ctx);
+    let id = app.submit("Import recordings", false, |_, _| unreachable!());
+    let _ = jobs.try_recv();
+    app.submit("Export flights", false, |_, _| unreachable!());
+    let _ = jobs.try_recv();
+    events
+        .send(crate::worker::Event::Progress {
+            id,
+            step: fpv_library::Step {
+                done: 2,
+                total: 4,
+                line: "1/4 videos imported · 1 skipped · 0 failed — Copying movie.mp4…".into(),
+            },
+        })
+        .unwrap();
+    app.receive(&ctx);
+    assert!(!app.show_tasks);
+    let texts = shown_texts(&ctx, &mut app, App::task_bar);
+    assert!(
+        texts
+            .iter()
+            .any(|s| s.contains("1/4 videos imported") && s.contains("movie.mp4")),
+        "{texts:?}"
+    );
+    events
+        .send(crate::worker::Event::Finished {
+            id,
+            result: Err("Imported 1, skipped 1, failed 2".into()),
+        })
+        .unwrap();
+    app.receive(&ctx);
+    let texts = shown_texts(&ctx, &mut app, App::task_bar);
+    assert!(
+        texts
+            .iter()
+            .any(|s| s.contains("Imported 1, skipped 1, failed 2")),
+        "{texts:?}"
+    );
+}
+
+#[test]
+fn import_dialog_shows_its_progress_then_keeps_it_after_close() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, events) = app_with_worker(&ctx);
+    app.dialog = Some(crate::dialogs::Dialog::import(
+        Some(PathBuf::from("/card")),
+        "Training".into(),
+    ));
+    click_text(&ctx, &mut app, "Import", App::dialog_window);
+    let job = jobs.try_recv().unwrap();
+    let texts = shown_texts(&ctx, &mut app, App::dialog_window);
+    assert!(texts.iter().any(|s| s == "Scanning videos…"));
+    events
+        .send(crate::worker::Event::Progress {
+            id: job.id,
+            step: fpv_library::Step {
+                done: 1,
+                total: 3,
+                line: "1/3 videos imported · 0 skipped · 0 failed — Copying next.mp4…".into(),
+            },
+        })
+        .unwrap();
+    app.receive(&ctx);
+    let texts = shown_texts(&ctx, &mut app, App::dialog_window);
+    assert!(
+        texts
+            .iter()
+            .any(|s| s.contains("1/3 videos imported") && s.contains("next.mp4")),
+        "{texts:?}"
+    );
+    assert!(
+        !texts
+            .iter()
+            .any(|s| s.contains("progress is shown in Tasks"))
+    );
+    click_text(&ctx, &mut app, "Close", App::dialog_window);
+    assert!(app.dialog.is_none());
+    assert!(app.tasks.iter().any(|t| t.id == job.id && t.running));
+    let texts = shown_texts(&ctx, &mut app, App::task_bar);
+    assert!(texts.iter().any(|s| s.contains("1/3 videos imported")));
+}

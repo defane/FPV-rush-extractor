@@ -29,6 +29,7 @@ installation packages.
 - Mark favourites, name flights and tag manoeuvres at specific moments.
 - Review and adjust clip boundaries before exporting.
 - Export individual flights or a selection, with optional audio muting.
+- Follow live import counts in the import dialog or bottom panel, without opening Tasks.
 
 | Sessions | Figures |
 | --- | --- |

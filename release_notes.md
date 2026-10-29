@@ -1,5 +1,7 @@
 # Unreleased
 
+- Show live video import counts, skipped/failed totals and processed progress in the import dialog and collapsed bottom panel (#29).
+
 - Delete selected flights together with one confirmation, shared-source protection and explicit Trash failure reporting (#30).
 
 - Verify player resizing with actual corner-drag and Maximize/Restore regressions for landscape, 4:3 and portrait video; guard against the historical 480-point size cap (official #26).
