@@ -240,8 +240,6 @@ preview follows the edited source frame; numeric fields allow fine adjustment.
 Select each source clip for multipart flights, then Save this clip to persist its
 range. Closing without saving discards the draft and never changes source files.
 
-On macOS, the application-menu About command opens the same branded window as
-Settings About, including the grouped contributor credits and LetzKwad link.
 
 The fullscreen player covers the library completely. Play/Pause is hidden only
 in fullscreen: click the video or press Space instead; windowed playback buttons
