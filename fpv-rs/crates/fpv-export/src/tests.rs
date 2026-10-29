@@ -212,3 +212,18 @@ fn successful_process_cannot_publish_empty_or_packetless_video() {
         assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0, "scratch removed");
     }
 }
+
+#[test]
+fn publication_without_hard_links_never_overwrites_and_cleans_up_failed_copies() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("validated.avi");
+    let destination = root.path().join("export.avi");
+    std::fs::write(&source, b"validated video").unwrap();
+    copy_new(&source, &destination).unwrap();
+    assert_eq!(std::fs::read(&destination).unwrap(), b"validated video");
+    assert!(copy_new(&source, &destination).is_err());
+    assert_eq!(std::fs::read(&destination).unwrap(), b"validated video");
+    let failed = root.path().join("failed.avi");
+    assert!(copy_new(&root.path().join("missing"), &failed).is_err());
+    assert!(!failed.exists());
+}

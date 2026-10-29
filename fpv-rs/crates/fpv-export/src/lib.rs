@@ -174,7 +174,12 @@ impl<'a> ClipExporter<'a> {
         }
         // Same filesystem: link publishes the completed file atomically and
         // refuses a destination created during the export, on every desktop OS.
-        std::fs::hard_link(&staged, destination)?;
+        if let Err(error) = std::fs::hard_link(&staged, destination) {
+            if error.kind() == std::io::ErrorKind::AlreadyExists { return Err(error.into()); }
+            // exFAT and some cloud providers have no hard links. Reserve the
+            // final name without overwriting, then copy the validated content.
+            copy_new(&staged, destination)?;
+        }
         Ok(destination.to_path_buf())
     }
 
@@ -196,6 +201,18 @@ impl<'a> ClipExporter<'a> {
         write_concat_list(&pieces, &list)?;
         Ok(list)
     }
+}
+
+fn copy_new(source: &Path, destination: &Path) -> std::io::Result<()> {
+    let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(destination)?;
+    let result = (|| {
+        let mut input = std::fs::File::open(source)?;
+        std::io::copy(&mut input, &mut output)?;
+        Ok(())
+    })();
+    drop(output);
+    if result.is_err() { let _ = std::fs::remove_file(destination); }
+    result
 }
 
 /// Mixed mute policies need homogeneous audio streams for concatenation. Only
