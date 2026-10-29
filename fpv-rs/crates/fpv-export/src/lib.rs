@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use fpv_core::{Clip, FrameRate, SourceFile};
-use fpv_media::{FfmpegError, FfmpegInvoking, Workspace, run_writing, seconds_argument,
+use fpv_media::{FfmpegError, FfmpegInvoking, FfmpegTool, Workspace, run_writing, seconds_argument,
                 write_concat_list};
 
 #[derive(Debug, thiserror::Error)]
@@ -59,7 +59,7 @@ impl<'a> ClipExporter<'a> {
         -> Result<PathBuf, ExportError> {
         let mut arguments = copy_arguments(clip, file, mute)?;
         arguments.extend(["-y".into(), destination.to_string_lossy().into_owned()]);
-        Ok(run_writing(self.ffmpeg, &arguments, destination)?)
+        self.write_video(&arguments, destination)
     }
 
     /// A whole flight, which may be spread over consecutive recordings. Parts
@@ -93,7 +93,7 @@ impl<'a> ClipExporter<'a> {
                 copy_arguments(clip, file, mute)
             }
         })?;
-        Ok(run_writing(self.ffmpeg, &concat_arguments(&list, destination), destination)?)
+        self.write_video(&concat_arguments(&list, destination), destination)
     }
 
     /// The deliberate exception to "never re-encode DVR footage" (CLAUDE.md 2):
@@ -141,7 +141,41 @@ impl<'a> ClipExporter<'a> {
             }
             Ok(arguments)
         })?;
-        Ok(run_writing(self.ffmpeg, &concat_arguments(&list, destination), destination)?)
+        self.write_video(&concat_arguments(&list, destination), destination)
+    }
+
+    /// Stage beside the destination, validate actual video packets, then publish
+    /// without replacing an existing file. Failed muxers may leave zero bytes or
+    /// just a container header even when they report success.
+    fn write_video(&self, arguments: &[String], destination: &Path) -> Result<PathBuf, ExportError> {
+        if destination.exists() {
+            return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists,
+                format!("destination already exists: {}", destination.display())).into());
+        }
+        let workspace = Workspace::beside(destination, "fpv-output")?;
+        let staged = workspace.path().join(destination.file_name().unwrap_or_default());
+        let mut arguments = arguments.to_vec();
+        *arguments.last_mut().ok_or(ExportError::NothingToExport)? = staged.to_string_lossy().into_owned();
+        run_writing(self.ffmpeg, &arguments, &staged)?;
+        if std::fs::metadata(&staged)?.len() == 0 {
+            return Err(FfmpegError::ToolFailed { tool: "ffmpeg".into(), arguments,
+                status: 0, message: "export produced an empty file".into() }.into());
+        }
+        let probe: Vec<String> = ["-v", "error", "-select_streams", "v:0", "-count_packets",
+            "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0"]
+            .into_iter().map(String::from).chain([staged.to_string_lossy().into_owned()]).collect();
+        let result = self.ffmpeg.run(FfmpegTool::Ffprobe, &probe)?;
+        if !result.succeeded() {
+            return Err(FfmpegError::tool_failed(FfmpegTool::Ffprobe, &probe, &result).into());
+        }
+        if !String::from_utf8_lossy(&result.stdout).trim().parse::<u64>().is_ok_and(|count| count > 0) {
+            return Err(FfmpegError::ToolFailed { tool: "ffprobe".into(), arguments: probe,
+                status: 0, message: "export contains no readable video packets".into() }.into());
+        }
+        // Same filesystem: link publishes the completed file atomically and
+        // refuses a destination created during the export, on every desktop OS.
+        std::fs::hard_link(&staged, destination)?;
+        Ok(destination.to_path_buf())
     }
 
     /// Writes every part into `workspace` — with the arguments `arguments`
@@ -155,7 +189,7 @@ impl<'a> ClipExporter<'a> {
             let piece = workspace.join(format!("part{index:03}.{extension}"));
             let mut piece_arguments = arguments(part)?;
             piece_arguments.extend(["-y".into(), piece.to_string_lossy().into_owned()]);
-            run_writing(self.ffmpeg, &piece_arguments, &piece)?;
+            self.write_video(&piece_arguments, &piece)?;
             pieces.push(piece);
         }
         let list = workspace.join("parts.txt");

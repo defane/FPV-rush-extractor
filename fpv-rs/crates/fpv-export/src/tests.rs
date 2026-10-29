@@ -18,7 +18,10 @@ impl RecordingFfmpeg {
 }
 
 impl FfmpegInvoking for RecordingFfmpeg {
-    fn run(&self, _: FfmpegTool, arguments: &[String]) -> Result<ProcessResult, FfmpegError> {
+    fn run(&self, tool: FfmpegTool, arguments: &[String]) -> Result<ProcessResult, FfmpegError> {
+        if tool == FfmpegTool::Ffprobe {
+            return Ok(ProcessResult { status: 0, stdout: b"1\n".to_vec(), stderr: String::new() });
+        }
         self.calls.lock().unwrap().push(arguments.to_vec());
         if let Some(index) = arguments.iter().rposition(|a| a == "-y") {
             std::fs::write(&arguments[index + 1], b"v").unwrap();
@@ -185,4 +188,27 @@ fn imported_recording_mute_is_honored_without_a_global_mute_setting() {
     let out = tempfile::tempdir().unwrap();
     ClipExporter::new(&ffmpeg).export_clip(&part(&file, 0, 25).0, &file, &out.path().join("muted.avi")).unwrap();
     assert!(ffmpeg.calls()[0].contains(&"-an".to_owned()));
+}
+
+#[test]
+fn successful_process_cannot_publish_empty_or_packetless_video() {
+    struct EmptyExport { bytes: &'static [u8] }
+    impl FfmpegInvoking for EmptyExport {
+        fn run(&self, tool: FfmpegTool, arguments: &[String]) -> Result<ProcessResult, FfmpegError> {
+            if tool == FfmpegTool::Ffmpeg {
+                std::fs::write(arguments.last().unwrap(), self.bytes).unwrap();
+            }
+            Ok(ProcessResult { status: 0, stdout: b"0\n".to_vec(), stderr: String::new() })
+        }
+    }
+    for bytes in [b"".as_slice(), b"container header".as_slice()] {
+        let out = tempfile::tempdir().unwrap();
+        let destination = out.path().join("flight.avi");
+        let file = source("PICT0030.AVI", FrameRate::new(25, 1), "mjpeg");
+        let result = ClipExporter::new(&EmptyExport { bytes }).export_clip(
+            &part(&file, 0, 25).0, &file, &destination);
+        assert!(result.is_err());
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0, "scratch removed");
+    }
 }

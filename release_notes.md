@@ -1,5 +1,7 @@
 # Unreleased
 
+- Validate exported video packets before publishing files; failed exports leave no empty or header-only destination and never replace an existing file (official #21).
+
 - Moved notifications into the collapsible bottom task panel (#1).
 - Decode long-GOP poster frames from the beginning when AVI indexes cannot seek into H.264 streams (#2).
 - Seek through long-GOP footage by decoding from the input start, and keep the seek slider interactive (#3).

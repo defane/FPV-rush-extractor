@@ -113,3 +113,35 @@ fn mixed_recording_mute_preserves_sound_in_other_parts_and_fills_only_muted_part
     }
     assert_eq!(std::fs::read(recording).unwrap(), original);
 }
+
+#[test]
+fn failed_container_export_leaves_no_empty_file_and_can_be_retried() {
+    let folder = tempfile::tempdir().unwrap();
+    let recording = folder.path().join("source.avi");
+    assert!(Command::new("ffmpeg").args(["-v", "error", "-f", "lavfi", "-i",
+        "testsrc2=size=64x48:rate=25:duration=1", "-f", "lavfi", "-i",
+        "sine=duration=1:sample_rate=8000", "-c:v", "mjpeg", "-c:a", "pcm_s16le",
+        "-shortest", "-y"]).arg(&recording).status().unwrap().success());
+    let media = MediaInfo { audio_codec: Some("pcm_s16le".into()),
+        ..MediaInfo::new(64, 48, FrameRate::new(25, 1), 1.0, "mjpeg") };
+    let file = SourceFile::new(Uuid::new_v4(), "card", recording.to_string_lossy(), None, media);
+    let original = std::fs::read(&recording).unwrap();
+    let clip = Clip::new(Uuid::new_v4(), file.id, 0, 25);
+    // PCM cannot be muxed in this container: ffmpeg creates an empty file
+    // before returning the header error. The app must not leave it behind.
+    let destination = folder.path().join("flight.webm");
+    let runner = FfmpegRunner::default();
+    let exporter = ClipExporter::new(&runner);
+    assert!(exporter.export_clip(&clip, &file, &destination).is_err());
+    assert!(!destination.exists(), "failed export left an empty final file");
+    let destination = folder.path().join("flight.avi");
+    exporter.export_clip(&clip, &file, &destination).unwrap();
+    assert_eq!(frames(&destination), "25");
+    assert!(exporter.export_clip(&clip, &file, &destination).is_err(), "never overwrite");
+    assert_eq!(frames(&destination), "25");
+    let past_end = Clip::new(Uuid::new_v4(), file.id, 250, 275);
+    let empty = folder.path().join("empty.avi");
+    assert!(exporter.export_clip(&past_end, &file, &empty).is_err(), "header-only video is not a success");
+    assert!(!empty.exists());
+    assert_eq!(std::fs::read(recording).unwrap(), original);
+}
