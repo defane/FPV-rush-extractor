@@ -59,7 +59,9 @@ session a name and choose the flying date; new imports default to today.
 Recordings are copied to your library without changing their contents. Repeated
 imports skip recordings already known to the library. **Segment videos after
 import** is enabled by default: after copying, FPV Rush detects usable clips in
-the new recordings, including H.264, HEVC and MJPEG. Follow copying and analysis
+the new recordings, including H.264, HEVC and MJPEG. Choose **Standard** or
+**Textured terrain** in the import's **Detection profile** dropdown; an existing
+session starts with its saved profile. Follow copying and analysis
 in the import dialog or bottom panel. Existing reviewed flights keep their edits.
 Uncheck the option to copy first and run **Segment** later.
 

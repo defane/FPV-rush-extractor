@@ -1066,7 +1066,22 @@ impl Library {
     }
 
     /// Analyze only sources delivered by this import, leaving reviewed flights alone.
-    pub fn segment_imported(&self, ids: &[Uuid], mut progress: impl FnMut(SegmentationEvent))
+    pub fn segment_imported(&self, ids: &[Uuid], progress: impl FnMut(SegmentationEvent))
+        -> Result<SegmentationReport> {
+        self.segment_imported_using(ids, None, progress)
+    }
+
+    /// Persist the import's chosen session profile and apply it only to new sources.
+    pub fn segment_imported_with_profile(&self, ids: &[Uuid], profile: &str,
+                                         progress: impl FnMut(SegmentationEvent))
+        -> Result<SegmentationReport> {
+        if DetectionProfile::from_raw(profile).is_none() {
+            return Err(LibraryError::Invalid(format!("no detection profile {profile}")));
+        }
+        self.segment_imported_using(ids, Some(profile), progress)
+    }
+
+    fn segment_imported_using(&self, ids: &[Uuid], profile: Option<&str>, mut progress: impl FnMut(SegmentationEvent))
         -> Result<SegmentationReport> {
         let mut sessions: Vec<(Uuid, Vec<Uuid>)> = Vec::new();
         for id in ids {
@@ -1079,6 +1094,9 @@ impl Library {
         let ffmpeg = self.ffmpeg();
         let mut combined = SegmentationReport::default();
         for (session_id, files) in sessions {
+            if let Some(profile) = profile {
+                self.set_detection_profile(&uuid_string(session_id), profile)?;
+            }
             let session = self.session(&uuid_string(session_id))?;
             let settings = DetectorSettings::for_profile(session.detection_profile);
             let detector = FileDetector::new(settings.clone(), FrameReader::new(self.tools.clone()));

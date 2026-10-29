@@ -72,6 +72,7 @@ pub(crate) struct Dialog {
     budgets: [f64; 2],
     mute_videos: bool,
     segment_after_import: bool,
+    import_profile_session: Option<String>,
     do_not_show_splash: bool,
     editor_clip: usize,
     editor_loading: Option<String>,
@@ -123,6 +124,7 @@ impl Dialog {
             emptying: None,
             mute_videos: false,
             segment_after_import: false,
+            import_profile_session: None,
             do_not_show_splash: false,
             editor_clip: 0,
             editor_loading: None,
@@ -468,6 +470,15 @@ impl App {
                 }
                 ui.label("Session name");
                 ui.text_edit_singleline(&mut dialog.name);
+                if dialog.import_profile_session.as_deref() != Some(dialog.name.trim()) {
+                    dialog.profile = self
+                        .sessions
+                        .iter()
+                        .find(|s| s.name == dialog.name.trim())
+                        .map(|s| s.detection_profile.clone())
+                        .unwrap_or_else(|| "standard".into());
+                    dialog.import_profile_session = Some(dialog.name.trim().to_owned());
+                }
                 if self.sessions.iter().any(|s| s.name == dialog.name.trim()) {
                     ui.colored_label(
                         egui::Color32::from_rgb(230, 160, 60),
@@ -505,6 +516,34 @@ impl App {
                 ui.small("Each session gets its own folder inside, kept for later imports.");
                 ui.checkbox(&mut dialog.segment_after_import, "Segment videos after import")
                     .on_hover_text("Detect usable clips in newly imported recordings; existing flights keep their edits.");
+                if dialog.segment_after_import {
+                    ui.horizontal(|ui| {
+                        ui.label("Detection profile");
+                        egui::ComboBox::from_id_salt("import-detection-profile")
+                            .selected_text(if dialog.profile == "textured" {
+                                "Textured terrain"
+                            } else {
+                                "Standard"
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut dialog.profile,
+                                    "standard".into(),
+                                    "Standard",
+                                );
+                                ui.selectable_value(
+                                    &mut dialog.profile,
+                                    "textured".into(),
+                                    "Textured terrain",
+                                );
+                            });
+                    });
+                    ui.small(if dialog.profile == "textured" {
+                        "For rocky or highly detailed terrain that Standard may mistake for snow."
+                    } else {
+                        "Standard signal and snow detection."
+                    });
+                }
                 ui.checkbox(
                     &mut dialog.flag,
                     "Delete newly imported files from the card after verification",
@@ -524,6 +563,7 @@ impl App {
                         dialog.mute_videos,
                     );
                     let segment = dialog.segment_after_import;
+                    let profile = dialog.profile.clone();
                     dialog.saving = Some(self.submit_in(Scope::Library, "Import recordings", false, move |library, progress| {
                         let mut counter = ImportProgress::default();
                         let mut imported = Vec::new();
@@ -535,7 +575,7 @@ impl App {
                         let mut detection_failed = Vec::new();
                         if segment && !imported.is_empty() {
                             let mut counter = SegmentProgress::new(imported.len());
-                            let result = library.segment_imported(&imported, |event| {
+                            let result = library.segment_imported_with_profile(&imported, &profile, |event| {
                                 let mut step = counter.step(event);
                                 step.line = format!("Detecting flights · {} imported · {}", report.imported, step.line);
                                 progress.step(step);

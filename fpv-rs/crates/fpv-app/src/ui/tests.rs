@@ -3832,6 +3832,15 @@ fn import_offers_segmentation_before_the_job_is_started() {
         texts.iter().any(|s| s == "Segment videos after import"),
         "{texts:?}"
     );
+    assert!(texts.iter().any(|s| s == "Detection profile"), "{texts:?}");
+    click_text(
+        &ctx,
+        &mut app,
+        "Segment videos after import",
+        App::dialog_window,
+    );
+    let texts = shown_texts(&ctx, &mut app, App::dialog_window);
+    assert!(!texts.iter().any(|s| s == "Detection profile"));
 }
 
 #[test]
@@ -3847,11 +3856,11 @@ fn import_job_segments_by_default_and_supports_copy_only_optout() {
             "-f",
             "lavfi",
             "-i",
-            "testsrc2=size=160x120:rate=25:duration=6",
+            "testsrc2=size=320x240:rate=25:duration=6",
             "-f",
             "lavfi",
             "-i",
-            "nullsrc=size=160x120:rate=25:duration=3,geq=lum='random(1)*255':cb=128:cr=128",
+            "nullsrc=size=320x240:rate=25:duration=3,geq=lum='random(1)*255':cb=128:cr=128",
             "-filter_complex",
             "[0:v][1:v]concat=n=2:v=1:a=0",
             "-c:v",
@@ -3868,10 +3877,10 @@ fn import_job_segments_by_default_and_supports_copy_only_optout() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    for segment in [true, false] {
+    for (profile, segment) in [("standard", true), ("textured", true), ("textured", false)] {
         let ctx = egui::Context::default();
         let (mut app, jobs, _) = app_with_worker(&ctx);
-        let local = root.path().join(if segment { "detect" } else { "copy" });
+        let local = root.path().join(format!("{profile}-{segment}"));
         let config = fpv_library::Config {
             media_root: local.join("media"),
             ..Default::default()
@@ -3887,6 +3896,10 @@ fn import_job_segments_by_default_and_supports_copy_only_optout() {
             Some(card.clone()),
             "EACHINE".into(),
         ));
+        if profile == "textured" {
+            click_text(&ctx, &mut app, "Standard", App::dialog_window);
+            click_text(&ctx, &mut app, "Textured terrain", App::dialog_window);
+        }
         if !segment {
             click_text(
                 &ctx,
@@ -3903,6 +3916,10 @@ fn import_job_segments_by_default_and_supports_copy_only_optout() {
             panic!("expected import summary")
         };
         let snapshot = library.snapshot().unwrap();
+        assert_eq!(
+            snapshot[0].detection_profile,
+            if segment { profile } else { "standard" }
+        );
         let clip = &snapshot[0].flights[0].clips[0];
         let end = clip.end_frame as f64 / clip.fps;
         let phases: Vec<_> = events
@@ -3932,4 +3949,17 @@ fn import_job_segments_by_default_and_supports_copy_only_optout() {
             );
         }
     }
+}
+
+#[test]
+fn importing_into_an_existing_session_prefills_its_profile() {
+    let ctx = egui::Context::default();
+    let mut app = app(&ctx);
+    let mut session = session_of(vec![flight()]);
+    session.detection_profile = "textured".into();
+    let name = session.name.clone();
+    app.sessions = vec![session];
+    app.dialog = Some(crate::dialogs::Dialog::import(None, name));
+    let texts = shown_texts(&ctx, &mut app, App::dialog_window);
+    assert!(texts.iter().any(|s| s == "Textured terrain"), "{texts:?}");
 }
