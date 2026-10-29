@@ -577,3 +577,14 @@ fn playback_mute_migrates_from_v8_is_per_flight_and_survives_reopening() {
     drop(store);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn batch_deletion_rolls_back_when_any_selected_flight_is_missing() {
+    let store = LibraryStore::in_memory().unwrap();
+    let (session, file) = session_with_one_file(&store, "PICT0032.AVI", 32);
+    let (flight, _) = one_clip(&store, &file, 0, 200);
+    assert!(store.delete_flights(&[flight.id, Uuid::new_v4()], &[file.id]).is_err());
+    assert_eq!(store.flights(session.id).unwrap().len(), 1);
+    assert!(store.source_file(file.id).unwrap().is_some());
+    assert!(store.deleted_paths().unwrap().is_empty());
+}

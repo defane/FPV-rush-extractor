@@ -1194,6 +1194,15 @@ impl App {
                     egui::Button::new(format!("Export {}…", self.selected.len()))).clicked() {
                     self.dialog = Some(Dialog::bulk(self.selected.iter().cloned().collect()));
                 }
+                if ui.add_enabled(!self.selected.is_empty() && !remade,
+                    egui::Button::new(crate::danger_text(format!("Delete {}…", self.selected.len())))).clicked() {
+                    let mut ids: Vec<_> = self.selected.iter().cloned().collect();
+                    ids.sort();
+                    self.dialog = Some(Dialog::delete_flights(ids.clone()));
+                    self.dialog_request = Some(self.submit("Plan selected deletion", true, move |library, _| {
+                        Ok(Reply::Deletion(library.flights_deletion(&ids)?))
+                    }));
+                }
             }); }
             let range = page_range(items.len(), &mut self.browse.page, self.browse.page_size);
             ui.separator();

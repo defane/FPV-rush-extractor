@@ -1341,6 +1341,72 @@ impl Library {
         Ok(plan)
     }
 
+    /// Preview the union of selected flights, counting each source once.
+    pub fn flights_deletion(&self, ids: &[String]) -> Result<FlightDeletion> {
+        Ok(self.plan_flights_deletion(ids)?.0)
+    }
+
+    fn plan_flights_deletion(&self, ids: &[String]) -> Result<(FlightDeletion, Vec<Uuid>, Vec<SourceFile>)> {
+        if ids.is_empty() { return Err(LibraryError::Invalid("No flights selected".into())); }
+        let mut selected = Vec::new();
+        for id in ids {
+            let id = parse(id)?;
+            if !selected.contains(&id) { selected.push(id); }
+        }
+        let mut sources: Vec<(SourceFile, bool)> = Vec::new();
+        let mut sessions = HashSet::new();
+        for id in &selected {
+            let (flight, clips, _) = self.flight(&uuid_string(*id))?;
+            sessions.insert(flight.session_id);
+            let reduced = self.store.reduced_files(flight.session_id)?;
+            for clip in clips {
+                let file = self.store.source_file(clip.source_file_id)?
+                    .ok_or_else(|| LibraryError::NotFound("Selected recording".into()))?;
+                let protected = !reduced.contains(&file.id) && (file.media.is_analog_dvr()
+                    || clip.start_frame > 0 || clip.end_frame < views::last_frame(&file) + 1);
+                if let Some((_, keep)) = sources.iter_mut().find(|(f, _)| f.id == file.id) {
+                    *keep |= protected;
+                } else { sources.push((file, protected)); }
+            }
+        }
+        let mut others = HashSet::new();
+        for session in sessions {
+            for (flight, clips) in self.store.flights(session)? {
+                if !selected.contains(&flight.id) {
+                    others.extend(clips.iter().map(|c| c.source_file_id));
+                }
+            }
+        }
+        let mut plan = FlightDeletion::default();
+        let mut going = Vec::new();
+        for (file, protected) in sources {
+            let name = file_name(&file.imported_path);
+            if protected { plan.recordings.push(name); }
+            else if others.contains(&file.id) { plan.shared.push(name); }
+            else { plan.trashed.push(name); going.push(file); }
+        }
+        Ok((plan, selected, going))
+    }
+
+    pub fn delete_flights(&self, ids: &[String]) -> Result<FlightDeletion> {
+        self.delete_flights_with_trash(ids, |path| trash::delete(path).map_err(|e| e.to_string()))
+    }
+
+    fn delete_flights_with_trash(&self, ids: &[String], mut dispose: impl FnMut(&str) -> std::result::Result<(), String>) -> Result<FlightDeletion> {
+        let (plan, flights, going) = self.plan_flights_deletion(ids)?;
+        self.store.delete_flights(&flights, &going.iter().map(|f| f.id).collect::<Vec<_>>())?;
+        let mut failed = Vec::new();
+        for file in going {
+            if let Err(error) = dispose(&file.imported_path) {
+                failed.push(format!("{}: {error}", file.imported_path));
+            }
+        }
+        if !failed.is_empty() {
+            return Err(LibraryError::Invalid(format!("Deleted {} flights from the library; could not move recordings to Trash (files left on disk): {}", flights.len(), failed.join("; "))));
+        }
+        Ok(plan)
+    }
+
     /// Persists a hand-corrected boundary, clamped to the recording.
     pub fn update_clip(&self, id: &str, start_frame: i64, end_frame: i64) -> Result<()> {
         let clip = self.store.clip(parse(id)?)?

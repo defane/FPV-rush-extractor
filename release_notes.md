@@ -1,5 +1,7 @@
 # Unreleased
 
+- Delete selected flights together with one confirmation, shared-source protection and explicit Trash failure reporting (#30).
+
 - Verify player resizing with actual corner-drag and Maximize/Restore regressions for landscape, 4:3 and portrait video; guard against the historical 480-point size cap (official #26).
 
 - Enable signal segmentation for every imported video codec, including H.264/HEVC; retain source labels independently, preserve clean EOF frames, warn before replacing all affected flights, and offer explicit re-encoding for precise long-GOP cuts (#28).

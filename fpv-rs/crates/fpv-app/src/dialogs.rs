@@ -24,6 +24,7 @@ enum Kind {
     Reduce,
     Relocate,
     DeleteFlight,
+    DeleteFlights,
     Title,
     Editor,
     Info,
@@ -223,6 +224,12 @@ impl Dialog {
     pub fn delete_flight(flight: &FlightView) -> Self {
         Self::of_flight(Kind::DeleteFlight, "Delete flight", flight)
     }
+    pub fn delete_flights(flights: Vec<String>) -> Self {
+        Self {
+            flights,
+            ..Self::new(Kind::DeleteFlights, "Delete selected flights")
+        }
+    }
     pub fn info(flight: &FlightView) -> Self {
         Self::of_flight(Kind::Info, "Info", flight)
     }
@@ -329,6 +336,13 @@ impl App {
                     })
                     .map_or(Scope::None, |session| Scope::Session(session.to_owned()))
             }
+            Kind::DeleteFlights => Scope::Sessions(
+                dialog
+                    .flights
+                    .iter()
+                    .filter_map(|id| self.session_of_flight(id).map(str::to_owned))
+                    .collect(),
+            ),
             Kind::Bulk | Kind::Info => Scope::None,
         }
     }
@@ -900,8 +914,14 @@ impl App {
                     ui.spinner();
                 }
             }
-            Kind::DeleteFlight => {
+            Kind::DeleteFlight | Kind::DeleteFlights => {
                 if let Some(preview) = &dialog.deletion {
+                    if dialog.kind == Kind::DeleteFlights {
+                        ui.label(format!(
+                            "{} selected flights will be deleted.",
+                            dialog.flights.len()
+                        ));
+                    }
                     let (lines, button) = deletion_text(preview);
                     for (warning, line) in lines {
                         if warning {
@@ -913,11 +933,26 @@ impl App {
                     if ui.add(crate::danger(button)).clicked() {
                         self.viewer = None;
                         let id = dialog.id.clone();
-                        dialog.saving =
-                            Some(self.submit("Delete flight", false, move |library, _| {
-                                library.delete_flight(&id)?;
-                                Ok(Reply::Done("Flight deleted".into()))
-                            }));
+                        let ids = dialog.flights.clone();
+                        let bulk = dialog.kind == Kind::DeleteFlights;
+                        let scope = self.dialog_scope(dialog);
+                        dialog.saving = Some(self.submit_in(
+                            scope,
+                            "Delete flights",
+                            false,
+                            move |library, _| {
+                                if bulk {
+                                    library.delete_flights(&ids)?;
+                                } else {
+                                    library.delete_flight(&id)?;
+                                }
+                                Ok(Reply::Done(if bulk {
+                                    format!("{} flights deleted", ids.len())
+                                } else {
+                                    "Flight deleted".into()
+                                }))
+                            },
+                        ));
                     }
                 } else {
                     ui.spinner();

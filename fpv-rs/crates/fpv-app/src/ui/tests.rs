@@ -3699,3 +3699,40 @@ fn dragging_player_corner_grows_video_and_restore_preserves_manual_size() {
         );
     }
 }
+
+#[test]
+fn selected_flights_offer_bulk_delete_without_ffmpeg() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, _) = app_with_worker(&ctx);
+    let first = flight();
+    app.sessions = vec![session_of(vec![first.clone()])];
+    app.browse.view = View::Flights;
+    app.selecting = true;
+    app.selected.insert(first.id.clone());
+    app.ffmpeg_ok = false;
+    let texts = shown_texts(&ctx, &mut app, App::browser);
+    assert!(texts.iter().any(|s| s == "Delete 1…"), "{texts:?}");
+    click_text(&ctx, &mut app, "Delete 1…", App::browser);
+    assert!(app.dialog.is_some());
+    let _ = jobs.try_recv().expect("deletion preview is queued");
+    click_text(&ctx, &mut app, "Close", App::dialog_window);
+    assert!(app.dialog.is_none());
+    assert!(app.selected.contains(&first.id));
+    assert!(jobs.try_recv().is_err(), "cancelling must not delete");
+}
+
+#[test]
+fn batch_deletion_holds_each_affected_session_until_finished() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    app.submit_in(
+        crate::Scope::Sessions(vec!["one".into(), "two".into()]),
+        "Delete flights",
+        false,
+        |_, _| unreachable!(),
+    );
+    assert!(app.session_busy("one") && app.session_busy("two"));
+    assert!(!app.session_busy("other"));
+    assert!(app.busy_with(&crate::Scope::Sessions(vec!["two".into(), "three".into()])));
+    assert!(!app.busy_with(&crate::Scope::Sessions(vec!["other".into()])));
+}

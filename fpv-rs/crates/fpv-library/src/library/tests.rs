@@ -1611,3 +1611,62 @@ fn segmentation_of_clean_h264_takes_keeps_whole_chapters_and_their_frame_counts(
     }
     assert_eq!(after.flights[0].recordings, 2, "GoPro chapters remain one flight");
 }
+
+#[test]
+fn bulk_deletion_plans_shared_reduced_sources_once_and_preserves_other_flights() {
+    let (fixture, session) = dvr_card();
+    let library = &fixture.library;
+    flights_in(&fixture, &session);
+    library.reduce_session(&session.id, |_, _, _| {}).unwrap();
+    let reduced = library.snapshot().unwrap().remove(0);
+    let ids: Vec<_> = reduced.flights[..2].iter().map(|f| f.id.clone()).collect();
+    let shared = library.flights_deletion(&ids[..1]).unwrap();
+    assert_eq!(shared.shared, ["PICT0032-1.AVI"]);
+    let plan = library.flights_deletion(&ids).unwrap();
+    assert_eq!(plan.trashed, ["PICT0032-1.AVI"]);
+    assert!(plan.shared.is_empty());
+    let mut disposed = vec![];
+    library.delete_flights_with_trash(&[ids.clone(), vec![ids[0].clone()]].concat(), |path| {
+        disposed.push(path.to_owned()); Ok(())
+    }).unwrap();
+    assert_eq!(disposed.len(), 1, "one shared source disposed once");
+    let after = library.snapshot().unwrap().remove(0);
+    assert_eq!(after.flights.len(), 1);
+    assert_eq!(after.flights[0].id, reduced.flights[2].id);
+    assert_eq!(after.files.len(), 1);
+}
+
+#[test]
+fn bulk_deletion_validates_all_ids_before_changing_anything_and_reports_trash_failures() {
+    let (fixture, session) = imported();
+    let library = &fixture.library;
+    let ids: Vec<_> = session.flights.iter().map(|f| f.id.clone()).collect();
+    assert!(library.delete_flights(&[ids[0].clone(), uuid_string(Uuid::new_v4())]).is_err());
+    assert_eq!(library.snapshot().unwrap()[0].flights.len(), 2);
+    let error = library.delete_flights_with_trash(&ids, |_| Err("test trash failure".into())).unwrap_err().to_string();
+    assert!(error.contains("Deleted 2 flights") && error.contains("files left on disk"));
+    assert!(library.snapshot().unwrap()[0].flights.is_empty());
+    assert!(library.store.deleted_paths().unwrap().len() >= 3);
+}
+
+#[test]
+fn bulk_deletion_preserves_unreduced_dvr_originals_across_sessions() {
+    let (fixture, session) = dvr_card();
+    let library = &fixture.library;
+    flights_in(&fixture, &session);
+    let before = library.snapshot().unwrap().remove(0);
+    let original = library.recording_path(&before.files[0].id).unwrap();
+    let other = Session::new("Other day", None);
+    library.store.save_session(&other).unwrap();
+    let flight = Flight::new(other.id, 1);
+    let file = SourceFile::new(other.id, "card", "/unused/PICT0001.AVI", None,
+        MediaInfo::new(640, 480, fpv_core::FrameRate::new(30, 1), 10.0, "mjpeg"));
+    library.store.save_source_files(std::slice::from_ref(&file)).unwrap();
+    let clip = Clip::new(flight.id, file.id, 0, 300);
+    library.store.replace_clips(file.id, &[clip], std::slice::from_ref(&flight), &DetectionRun::new(file.id, "test", Default::default())).unwrap();
+    let mut ids: Vec<_> = before.flights.iter().map(|f| f.id.clone()).collect();
+    ids.push(uuid_string(flight.id));
+    library.delete_flights_with_trash(&ids, |_| panic!("whole original must stay")).unwrap();
+    assert!(library.snapshot().unwrap().iter().all(|s| s.flights.is_empty()));
+    assert!(original.exists());
+}

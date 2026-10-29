@@ -32,6 +32,20 @@ pub(crate) enum Scope {
     None,
     Library,
     Session(String),
+    Sessions(Vec<String>),
+}
+
+fn scopes_overlap(a: &Scope, b: &Scope) -> bool {
+    match (a, b) {
+        (Scope::None, _) | (_, Scope::None) => false,
+        (Scope::Library, Scope::Library) => true,
+        (Scope::Session(a), Scope::Session(b)) => a == b,
+        (Scope::Sessions(a), Scope::Session(b)) | (Scope::Session(b), Scope::Sessions(a)) => {
+            a.contains(b)
+        }
+        (Scope::Sessions(a), Scope::Sessions(b)) => a.iter().any(|id| b.contains(id)),
+        _ => false,
+    }
 }
 
 /// What Escape closes: the topmost thing open, one press at a time.
@@ -368,7 +382,7 @@ impl App {
             && self
                 .tasks
                 .iter()
-                .any(|task| task.running && !task.quiet && task.scope == *scope)
+                .any(|task| task.running && !task.quiet && scopes_overlap(&task.scope, scope))
     }
 
     fn session_busy(&self, session: &str) -> bool {
