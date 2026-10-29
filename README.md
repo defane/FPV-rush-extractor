@@ -1,247 +1,137 @@
 # FPV Rush
 
-A native Rust desktop application for organizing FPV recordings into sessions,
-flights and tagged figures. Imports Fat Shark analog DVR and action-camera
-takes, detects usable analog video between snow and menus, and exports lossless,
-frame-exact cuts. The interface uses eframe/egui on macOS, Linux and Windows.
+Turn FPV recordings into a browsable library of sessions, flights and figures.
+Import analog DVR footage and action-camera takes, find flights between signal
+losses, review them, and export the footage you want to keep.
 
-## Interface layout references
+Available for **macOS, Linux and Windows**. Video tools are included in the
+installation packages.
 
-The native interface follows the layout of these earlier application captures:
-compact navigation tabs and session summaries, thumbnail badges, tag pills and
-pagination below the grid. The native player adds controls over the video and
-adapts its size to the visible display.
+## Your flight library
+
+- Group recordings into sessions with a date, location, notes and tags.
+- Detect flights in analog DVR footage, separating usable video from snow,
+  black screens and goggle menus.
+- Join a flight that continues across consecutive DVR files or GoPro chapters.
+- Browse Sessions, All flights and Figures with thumbnails, filters, sorting
+  and pagination.
+- Mark favourites, name flights and tag manoeuvres at specific moments.
+- Review and adjust clip boundaries before exporting.
+- Export individual flights or a selection, with optional audio muting.
 
 | Sessions | Figures |
 | --- | --- |
-| ![Session layout](docs/screenshots/session.png) | ![Figure layout](docs/screenshots/figures.png) |
+| ![Sessions](docs/screenshots/session.png) | ![Figures](docs/screenshots/figures.png) |
 
-[Flight grid reference](docs/screenshots/flights.png) ·
-[Player reference](docs/screenshots/player.png)
+[Flights](docs/screenshots/flights.png) · [Player](docs/screenshots/player.png)
 
 ## Install
 
-Distribution packages include FFmpeg and ffprobe. No Node.js, browser engine,
-GStreamer, SDL or separate FFmpeg installation is needed.
+Download the package for your system from the repository's
+[releases](https://github.com/defane/FPV-rush-extractor/releases) or the artifacts
+of a completed [Packaging run](https://github.com/defane/FPV-rush-extractor/actions/workflows/packaging.yml).
 
-- macOS: universal Intel/Apple Silicon DMG; drag FPV Rush into Applications.
-  Requires macOS 11+. Builds use an ad-hoc signature unless a signing identity
-  is supplied. Gatekeeper may require approving the app in Privacy & Security;
-  ad-hoc signing is not Apple notarization.
-- Windows: x64 per-user installer or portable ZIP. Extract the whole ZIP:
-  keep resources/ beside fpv-rush.exe.
-- Linux: AppImage, Debian package, or a tar.gz containing bin/ and lib/.
-  Build on an old enough distribution for the glibc versions you support
-  (CI uses Ubuntu 22.04). The desktop's graphics and ALSA libraries remain OS
-  dependencies; the package is not a completely static executable.
+- **macOS 11 or later:** open the universal DMG and drag FPV Rush into
+  Applications. Supports Intel and Apple Silicon. If macOS blocks the unsigned
+  download, approve it in Privacy & Security.
+- **Windows x64:** use the installer or extract the complete portable ZIP.
+  Keep the `resources` folder beside `fpv-rush.exe`.
+- **Linux:** use the AppImage, Debian package or compressed archive. For the
+  archive, keep its `bin` and `lib` folders together.
 
-There is one build for each OS, not one executable that runs on all of them.
-GitHub Actions builds the installers on native Linux, macOS and Windows runners.
-Artifacts are uploaded on pushes to main, version tags, pull requests and manual
-runs. Certificate-based signing/notarization is not configured by this pipeline.
+## Import recordings
 
-## Build and run
+Select a detected card in the sidebar or choose **Import Folder**. Give the
+session a name and choose the flying date; new imports default to today.
 
-Install stable Rust through rustup and a C compiler. The product's UI is native
-Rust with eframe/egui; there is no Tauri, webview, JavaScript build, or browser
-runtime. SQLite and the separate FFmpeg tools are C dependencies.
+Recordings are copied to your library without changing their contents. Repeated
+imports skip recordings already known to the library. Action-camera takes become
+flights directly; analog DVR recordings need segmentation.
 
-Linux development dependencies on Debian/Ubuntu:
+**No Sound** on import keeps the original audio intact but silences playback and
+exports of newly imported recordings. It does not change recordings skipped as
+already imported. **Mute videos** in Settings applies the default playback mute
+and silences exported videos.
 
-    sudo apt install build-essential pkg-config libasound2-dev libxkbcommon-dev libxkbcommon-x11-0 \
-        libx11-dev libgl1-mesa-dev ffmpeg
+Use **Load from destination folder** to register recordings already copied to
+your library folder without copying them again. Optional card cleanup removes
+only recordings successfully imported during that operation.
 
-macOS: Xcode command-line tools and Rust; Homebrew FFmpeg is useful for tests.
-Windows: Rust's MSVC toolchain and Visual Studio C++ Build Tools; FFmpeg on PATH
-is useful for tests. Building the bundled tools additionally needs MSYS2/MinGW
-and make. NSIS produces the Windows installer.
+## Detect and organize flights
 
-    make app             # native release binary
-    make media-tools     # build our LGPL-only FFmpeg/ffprobe from pinned sources
-    make run             # native GUI; uses prepared tools, or tools on PATH
-    make check           # clippy and all Rust tests
-    make cli             # headless fpvlib CLI
+Run **Segment** on a DVR session to detect usable video. Detection follows the
+picture signal rather than the armed state or OSD timer. Review the results:
+noise, interference and very textured scenes can still produce incorrect cuts.
+The **Textured terrain** profile helps when the Standard profile splits good
+footage too aggressively.
 
-For a native package:
+Re-segmenting replaces the session's DVR flights, including manually adjusted
+boundaries, flight names, favourites and flight tags. The confirmation describes
+what will be lost. Figure tags attached to source recordings and action-camera
+takes are retained.
 
-    make macos           # on macOS; universal DMG by default
-    make linux           # on Linux; deb + tar.gz + AppImage
-    make macos-remote    # dispatch packaging.yml on GitHub from any host
+Use session and flight tags to organize your library. Figure tags identify a
+moment or a range inside a recording and let you jump back to a manoeuvre.
 
-Linux AppImage packaging downloads pinned, checksum-verified appimagetool/runtime
-assets. APPIMAGETOOL can override the tool; FPV_SKIP_APPIMAGE=1 makes deb/tar only.
-Windows packaging is run through:
+## Watch and inspect
 
-    powershell -ExecutionPolicy Bypass -File packaging/windows/package.ps1
+Open a thumbnail to watch a flight. The player starts in a compact window;
+**Maximize**, **Restore** and fullscreen controls let you change its size.
+Tags and figures are shown beside the video.
 
-Run bash packaging/build-ffmpeg.sh native from a MINGW64 MSYS2 shell first.
-For a single Mac architecture, use make macos TARGET=aarch64-apple-darwin or
-TARGET=x86_64-apple-darwin. Rustup must have both Apple targets for a universal
-build. Packaging scripts use the workspace's standard target directory.
-Installers land in dist/.
+| Control | Action |
+| --- | --- |
+| Click the video or press **Space** | Play / pause |
+| **Left / Right** | Seek five seconds |
+| Progress bar over the video | Seek to a position |
+| Speaker icon | Mute / unmute playback |
+| Vertical slider at the right | Adjust volume |
+| **Escape** in fullscreen | Leave fullscreen |
+| **I** | Mark the start of a figure |
+| **Enter** in the figure-name field | Save a point or complete the marked range |
 
-Tests use generated H.264 fixtures and therefore require a development FFmpeg
-with libx264. The redistributable tools deliberately omit libx264; the native
-player's integration tests are also run against those exact bundled tools:
+Playback mute does not change export audio settings. Import's **No Sound**
+recordings remain silent.
 
-    cd fpv-rs
-    cargo test --workspace --locked
-    FPV_TEST_BUNDLED_TOOLS=../packaging/resources/bin cargo test -p fpv-app player::tests
+Choose **… → Info** on a thumbnail to view the original file name, original and
+library paths, video/audio properties and clip start/end times. Paths can be
+copied. Flights spanning several files show each recording separately, with its
+own frame rate. End times and frame indexes are exclusive.
 
-The pinned Rust dependency graph is in fpv-rs/Cargo.lock. eframe handles the
-window and drawing, rfd the system dialogs, image the posters, and cpal the
-audio output. Video decode and playback coordination are local modules which
-run the shipped FFmpeg programs. No libav libraries are linked to the app.
+## Adjust boundaries and export
 
-## Library and compatibility
+**Edit boundaries** lets you adjust a clip against its original recording.
+Move the left handle for the start and the right handle for the end, or use
+frame and time-step controls for fine adjustment. For multipart flights, select
+the source clip to edit. **Save this clip** applies the range; closing without
+saving discards the draft. Editing boundaries does not change source files.
 
-Existing libraries open unchanged. The SQLite schema, migration ledger,
-source-frame coordinates, IDs and config.json remain compatible with the
-earlier desktop applications.
+Choose **Export** from a flight's menu or select several flights for batch
+export. Exports continue in the bottom **Tasks** panel after the form closes.
+Existing destination files are never overwritten; failed exports report their
+errors in Tasks.
 
-- Configuration and database: ~/.config/fpv_rush_extractor/ on Linux, the
-  corresponding application-support directory on macOS and Windows.
-- Recordings: ~/Videos/FPV Rush by default, adjustable in Settings.
-- Disposable posters, hover frames and source previews: the OS cache directory.
-  Old playback proxies can be cleared in Settings.
+Analog MJPEG footage can be cut losslessly at exact frames. Action-camera
+H.264/HEVC takes are stream-copied from the start of each file. Flights whose
+recordings have incompatible frame rates can be exported as separate lossless
+parts or explicitly re-encoded into one file.
 
-Back up the configuration directory and recordings. Browser preferences are
-stored separately by eframe. Old Svelte browser preferences are not migrated.
+## Storage and background work
 
-## Workflow
+Set your recording destination in **Settings**; the default is
+`~/Videos/FPV Rush`. Keep backups of both your recordings and the application's
+configuration/database directory. Cached thumbnails and previews can be cleared
+in Settings without deleting recordings.
 
-Import a card shown in the sidebar or open Import Folder. Name the session and
-supply the flying date for DVR footage. Copies preserve bytes and mtime; SHA-256
-deduplicates repeated imports. GoPro chapters join into one flight. Optional
-card cleanup removes only recordings successfully imported in that run.
-Load destination registers previously copied recordings without copying again.
-It skips recordings deleted with their flight unless their restoration is
-explicitly selected. The source fork's cloud-drive behavior is retained:
-Online Only files are marked, pictures never hydrate them implicitly, and
-playing a flight first downloads its missing recordings with progress.
-Session/flight menus offer Download and, on supported macOS cloud drives,
-Free Up Space. Settings exposes separate preview/picture budgets and cache
-cleanup by category. The import and session-edit dialogs use a calendar date
-picker; the flying date remains optional for action-camera imports.
-New import dialogs select today's local date. **No Sound** and its clickable
-speaker icon apply to newly imported recordings only: their source bytes remain
-intact, while playback and exports honor the persisted mute choice. Already known
-recordings skipped during import keep their previous choice. Settings' global
-**Mute videos** preference can also silence all playback and exports.
+The collapsible **Tasks** panel shows operation progress, completed work and
+errors. Imports and exports continue while you browse the library.
 
-Long-running work appears in a collapsible Tasks panel along the bottom of the
-main window, where progress, notifications, and task logs stay available
-without floating notification windows. Settings includes Mute videos, which
-silences player playback and exported video.
-The About window displays the Letz Kwad logo, project link, and developer
-credits.
-It includes **Coded by Claude, Codex, Driven by Defane, Thanat0s** and a link to
-[LetzKwad](https://letzkwad.lu/). On macOS the system About panel includes the same
-branding and links through the same native About window.
+On supported macOS cloud drives, online-only recordings are marked without
+being downloaded for thumbnails. Playing them downloads the missing files with
+progress. Session and flight menus provide **Download** and **Free Up Space**
+where available.
 
-Segment analyzes DVR recordings only. Picture statistics determine boundaries,
-independently of OSD or armed state. It joins flights continuing into the next
-recording. The per-session Textured terrain profile is available for a camera
-chain or terrain the Standard thresholds split too aggressively. Re-segmenting
-replaces DVR flights and their manual boundaries, titles, likes and flight tags;
-figure tags on source recordings and action-cam takes survive.
-
-Sessions, All flights and Figures support filtering, sorting and pagination.
-Cards show the recording source and format, likes, tags and reduced status.
-Hover a card to load cached filmstrip frames. Session menus expose details,
-profile, folders, relocation, labels export, reduction and removal.
-
-The native player decodes the original files, including MJPEG-in-AVI and HEVC.
-Each part of a multi-file flight keeps its own rate and source times. Playback
-scales to at most 1280x720 and 30 display frames/s; it never changes source frames
-or export accuracy. Audio drives the playback clock when an output device is
-available; silent playback remains possible without one. The decoder is
-software-based in this migration, so very large HEVC takes may buffer more than
-the previous hardware-backed WebView player.
-Indexed seeking avoids decoding from the beginning; a sequential fallback handles
-inputs whose indexes still fail. See [buffering measurements](docs/player-buffering.md).
-
-In the player, playback and video are on the left while flight tags and figures
-are on the right. Videos open in a compact window; Maximize fills the available
-application area and Restore returns to the previous window size. Reopening a
-video starts compact again. The player cannot be collapsed; its controls include a
-fullscreen toggle, Escape to exit fullscreen, and an X close button. Mute videos
-also silences player audio, in which case the volume slider is replaced by a
-muted indicator.
-The progress bar is overlaid transparently on the video, with a vertical volume
-slider at its right edge. Click the video or press Space to play/pause; the
-Play/Pause, Replay and clickable mute speaker buttons remain below the image.
-Temporary speaker mute preserves the previous audible gain and does not change
-export preferences. The
-window stays inside the visible viewport, including when the viewport shrinks.
-
-Space plays/pauses; Left/Right seek five seconds; I marks the start of a figure.
-Enter in the figure-name field records a point or completes the marked range.
-Click a figure to seek. Flight tags are separate from figure markers/ranges.
-
-A thumbnail's **… → Info** shows each original recording's name, original and
-library paths (selectable and copyable), stored video/audio properties and
-source-relative clip times. End times and frame indexes are exclusive. Each
-part keeps its own frame rate; missing or cloud-only sources still show their
-stored metadata without downloading media.
-
-Exports continue in **Tasks** after the export panel closes. A failed export
-leaves no empty final file; completed outputs are checked for readable video
-packets before publication. Existing destinations are never replaced.
-
-Edit source boundaries steps through a recording's own frames, with source
-previews and frame/quarter-second/second controls. Exports always read the
-recordings. MJPEG cuts are lossless; long-GOP material is stream-copied only
-from frame zero. Incompatible file rates require separate lossless parts or
-an explicit re-encode. Multi-flight export uses unique filenames and reports
-failures while continuing.
-
-Reduce is an explicitly confirmed destructive operation: keep detected DVR
-flights with five-second margins, move originals to the trash, preserve the
-metadata inside kept footage. Reduced pieces cannot be re-segmented.
-Removing a session can keep its recordings; deleting a flight only trashes
-recordings that held nothing but that flight.
-
-## Architecture
-
-The workspace is under fpv-rs/. Core/application crates remain independent of
-the GUI:
-
-- fpv-core: model, source frame rates and flight timelines.
-- fpv-media: FFmpeg process boundary, probing and source frames.
-- fpv-detect: signal metrics and segmentation.
-- fpv-store: SQLite and immutable schema migrations.
-- fpv-import: discovery, copying, hashing and chapter grouping.
-- fpv-pipeline: segmentation and cross-recording flight stitching.
-- fpv-export: lossless cuts and explicit rate reconciliation.
-- fpv-proxy: optional CLI MPEG-4/AAC derivatives and cache; the GUI reads sources.
-- fpv-library: application operations and views.
-- fpv-app: native egui window, background worker, bounded video/audio pipes.
-- fpvlib: headless CLI.
-
-CLAUDE.md records detector measurements and settled domain decisions. Detector
-threshold changes still require the external hand-labelled tuning harness.
-
-## Redistribution
-
-The app's Rust code is MIT OR Apache-2.0. Bundled FFmpeg is built independently
-from the pinned official archive, with GPL/nonfree components and optional
-third-party autodetection disabled. Each package includes its LGPLv2.1 license,
-exact unmodified source archive, SHA-256 and build recipe under
-resources/licenses/ffmpeg (lib/fpv-rush/licenses/ffmpeg in Linux archives).
-Distributors should retain these files and make the corresponding source
-available alongside their download. See https://ffmpeg.org/legal.html.
-
-FFmpeg 8.1.3 source: https://ffmpeg.org/releases/ffmpeg-8.1.3.tar.xz
-
-Edit boundaries opens a source-video preview with a trim range: drag its left
-handle to move the start, and its right handle to move the exclusive end. The
-preview follows the edited source frame; numeric fields allow fine adjustment.
-Select each source clip for multipart flights, then Save this clip to persist its
-range. Closing without saving discards the draft and never changes source files.
-
-
-The fullscreen player covers the library completely. Play/Pause is hidden only
-in fullscreen: click the video or press Space instead; windowed playback buttons
-remain available. Resizing and Maximize grow the video to the remaining content
-area while preserving aspect ratio, so only aspect-ratio letterboxing remains.
+**Reduce recordings** is a separate, confirmed operation: it keeps detected
+flights with five-second margins and moves the original DVR recordings to the
+trash. Reduced footage cannot be re-segmented. Removing a session can keep its
+recordings; deleting a flight only trashes recordings used exclusively by it.
