@@ -13,10 +13,9 @@ use fpv_media::{FfmpegInvoking, ThumbnailGenerator};
 use fpv_store::{LibraryStore, StoreError};
 use uuid::Uuid;
 
-/// Names the algorithm, not the language: the Rust detector reproduces the
-/// Swift one exactly (same clips on all twelve reference files), so runs from
-/// either stay comparable. Bump it when the detector's output changes.
-pub const ALGORITHM_VERSION: &str = "swift-detect-1";
+/// Records universal codec eligibility and clean EOF frame preservation.
+/// Spatial classifier thresholds remain those of the original detector.
+pub const ALGORITHM_VERSION: &str = "signal-detect-2";
 
 #[derive(Debug, Default)]
 pub struct SegmentationReport {
@@ -24,7 +23,7 @@ pub struct SegmentationReport {
     pub clips: usize,
     pub stitched: Vec<(String, String)>,
     pub failed: Vec<(String, String)>,
-    /// Action-cam files left alone: they are whole-file flights already.
+    /// Reduced recordings left alone to preserve their edited clips.
     pub whole_file: usize,
 }
 
@@ -54,11 +53,8 @@ impl<'a> SegmentationService<'a> {
                    mut progress: impl FnMut(SegmentationEvent))
         -> Result<SegmentationReport, StoreError> {
         let mut report = SegmentationReport::default();
-        // Only what the detector is for. An action-cam take is a whole-file
-        // flight from import; running the detector on it would replace that
-        // flight with whatever it imagined in a clean H.264 picture. A DVR
-        // recording reduced to its flights has no snow left to find, and its
-        // flights carry the pilot's titles, likes and tags.
+        // Codec never determines whether a recording can contain snow. Reduced
+        // pieces keep their saved edits rather than being silently re-segmented.
         let reduced = self.store.reduced_files(session)?;
         let (mut files, whole): (Vec<SourceFile>, Vec<SourceFile>) =
             self.store.source_files(session)?.into_iter()
@@ -173,7 +169,10 @@ fn clip(detected: &DetectedClip, file: &SourceFile, flight: Uuid, continues: boo
         entry: if continues { ClipEntry::Continuation } else { detected.entry },
         exit: detected.exit,
         confidence: detected.confidence,
-        ..Clip::new(flight, file.id, rate.frame_index(detected.start), rate.frame_index(detected.end))
+        ..Clip::new(flight, file.id, rate.frame_index(detected.start),
+            if detected.at_file_end && detected.exit == fpv_core::ClipExit::Eof {
+                file.media.frame_count.unwrap_or_else(|| rate.frame_index(file.media.duration))
+            } else { rate.frame_index(detected.end) })
     }
 }
 

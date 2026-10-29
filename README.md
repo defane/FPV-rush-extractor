@@ -21,8 +21,8 @@ installation packages.
 ## Your flight library
 
 - Group recordings into sessions with a date, location, notes and tags.
-- Detect flights in analog DVR footage, separating usable video from snow,
-  black screens and goggle menus.
+- Detect flights in any imported recording, separating usable video from snow,
+  black screens and goggle menus, regardless of codec or camera name.
 - Join a flight that continues across consecutive DVR files or GoPro chapters.
 - Browse Sessions, All flights and Figures with thumbnails, filters, sorting
   and pagination.
@@ -56,8 +56,9 @@ Select a detected card in the sidebar or choose **Import Folder**. Give the
 session a name and choose the flying date; new imports default to today.
 
 Recordings are copied to your library without changing their contents. Repeated
-imports skip recordings already known to the library. Action-camera takes become
-flights directly; analog DVR recordings need segmentation.
+imports skip recordings already known to the library. Action-camera recordings
+initially appear as whole-file takes. Use **Segment** to analyze every recording,
+including H.264, HEVC and MJPEG; no format bypasses detection.
 
 **No Sound** on import keeps the original audio intact but silences playback and
 exports of newly imported recordings. It does not change recordings skipped as
@@ -70,16 +71,16 @@ only recordings successfully imported during that operation.
 
 ## Detect and organize flights
 
-Run **Segment** on a DVR session to detect usable video. Detection follows the
+Run **Segment** on any session to detect usable video. Detection follows the
 picture signal rather than the armed state or OSD timer. Review the results:
 noise, interference and very textured scenes can still produce incorrect cuts.
 The **Textured terrain** profile helps when the Standard profile splits good
 footage too aggressively.
 
-Re-segmenting replaces the session's DVR flights, including manually adjusted
-boundaries, flight names, favourites and flight tags. The confirmation describes
-what will be lost. Figure tags attached to source recordings and action-camera
-takes are retained.
+Re-segmenting replaces flights from all unreduced recordings, including manually
+adjusted boundaries, flight names, favourites and flight tags. The confirmation
+describes what will be lost. Figure tags attached to source recordings and
+already reduced clips are retained.
 
 Use session and flight tags to organize your library. Figure tags identify a
 moment or a range inside a recording and let you jump back to a manoeuvre.
@@ -125,7 +126,8 @@ Existing destination files are never overwritten; failed exports report their
 errors in Tasks.
 
 Analog MJPEG footage can be cut losslessly at exact frames. Action-camera
-H.264/HEVC takes are stream-copied from the start of each file. When exporting
+Complete H.264/HEVC recordings can be stream-copied. Precise cuts inside these
+recordings require an explicit re-encode, which the export panel offers. When exporting
 to MP4, audio that the container cannot carry (such as DVR ADPCM) is converted
 to AAC while the video remains unchanged. Flights whose
 recordings have incompatible frame rates can be exported as separate lossless

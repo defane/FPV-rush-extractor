@@ -111,8 +111,12 @@ fn copies_a_whole_action_cam_take_across_its_chapters() {
     let ffmpeg = RecordingFfmpeg::default();
     let out = tempfile::tempdir().unwrap();
     let rate = FrameRate::new(60000, 1001);
-    let parts = [part(&source("GH010042.MP4", rate, "h264"), 0, 28_000),
-                 part(&source("GH020042.MP4", rate, "h264"), 0, 9_000)];
+    let whole = |name, frames| {
+        let mut file = source(name, rate, "h264");
+        file.media.frame_count = Some(frames);
+        part(&file, 0, frames)
+    };
+    let parts = [whole("GH010042.MP4", 28_000), whole("GH020042.MP4", 9_000)];
     ClipExporter::new(&ffmpeg).export_flight(&parts, &out.path().join("take.mp4")).unwrap();
     let calls = ffmpeg.calls();
     assert_eq!(calls.len(), 3);
@@ -231,6 +235,7 @@ fn publication_without_hard_links_never_overwrites_and_cleans_up_failed_copies()
 #[test]
 fn incompatible_mp4_audio_is_converted_without_reencoding_video_or_changing_avi_exports() {
     let mut file = source("EV300D.AVI", FrameRate::new(30, 1), "h264");
+    file.media.frame_count = Some(90);
     let (clip, _) = part(&file, 0, 90);
     for codec in ["adpcm_ima_wav", "pcm_s16le", "flac"] {
         file.media.audio_codec = Some(codec.into());
@@ -243,4 +248,15 @@ fn incompatible_mp4_audio_is_converted_without_reencoding_video_or_changing_avi_
     file.media.audio_codec = Some("aac".into());
     let args = copy_arguments(&clip, &file, false, Path::new("export.mp4")).unwrap();
     assert!(args.windows(2).any(|pair| pair == ["-c", "copy"]));
+}
+
+#[test]
+fn mpeg4_export_uses_the_measured_rate_within_its_codec_clock_limits() {
+    let exact = FrameRate::new(30000, 1001);
+    assert_eq!(mpeg4_rate(exact), exact);
+    for rate in [FrameRate::new(1_000_000, 33459), FrameRate::new(120000, 1001)] {
+        let bounded = mpeg4_rate(rate);
+        assert!(bounded.numerator <= 65_535 && bounded.denominator <= 65_535);
+        assert!((bounded.value() / rate.value() - 1.0).abs() < 1e-6);
+    }
 }

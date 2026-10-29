@@ -78,7 +78,7 @@ fn rough_strip(media: &MediaInfo, spacing: f64) -> bool {
 /// Whether a flight can play from its own files: every part from an action
 /// cam. The DVR's MJPEG never can.
 fn plays_directly<'m>(media: impl IntoIterator<Item = &'m MediaInfo>) -> bool {
-    media.into_iter().all(|media| !media.needs_segmentation())
+    media.into_iter().all(|media| !media.is_analog_dvr())
 }
 
 /// How the player opens a flight (`Library::playback`).
@@ -879,7 +879,7 @@ impl Library {
         let mut plans = vec![];
         let mut unsegmented = 0;
         for file in self.store.source_files(session)? {
-            if !file.media.needs_segmentation() || reduced.contains(&file.id) {
+            if !file.media.is_all_intra() || reduced.contains(&file.id) {
                 continue;
             }
             if self.store.detection_runs(file.id)?.is_empty() {
@@ -1049,7 +1049,7 @@ impl Library {
         Ok((pieces.len(), before.saturating_sub(after)))
     }
 
-    /// Runs the detector over a session's DVR recordings and files the flights.
+    /// Runs signal detection over all unreduced recordings, independent of codec.
     /// Re-running is cheap and reversible by design (CLAUDE.md 3.2).
     pub fn segment(&self, session: &str, progress: impl FnMut(SegmentationEvent))
         -> Result<SegmentationReport> {
@@ -1311,7 +1311,8 @@ impl Library {
             let name = file_name(&file.imported_path);
             // A file is the flight's own when nothing else is cut from it: an
             // action-cam take, or a reduced piece no other flight lies in.
-            if file.media.needs_segmentation() && !reduced.contains(&file.id) {
+            if !reduced.contains(&file.id) && (file.media.is_analog_dvr()
+                || clip.start_frame > 0 || clip.end_frame < views::last_frame(&file) + 1) {
                 plan.recordings.push(name);
             } else if others.iter().any(|c| c.source_file_id == file.id) {
                 plan.shared.push(name);
@@ -1743,8 +1744,8 @@ impl Library {
     ///
     /// A flight whose recordings disagree on their rate cannot be asked about
     /// one by one in a batch, so `on_mismatch` (`Parts` or `Reencode`) answers
-    /// for all of them up front — `Reencode` for DVR footage only; an action
-    /// cam's take always gets its lossless parts. A flight that fails is reported and the batch
+    /// for all of them up front. Precise long-GOP cuts can also use an explicit
+    /// `Reencode` choice. A flight that fails is reported and the batch
     /// goes on; `progress` gets (flights done, total, the flight starting).
     pub fn export_flights(&self, flights: &[String], folder: &Path, on_mismatch: ExportMode,
                           mut progress: impl FnMut(usize, usize, &str)) -> Result<BulkExport> {
@@ -1758,25 +1759,25 @@ impl Library {
                         .map(|s| s.name.as_str()).unwrap_or("Session");
                     let title = flight.title.clone()
                         .unwrap_or_else(|| format!("Flight {}", flight.order_in_session));
-                    let dvr = timeline.parts.iter().any(|(_, f)| f.media.needs_segmentation());
-                    let intra = timeline.parts.iter().all(|(_, f)| f.media.is_all_intra());
+                    let dvr = timeline.parts.iter().any(|(_, f)| f.media.is_analog_dvr());
                     let (name, extension) = export_name(session, &title, dvr);
-                    Some((name, extension, intra))
+                    Some((name, extension))
                 }
                 Err(_) => None,
             };
-            let Some((name, extension, intra)) = label else {
+            let Some((name, extension)) = label else {
                 outcome.failed.push((id.clone(), "not in the library".into()));
                 continue;
             };
             progress(index, flights.len(), &name);
             let destination = free_name(folder, &name, extension);
             let written = match self.export(id, &destination, ExportMode::Lossless) {
-                // Re-encoding resamples MJPEG; an action cam's long-GOP take
-                // cannot go that way, so it gets its lossless parts instead.
+                // A batch's explicit choice applies to all source codecs.
                 Err(LibraryError::Export(ExportError::MismatchedFrameRates(..))) => {
-                    let mode = if intra { on_mismatch } else { ExportMode::Parts };
-                    self.export(id, &destination, mode)
+                    self.export(id, &destination, on_mismatch)
+                }
+                Err(LibraryError::Export(ExportError::NotAllIntra(_))) if on_mismatch == ExportMode::Reencode => {
+                    self.export(id, &destination, ExportMode::Reencode)
                 }
                 other => other,
             };
@@ -1791,8 +1792,8 @@ impl Library {
 
     /// The session's clips as ground-truth rows for the detector's tuning
     /// harness — corrections feed back as labelled data (CLAUDE.md 4.6). Real
-    /// seconds: `fpv_spike` reads plain numbers as seconds. DVR files only;
-    /// action-cam takes were never detected.
+    /// seconds: `fpv_spike` reads plain numbers as seconds. Only actual detection
+    /// results are exported; whole-file import placeholders are not ground truth.
     pub fn export_labels(&self, session: &str, destination: &Path) -> Result<usize> {
         let session = self.session(session)?;
         let mut lines = vec![
@@ -1809,6 +1810,10 @@ impl Library {
         }
         let mut rows = 0;
         for file in self.store.source_files(session.id)?.iter().filter(|f| f.media.needs_segmentation()) {
+            let runs = self.store.detection_runs(file.id)?;
+            if runs.is_empty() || runs.iter().all(|run| run.algorithm_version == fpv_import::WHOLE_FILE_ALGORITHM) {
+                continue; // whole-file import placeholders are not detector ground truth
+            }
             let rate = file.media.frame_rate;
             let mut clips = by_file.remove(&file.id).unwrap_or_default();
             clips.sort_by_key(|c| c.start_frame);

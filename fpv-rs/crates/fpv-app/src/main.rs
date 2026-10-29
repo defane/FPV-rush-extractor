@@ -440,7 +440,7 @@ impl App {
                         && result.is_ok()
                         && self.tasks.iter().any(|task| task.id == id && !task.quiet);
                     // A refused lossless export keeps its dialog open, to ask how.
-                    let done = matches!(&result, Ok(reply) if !matches!(reply, Reply::Mismatch(_)));
+                    let done = matches!(&result, Ok(reply) if !matches!(reply, Reply::Mismatch(_) | Reply::NeedsReencode(_)));
                     if self
                         .dialog
                         .as_mut()
@@ -458,12 +458,18 @@ impl App {
                             Err(error) => error.clone(),
                         };
                     }
+                    let recovery = match &result {
+                        Ok(Reply::Mismatch(reason)) => Some(Reply::Mismatch(reason.clone())),
+                        Ok(Reply::NeedsReencode(reason)) => {
+                            Some(Reply::NeedsReencode(reason.clone()))
+                        }
+                        _ => None,
+                    };
                     if let Some(mut dialog) = self.export_dialogs.remove(&id)
-                        && let Ok(Reply::Mismatch(reason)) = &result
+                        && let Some(reply) = recovery
                     {
                         dialog.finished(id, false);
-                        dialog.reply(Reply::Mismatch(reason.clone()));
-                        // Keep the recovery choice even if another panel is open.
+                        dialog.reply(reply);
                         self.export_dialogs.insert(id, dialog);
                     }
                     match result {
@@ -472,7 +478,7 @@ impl App {
                             self.notices.push(format!("Hover strips: {error}"));
                         }
                         Err(error) => self.notices.push(error),
-                        Ok(Reply::Mismatch(_)) => {}
+                        Ok(Reply::Mismatch(_) | Reply::NeedsReencode(_)) => {}
                         Ok(Reply::Strips(prepared)) => {
                             let (next, failed) =
                                 self.strips

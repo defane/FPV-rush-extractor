@@ -15,9 +15,8 @@ impl ClipDetecting for StubDetector {
             return Err(FfmpegError::UnreadableOutput { tool: "ffmpeg".into(),
                                                        detail: "broken".into() }.into());
         }
-        // A detector that touches an action-cam file is the bug under test.
-        assert!(!name.ends_with(".MP4"), "the detector was run on {name}");
-        Ok(self.0.get(name).cloned().unwrap_or_default())
+        self.0.get(name).cloned().ok_or_else(|| FfmpegError::UnreadableOutput {
+            tool: "ffmpeg".into(), detail: format!("no fixture for {name}") }.into())
     }
 }
 
@@ -151,14 +150,23 @@ fn mixed_session() -> (Fixture, SourceFile) {
 }
 
 #[test]
-fn leaves_action_cam_takes_alone() {
+fn segments_action_cam_codecs_instead_of_preserving_whole_file_placeholders() {
     let (fixture, cam) = mixed_session();
-    let report = fixture.segment(&[("PICT0034.AVI", vec![clip(0.0, 100.0, ClipExit::Eof, true, false)])]);
-    assert_eq!(report.whole_file, 1);
+    let report = fixture.segment(&[
+        ("PICT0034.AVI", vec![clip(0.0, 100.0, ClipExit::SignalLoss, true, false)]),
+        ("GH010042.MP4", vec![clip(0.0, 20.0, ClipExit::SignalLoss, true, false),
+                              clip(40.0, 59.0, ClipExit::Eof, false, true)]),
+    ]);
+    assert_eq!(report.whole_file, 0);
+    assert!(report.failed.is_empty());
     let flights = fixture.store.flights(fixture.session.id).unwrap();
-    let take = flights.iter().find(|(_, clips)| clips[0].source_file_id == cam.id).unwrap();
-    assert_eq!((take.1[0].start_frame, take.1[0].end_frame), (0, 3596));
-    assert_eq!(fixture.store.detection_runs(cam.id).unwrap().len(), 1);
+    let parts: Vec<_> = flights.iter().flat_map(|(_, clips)| clips)
+        .filter(|clip| clip.source_file_id == cam.id).collect();
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[0].end_frame, cam.media.frame_rate.frame_index(20.0));
+    assert_eq!(parts[1].start_frame, cam.media.frame_rate.frame_index(40.0));
+    assert!(fixture.store.detection_runs(cam.id).unwrap().iter()
+        .any(|run| run.algorithm_version == ALGORITHM_VERSION));
 }
 
 #[test]
@@ -180,7 +188,7 @@ fn leaves_a_dvr_recording_reduced_to_its_flights_alone() {
 }
 
 #[test]
-fn numbers_action_cam_takes_after_a_re_segmentation_that_finds_more_flights() {
+fn preserves_and_renumbers_a_recording_whose_detector_failed() {
     // The DVR file now yields three flights. Numbered from 1, they would
     // collide with the take at 2 unless it moves after them.
     let (fixture, cam) = mixed_session();
@@ -192,4 +200,16 @@ fn numbers_action_cam_takes_after_a_re_segmentation_that_finds_more_flights() {
     let flights = fixture.store.flights(fixture.session.id).unwrap();
     assert_eq!(flights.iter().map(|(f, _)| f.order_in_session).collect::<Vec<_>>(), [1, 2, 3, 4]);
     assert_eq!(flights[3].1[0].source_file_id, cam.id);
+}
+
+#[test]
+fn clean_tail_keeps_the_final_source_frames_beyond_the_sampling_grid() {
+    let session = Session::new("Indoor", None);
+    let mut file = source(&session, "Indoor.mp4", 1, FrameRate::new(30, 1), "h264");
+    file.media.duration = 600.067;
+    file.media.frame_count = Some(18_002);
+    let detected = clip(218.25, 599.75, ClipExit::Eof, false, true);
+    let saved = super::clip(&detected, &file, Uuid::new_v4(), false);
+    assert_eq!(saved.start_frame, 6548);
+    assert_eq!(saved.end_frame, 18_002);
 }

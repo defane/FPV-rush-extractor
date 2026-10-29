@@ -3,9 +3,8 @@
 //! Analog DVR footage is MJPEG, which is all-intra: every frame is a keyframe, so
 //! a cut is frame-accurate with `-c copy`, lossless and without re-encoding
 //! (CLAUDE.md 2). H.264/HEVC from action cams is not: a copy cut may start on a
-//! frame that needs an earlier one. It is copied only when the cut opens on the
-//! file's first frame — always a keyframe — which covers whole takes and their
-//! chapters; anything else is refused rather than quietly broken.
+//! frame that needs an earlier one. Complete recordings can be stream-copied;
+//! interior cuts require an explicitly chosen re-encode, leaving sources intact.
 
 use std::path::{Path, PathBuf};
 
@@ -15,8 +14,8 @@ use fpv_media::{FfmpegError, FfmpegInvoking, FfmpegTool, Workspace, run_writing,
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
-    #[error("{0} is not all-intra: cutting it with -c copy anywhere but at the start of the \
-             file would open the clip on an incomplete GOP")]
+    #[error("{0} is not all-intra: a precise cut inside the recording requires video re-encoding; \
+             a complete recording can still be stream-copied")]
     NotAllIntra(String),
     #[error("no clips to export")]
     NothingToExport,
@@ -97,11 +96,11 @@ impl<'a> ClipExporter<'a> {
     }
 
     /// The deliberate exception to "never re-encode DVR footage" (CLAUDE.md 2):
-    /// a flight whose recordings were made at rates too far apart to
-    /// stream-copy can still become one file when the user chooses to
+    /// a precise interior long-GOP cut, or a flight whose recordings were made
+    /// at rates too far apart to stream-copy, can be exported when the user chooses to
     /// re-encode. Each part is cut *and resampled on its own* to `target` —
     /// by default the longest part's rate, so the fewest frames are touched —
-    /// at near-lossless MJPEG quality with the audio copied; the now-homogeneous
+    /// using MJPEG for all-intra sources or MPEG-4 for long-GOP cuts; the homogeneous
     /// parts are then concatenated with `-c copy`. The order matters: the
     /// concat demuxer times AVI packets at the first file's rate, so resampling
     /// *after* concatenation ran 60 s of PICT0031 into 49 (measured).
@@ -114,26 +113,26 @@ impl<'a> ClipExporter<'a> {
         match parts {
             [] => return Err(ExportError::NothingToExport),
             // One recording, nothing to reconcile: stay lossless.
-            [(clip, file)] => return self.export_clip_with_mute(clip, file, destination, mute),
+            [(clip, file)] if file.media.is_all_intra() => return self.export_clip_with_mute(clip, file, destination, mute),
             _ => {}
         }
+        let all_intra = parts.iter().all(|(_, file)| file.media.is_all_intra());
         let mixed_audio = !mute && parts.iter().any(|(_, f)| f.muted)
             && parts.iter().any(|(_, f)| !f.muted && f.media.audio_codec.is_some());
         let mute = mute || (parts.iter().any(|(_, f)| f.muted) && !mixed_audio);
-        let rate = target.unwrap_or_else(|| FrameRate::dominant(parts));
+        let requested_rate = target.unwrap_or_else(|| FrameRate::dominant(parts));
+        let rate = if all_intra { requested_rate } else { mpeg4_rate(requested_rate) };
         let workspace = Workspace::beside(destination, "fpv-export")?;
         let list = self.cut(parts, workspace.path(), destination, |(clip, file)| {
-            if !file.media.is_all_intra() {
-                return Err(ExportError::NotAllIntra(file.media.video_codec.clone()));
-            }
             let (start, duration) = span(clip, file);
             let mut arguments = vec![
                 "-hide_banner".into(), "-loglevel".into(), "error".into(),
                 "-i".into(), file.imported_path.clone(),
                 "-ss".into(), seconds_argument(start), "-t".into(), seconds_argument(duration),
                 "-vf".into(), format!("fps={}/{}", rate.numerator, rate.denominator),
-                "-c:v".into(), "mjpeg".into(), "-q:v".into(), "2".into(),
+                "-c:v".into(), if all_intra { "mjpeg" } else { "mpeg4" }.into(), "-q:v".into(), "2".into(),
             ];
+            if !all_intra { arguments.extend(["-pix_fmt".into(), "yuv420p".into()]); }
             if mixed_audio {
                 normalize_flight_audio(&mut arguments, file, destination);
             } else {
@@ -204,6 +203,25 @@ impl<'a> ClipExporter<'a> {
     }
 }
 
+/// MPEG-4's time-increment resolution is 16-bit. Keep the requested rate
+/// whenever representable; otherwise use its nearest bounded rational rather
+/// than forcing every recording to a nominal 25/30 fps.
+fn mpeg4_rate(rate: FrameRate) -> FrameRate {
+    if rate.numerator <= 65_535 { return rate; }
+    let fps = rate.value();
+    let limit = ((65_535.0 / fps).floor() as i64).clamp(1, 65_535);
+    let mut best = rate;
+    let mut error = f64::INFINITY;
+    for denominator in 1..=limit {
+        let numerator = (fps * denominator as f64).round() as i64;
+        if !(1..=65_535).contains(&numerator) { continue; }
+        let candidate = FrameRate::new(numerator, denominator);
+        let difference = (candidate.value() - fps).abs();
+        if difference < error { error = difference; best = candidate; }
+    }
+    best
+}
+
 fn copy_new(source: &Path, destination: &Path) -> std::io::Result<()> {
     let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(destination)?;
     let result = (|| {
@@ -248,7 +266,9 @@ fn needs_aac(file: &SourceFile, destination: &Path) -> bool {
 }
 
 fn copy_arguments(clip: &Clip, file: &SourceFile, mute: bool, destination: &Path) -> Result<Vec<String>, ExportError> {
-    if !file.media.is_all_intra() && clip.start_frame != 0 {
+    let whole_frames = file.media.frame_count.unwrap_or_else(||
+        file.media.frame_rate.frame_index(file.media.duration));
+    if !file.media.is_all_intra() && (clip.start_frame != 0 || clip.end_frame < whole_frames) {
         return Err(ExportError::NotAllIntra(file.media.video_codec.clone()));
     }
     let (start, duration) = span(clip, file);

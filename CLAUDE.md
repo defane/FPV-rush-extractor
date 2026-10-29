@@ -16,6 +16,20 @@ clippy and the tests on Linux, macOS and Windows, against the system's FFmpeg �
 `main`, `v*` tags, on demand (`make macos-remote`) and on a pull request that touches
 `packaging/`. Runtime ffmpeg binaries are not linked into Rust.
 
+
+**Current segmentation policy (2026-10-29, user request, #28):** all imported
+videos are eligible for signal segmentation, including H.264/HEVC and action-camera
+filenames. `needs_segmentation` is independent of the legacy `is_analog_dvr`
+source-label hint and `is_all_intra` export/reduction capability. Imported whole-file
+flights are provisional until Segment runs. Existing reduced pieces remain protected.
+`signal-detect-2` records the new policy and retains the true clean EOF beyond the
+sampling grid. Classifier thresholds are unchanged: the supplied Indoor MP4 already
+classifies both 115 s and 210 s as NoSignal when actually analyzed. Earlier notes
+about action-camera recordings never being segmented describe retired behavior.
+Long-GOP interior cuts require an explicit MPEG-4 re-encode; complete takes and
+MJPEG retain their lossless paths. Reduce remains limited to all-intra recordings.
+
+
 ---
 
 ## 1. Goal
@@ -24,8 +38,9 @@ A desktop application — Rust + egui on macOS, Linux and Windows — that:
 
 1. **Imports** DVR recordings from an FPV goggle SD card (Fat Shark analog DVR, primary target),
    and action-cam rushes (GoPro, DJI, …) alongside them (§10, "Action-cam rushes").
-2. **Auto-segments** each DVR recording into individual clips — one per *video signal onset*
-   (see §4) — non-destructively. Action-cam takes are never segmented: one file, one take.
+2. **Segments every imported recording** into usable signal intervals (see §4),
+   non-destructively. No codec or camera name bypasses detection. A continuous
+   usable take can remain one clip. Segment is available for every session.
 3. **Organizes** the resulting clips into flying sessions, with a browsable library, a player,
    and figure tags ("split-S", "power loop") on any flight.
 
@@ -57,7 +72,8 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
 - **MJPEG is all-intra.** Every frame is a keyframe, so clips can be cut **frame-accurately with
   `ffmpeg -c copy`, losslessly and with no re-encode**. Do not re-encode analog DVR footage. This
   property does not hold for H.264/HEVC: those are stream-copied only from frame 0 (whole
-  action-cam takes); a cut elsewhere is refused rather than opened on a broken GOP.
+  recordings); precise cuts inside them require an explicit re-encode rather
+  than opening on a broken GOP. The exporter offers built-in MPEG-4 for such cuts.
   Two deliberate exceptions, both chosen, neither a default: the user-requested one-file export
   of a flight whose parts disagree on their rate (§6, Phase 3), and the optional **CLI proxy** — a
   MPEG-4/AAC MP4 derivative. The native GUI plays source files directly. A

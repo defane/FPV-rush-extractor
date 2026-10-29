@@ -100,7 +100,7 @@ fn imported() -> (Fixture, SessionView) {
 #[test]
 fn shows_action_cam_takes_as_flights_ready_to_play() {
     let (_fixture, session) = imported();
-    assert!(!session.segmentable);
+    assert!(session.segmentable, "H.264 can contain recorded snow too");
     assert_eq!(session.flights.len(), 2);
     let take = &session.flights[0];
     assert!(take.action_cam);
@@ -688,7 +688,7 @@ fn exports_a_batch_of_flights_into_one_folder_without_overwriting() {
 }
 
 #[test]
-fn keeps_an_action_cam_take_lossless_in_a_re_encoding_batch_and_carries_on_past_failures() {
+fn reencodes_mismatched_h264_only_when_requested_and_carries_on_past_failures() {
     let fixture = gopro_card();
     add_mismatched_take(&fixture.card);
     fixture.library.import(&fixture.card, "Alpes", None, false, |_| {}).unwrap();
@@ -701,10 +701,11 @@ fn keeps_an_action_cam_take_lossless_in_a_re_encoding_batch_and_carries_on_past_
         &["not-a-flight".to_owned(), mismatched], &out, ExportMode::Reencode, |_, _, _| {}).unwrap();
     // The unknown flight is reported; the batch goes on.
     assert_eq!(batch.failed, [("not-a-flight".to_owned(), "not in the library".to_owned())]);
-    // Re-encoding is for MJPEG: the GoPro take gets its two lossless parts.
-    let names: Vec<_> = batch.written.iter().map(|p| file_name(&p.to_string_lossy())).collect();
-    assert_eq!(names.len(), 2);
-    assert!(names[0].ends_with(" - part1.mp4") && names[1].ends_with(" - part2.mp4"), "{names:?}");
+    // Explicit re-encoding is available for every codec when one file is requested.
+    assert_eq!(batch.written.len(), 1);
+    let media = MediaProbe::new(&fixture.library.ffmpeg()).probe(&batch.written[0]).unwrap();
+    assert_eq!(media.video_codec, "mpeg4");
+    assert!(media.frame_count.is_some_and(|frames| frames > 0));
 }
 
 #[test]
@@ -1543,4 +1544,70 @@ fn source_filmstrip_spans_the_original_recording_and_reuses_cached_images_after_
     assert!(library.source_strip_frame(&id, 3, 3).is_err());
     assert!(library.source_strip_frame(&id, 0, 0).is_err());
     assert_eq!(std::fs::read(path).unwrap(), original);
+}
+
+#[test]
+fn h264_recordings_are_segmented_at_snow_and_the_resulting_cuts_can_be_exported() {
+    use fpv_core::{FrameRate, Clip, Flight, DetectionRun};
+    let root = tempfile::tempdir().unwrap();
+    let library = open(root.path());
+    let path = root.path().join("indoor.mp4");
+    let result = Command::new("ffmpeg").args(["-v", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=6",
+        "-f", "lavfi", "-i", "nullsrc=size=320x240:rate=25:duration=3,geq=lum='random(1)*255':cb=128:cr=128",
+        "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=6",
+        "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y"])
+        .arg(&path).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let original = std::fs::read(&path).unwrap();
+    let session = Session::new("Indoor", None);
+    library.store.save_session(&session).unwrap();
+    let mut source = SourceFile::new(session.id, path.to_string_lossy(), path.to_string_lossy(), None,
+        MediaProbe::new(&library.ffmpeg()).probe(&path).unwrap());
+    source.media.frame_rate = FrameRate::new(25, 1);
+    library.store.save_source_files(std::slice::from_ref(&source)).unwrap();
+    let whole = Flight::new(session.id, 1);
+    library.store.replace_clips(source.id, &[Clip::new(whole.id, source.id, 0, 375)], &[whole],
+        &DetectionRun::new(source.id, "whole-file-1", Default::default())).unwrap();
+    assert!(library.snapshot().unwrap()[0].segmentable);
+    let report = library.segment(&uuid_string(session.id), |_| {}).unwrap();
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert_eq!(report.whole_file, 0);
+    let after = library.snapshot().unwrap().remove(0);
+    assert_eq!(after.flights.len(), 2);
+    let contains = |seconds: f64| after.flights.iter().flat_map(|f| &f.clips)
+        .any(|c| c.start_frame as f64 / c.fps <= seconds && seconds < c.end_frame as f64 / c.fps);
+    assert!(contains(2.0) && contains(12.0));
+    assert!(!contains(7.0), "snow must not remain inside a whole-file placeholder");
+    let last = after.flights.last().unwrap();
+    assert_eq!(last.clips.last().unwrap().end_frame, 375, "keep the unsampled clean tail");
+    assert!(!after.reducible, "long-GOP segmentation must not enable destructive lossless reduction");
+    let out = root.path().join("clip.mp4");
+    assert!(matches!(library.export(&last.id, &out, ExportMode::Lossless),
+        Err(LibraryError::Export(ExportError::NotAllIntra(_)))));
+    library.export(&last.id, &out, ExportMode::Reencode).unwrap();
+    let media = MediaProbe::new(&library.ffmpeg()).probe(&out).unwrap();
+    assert_eq!(media.video_codec, "mpeg4");
+    assert_eq!(media.frame_count, Some(last.clips[0].end_frame - last.clips[0].start_frame));
+    library.delete_flight(&last.id).unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), original, "original stays after deleting a partial flight");
+}
+
+#[test]
+fn segmentation_of_clean_h264_takes_keeps_whole_chapters_and_their_frame_counts() {
+    let (fixture, before) = imported();
+    let report = fixture.library.segment(&before.id, |_| {}).unwrap();
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert_eq!(report.whole_file, 0);
+    assert_eq!((report.flights, report.clips), (2, 3));
+    let after = fixture.library.snapshot().unwrap().remove(0);
+    assert_eq!(after.flights.len(), before.flights.len());
+    for file in &after.files {
+        let parts: Vec<_> = after.flights.iter().flat_map(|f| &f.clips).filter(|c| c.file_id == file.id).collect();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].start_frame, 0);
+        let source = fixture.library.store.source_file(parse(&file.id).unwrap()).unwrap().unwrap();
+        assert_eq!(parts[0].end_frame, source.media.frame_count.unwrap());
+    }
+    assert_eq!(after.flights[0].recordings, 2, "GoPro chapters remain one flight");
 }

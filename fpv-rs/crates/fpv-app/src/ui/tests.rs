@@ -1694,15 +1694,15 @@ fn a_re_segment_names_what_it_loses_and_waits_for_consent_but_a_first_one_does_n
     click_text(
         &ctx,
         &mut app,
-        "I accept replacing the existing DVR segmentation",
+        "I accept replacing the existing segmentation",
         draw,
     );
     click_text(&ctx, &mut app, "Save and segment", draw);
     assert!(jobs.try_recv().is_ok(), "agreed: it runs");
 
-    // Only takes so far: a first segmentation loses nothing.
+    // No flights yet: a first segmentation loses nothing.
     let (mut app, jobs, _events) = app_with_worker(&ctx);
-    let fresh = session_of(vec![flight()]);
+    let fresh = session_of(vec![]);
     app.dialog = Some(crate::dialogs::Dialog::segment(&fresh));
     app.sessions = vec![fresh];
     let texts = shown_texts(&ctx, &mut app, draw);
@@ -2089,10 +2089,9 @@ fn an_export_across_rates_asks_how_instead_of_failing() {
             "{texts:?}"
         );
         assert!(texts.iter().any(|t| t.contains("29.887")), "{texts:?}");
-        assert_eq!(
+        assert!(
             texts.iter().any(|t| t == "Re-encode into one file"),
-            !action_cam,
-            "re-encoding is the DVR's: {texts:?}"
+            "explicit re-encoding works for every codec: {texts:?}"
         );
         click_text(&ctx, &mut app, "Export 2 parts separately", draw);
         assert!(jobs.try_recv().is_ok(), "exported in parts");
@@ -3572,4 +3571,36 @@ fn speaker_changes_submit_a_playback_preference_without_waiting_for_close() {
         );
         assert!(jobs.try_recv().is_err(), "one write per change");
     }
+}
+
+#[test]
+fn a_precise_long_gop_cut_offers_explicit_reencoding_instead_of_impossible_lossless_parts() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, events) = app_with_worker(&ctx);
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| {
+        app.receive(ctx);
+        app.dialog_window(ctx);
+    };
+    app.sessions = vec![session_of(vec![flight()])];
+    let mut dialog = crate::dialogs::Dialog::export("Indoor", &flight());
+    dialog.reply(Reply::Picked(Some("/export/clip.mp4".into())));
+    app.dialog = Some(dialog);
+    click_text(&ctx, &mut app, "Export", draw);
+    let job = jobs.try_recv().unwrap();
+    events
+        .send(crate::worker::Event::Finished {
+            id: job.id,
+            result: Ok(Reply::NeedsReencode(
+                "H.264 cut starts between keyframes".into(),
+            )),
+        })
+        .unwrap();
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(texts.iter().any(|t| t == "Precise cut needs re-encoding"));
+    assert!(!texts.iter().any(|t| t.contains("parts separately")));
+    assert!(texts.iter().any(|t| t.contains("MPEG-4")));
+    while jobs.try_recv().is_ok() {}
+    click_text(&ctx, &mut app, "Re-encode into one file", draw);
+    assert!(jobs.try_recv().is_ok());
+    assert!(app.dialog.is_none(), "export continues in Tasks");
 }

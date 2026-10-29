@@ -49,6 +49,7 @@ pub enum Reply {
     /// A lossless export met recordings at different rates: the library's
     /// reason, for the dialog to ask how instead.
     Mismatch(String),
+    NeedsReencode(String),
 }
 
 pub struct Job {

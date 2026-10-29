@@ -134,7 +134,7 @@ pub(crate) fn file_view(file: &SourceFile) -> FileView {
         fps: file.media.frame_rate.value(),
         duration: file.media.duration,
         codec: file.media.video_codec.clone(),
-        action_cam: !file.media.needs_segmentation(),
+        action_cam: !file.media.is_analog_dvr(),
         source: source(file),
         format: format_label(&file.media),
         reduced: false,
@@ -205,7 +205,7 @@ pub(crate) fn flight_view(flight: &Flight, clips: &[Clip], files: &HashMap<Uuid,
         liked: flight.rating.is_some(),
         duration: timeline.duration(),
         recordings: parts.len(),
-        action_cam: parts.iter().any(|(_, f)| !f.media.needs_segmentation()),
+        action_cam: parts.iter().any(|(_, f)| !f.media.is_analog_dvr()),
         source: parts.first().map(|(_, f)| source(f)).unwrap_or_default(),
         format: {
             let mut labels: Vec<String> = Vec::new();
@@ -262,7 +262,7 @@ pub(crate) fn session_view(session: &Session, files: Vec<SourceFile>, flights: V
         segmentable,
         reducible: segmentable && flights.iter().flat_map(|(_, clips)| clips)
             .any(|clip| by_id.get(&clip.source_file_id)
-                .is_some_and(|f| f.media.needs_segmentation() && !reduced.contains(&f.id))),
+                .is_some_and(|f| f.media.is_all_intra() && !reduced.contains(&f.id))),
         detection_profile: session.detection_profile.as_str().into(),
         location: session.location.clone(),
         notes: session.notes.clone(),

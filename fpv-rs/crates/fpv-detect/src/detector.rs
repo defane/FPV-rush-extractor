@@ -334,6 +334,20 @@ mod tests {
     }
 
     #[test]
+    fn indoor_banded_snow_at_115_and_210_seconds_is_not_a_usable_signal() {
+        // Measured grayscale metrics from the private Indoor regression video.
+        // Both profiles already recognize this snow; codec-based bypass was the failure.
+        let samples = [
+            FrameMetrics::new(130.632959, 9562.774334, 0.053771, 0.732424, 0.0),
+            FrameMetrics::new(129.065231, 9346.220556, 0.048923, 0.730113, 0.0),
+        ];
+        for profile in [fpv_core::DetectionProfile::Standard, fpv_core::DetectionProfile::Textured] {
+            let detector = ClipDetector::new(DetectorSettings::for_profile(profile));
+            for sample in &samples { assert_eq!(detector.classify(sample), FrameState::NoSignal); }
+        }
+    }
+
+    #[test]
     fn keeps_the_standard_profile_exactly_the_tuned_default() {
         assert_eq!(DetectorSettings::for_profile(fpv_core::DetectionProfile::Standard),
                    DetectorSettings::default());

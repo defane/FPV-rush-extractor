@@ -1,5 +1,7 @@
 # Unreleased
 
+- Enable signal segmentation for every imported video codec, including H.264/HEVC; retain source labels independently, preserve clean EOF frames, warn before replacing all affected flights, and offer explicit re-encoding for precise long-GOP cuts (#28).
+
 - Keep export image-integrity checks compatible with modern FFmpeg and the older Linux tools used by CI.
 
 - Fix EV300D H.264/ADPCM AVI exports to MP4: preserve video packets and convert only incompatible audio to AAC, avoiding the reproduced zero-byte muxer failure (official #21).

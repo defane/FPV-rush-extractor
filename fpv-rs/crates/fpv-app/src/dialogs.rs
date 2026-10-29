@@ -53,6 +53,7 @@ pub(crate) struct Dialog {
     info: Option<Vec<fpv_library::RecordingInfo>>,
     /// The reason a lossless export was refused, while the dialog asks how.
     mismatch: Option<String>,
+    cut_requires_reencode: bool,
     /// The file name an export proposes: "<session> — <title>.avi".
     file_name: String,
     flights: Vec<String>,
@@ -104,6 +105,7 @@ impl Dialog {
             flight: None,
             info: None,
             mismatch: None,
+            cut_requires_reencode: false,
             file_name: String::new(),
             flights: vec![],
             folders: None,
@@ -284,7 +286,14 @@ impl Dialog {
                 }
                 self.path = path.to_string_lossy().into_owned();
             }
-            Reply::Mismatch(reason) => self.mismatch = Some(reason),
+            Reply::Mismatch(reason) => {
+                self.mismatch = Some(reason);
+                self.cut_requires_reencode = false;
+            }
+            Reply::NeedsReencode(reason) => {
+                self.mismatch = Some(reason);
+                self.cut_requires_reencode = true;
+            }
             _ => {}
         }
     }
@@ -713,10 +722,10 @@ impl App {
                     for line in lost {
                         ui.label(format!("• {line}"));
                     }
-                    ui.weak("Figures stay: they belong to the recordings. Action-cam takes are not touched.");
+                    ui.weak("Figures stay: they belong to the recordings. Reduced clips are not touched.");
                     ui.checkbox(
                         &mut dialog.acknowledged,
-                        "I accept replacing the existing DVR segmentation",
+                        "I accept replacing the existing segmentation",
                     );
                 }
                 if ui
@@ -738,12 +747,7 @@ impl App {
                                 .snapshot()?
                                 .iter()
                                 .find(|s| s.id == id)
-                                .map(|s| {
-                                    s.files
-                                        .iter()
-                                        .filter(|f| !f.action_cam && !f.reduced)
-                                        .count()
-                                })
+                                .map(|s| s.files.iter().filter(|f| !f.reduced).count())
                                 .unwrap_or_default();
                             let mut counter = SegmentProgress::new(total);
                             let report =
@@ -1074,33 +1078,38 @@ impl App {
                 if let Some(reason) = dialog.mismatch.clone() {
                     ui.colored_label(
                         egui::Color32::from_rgb(230, 160, 60),
-                        "Different frame rates",
+                        if dialog.cut_requires_reencode {
+                            "Precise cut needs re-encoding"
+                        } else {
+                            "Different frame rates"
+                        },
                     );
                     ui.label(reason);
+                    if dialog.cut_requires_reencode {
+                        ui.label("The video will be re-encoded to MPEG-4 for an exact cut. Originals stay unchanged.");
+                    }
                     let parts = dialog.flight.as_ref().map_or(2, |f| f.recordings);
-                    if ui
-                        .button(format!("Export {parts} parts separately"))
-                        .clicked()
+                    if !dialog.cut_requires_reencode
+                        && ui
+                            .button(format!("Export {parts} parts separately"))
+                            .clicked()
                     {
                         chosen = Some(ExportMode::Parts);
                     }
-                    // Re-encoding resamples MJPEG: the DVR's footage only.
-                    if dialog.flight.as_ref().is_some_and(|f| !f.action_cam)
-                        && ui.button("Re-encode into one file").clicked()
-                    {
+                    if ui.button("Re-encode into one file").clicked() {
                         chosen = Some(ExportMode::Reencode);
                     }
                 } else if dialog.kind == Kind::Bulk {
-                    ui.label("For recordings with different frame rates:");
+                    ui.label("For precise cuts or incompatible frame rates:");
                     ui.radio_value(
                         &mut dialog.mode,
                         ExportMode::Parts,
-                        "One lossless file per recording",
+                        "Lossless parts (when boundaries allow stream-copy)",
                     );
                     ui.radio_value(
                         &mut dialog.mode,
                         ExportMode::Reencode,
-                        "One file re-encoded at the dominant rate (DVR only)",
+                        "One file re-encoded at the dominant rate",
                     );
                 }
                 if dialog.mismatch.is_none()
@@ -1705,6 +1714,9 @@ fn export_reply(
                 fpv_export::ExportError::MismatchedFrameRates(..),
             ),
         ) => Ok(Reply::Mismatch(error.to_string())),
+        Err(error @ fpv_library::LibraryError::Export(fpv_export::ExportError::NotAllIntra(_))) => {
+            Ok(Reply::NeedsReencode(error.to_string()))
+        }
         Err(error) => Err(error),
         Ok(files) => Ok(Reply::Done(format!(
             "Exported {}",
