@@ -1576,6 +1576,16 @@ impl App {
             self.dialog = Some(Dialog::free_flight(flight));
             ui.close();
         }
+        if ui.button("Info").clicked() {
+            self.dialog = Some(Dialog::info(flight));
+            let id = flight.id.clone();
+            self.dialog_request = Some(self.submit(
+                "Recording information",
+                true,
+                move |library, _| Ok(Reply::FlightInfo(library.flight_info(&id)?)),
+            ));
+            ui.close();
+        }
         if ui.button("Edit title…").clicked() {
             self.dialog = Some(Dialog::title(flight));
             ui.close();

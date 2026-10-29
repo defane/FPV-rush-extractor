@@ -3325,3 +3325,143 @@ fn export_completion_keeps_other_dialogs_and_mismatch_recovery_waits_its_turn() 
             .any(|t| t.id == job.id && !t.running && !t.failed)
     );
 }
+
+fn info_part() -> fpv_library::RecordingInfo {
+    let source = fpv_core::SourceFile::new(
+        "00000000-0000-0000-0000-000000000001".parse().unwrap(),
+        "/card/Original video.AVI",
+        "/library/Imported video.AVI",
+        None,
+        fpv_core::MediaInfo {
+            audio_codec: Some("pcm_s16le".into()),
+            ..fpv_core::MediaInfo::new(
+                640,
+                480,
+                fpv_core::FrameRate::new(1_000_000, 40839),
+                120.0,
+                "mjpeg",
+            )
+        },
+    );
+    let clip = fpv_core::Clip::new(source.session_id, source.id, 100, 250);
+    fpv_library::RecordingInfo {
+        clip,
+        source,
+        available: false,
+        cloud: false,
+        size_bytes: None,
+    }
+}
+
+#[test]
+fn thumbnail_info_requests_metadata_and_shows_copyable_source_paths() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, events) = app_with_worker(&ctx);
+    app.sessions = vec![session_of(vec![flight()])];
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| {
+        app.receive(ctx);
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.menu_button("…", |ui| app.flight_menu(ui, "test-session", &flight()));
+        });
+        app.dialog_window(ctx);
+    };
+    click_text(&ctx, &mut app, "…", draw);
+    click_text(&ctx, &mut app, "Info", draw);
+    let job = jobs
+        .try_recv()
+        .expect("metadata is requested on the worker");
+    assert!(app.dialog.is_some());
+    events
+        .send(crate::worker::Event::Finished {
+            id: job.id,
+            result: Ok(Reply::FlightInfo(vec![info_part()])),
+        })
+        .unwrap();
+    let texts = shown_texts(&ctx, &mut app, draw);
+    for expected in [
+        "Original video.AVI",
+        "/card/Original video.AVI",
+        "/library/Imported video.AVI",
+        "Source unavailable locally",
+    ] {
+        assert!(
+            texts.iter().any(|t| t == expected),
+            "missing {expected}: {texts:?}"
+        );
+    }
+    click_text(&ctx, &mut app, "Copy Original path", draw);
+    // The click emits a clipboard command rather than opening or changing the file.
+    assert!(app.dialog.is_some());
+    assert!(
+        jobs.try_recv().is_err(),
+        "Info actions do not submit writes"
+    );
+    click_text(&ctx, &mut app, "Close", draw);
+    assert!(app.dialog.is_none());
+}
+
+#[test]
+fn info_displays_each_sources_exact_rate_and_exclusive_bounds_and_fits_small_windows() {
+    let ctx = egui::Context::default();
+    let mut app = app(&ctx);
+    let mut second = info_part();
+    second.source.original_path = "/second/card/second.mp4".into();
+    second.source.media.frame_rate = fpv_core::FrameRate::new(60000, 1001);
+    second.clip.start_frame = 0;
+    second.clip.end_frame = 60;
+    let mut dialog = crate::dialogs::Dialog::info(&flight());
+    dialog.reply(Reply::FlightInfo(vec![info_part(), second]));
+    app.dialog = Some(dialog);
+    let mut output = ctx.run(input(egui::vec2(1000.0, 3000.0)), |ctx| {
+        app.dialog_window(ctx)
+    });
+    for _ in 0..8 {
+        output = ctx.run(input(egui::vec2(1000.0, 3000.0)), |ctx| {
+            app.dialog_window(ctx)
+        });
+    }
+    let mut texts = text_positions(&output.shapes);
+    for _ in 0..36 {
+        let mut raw = input(egui::vec2(1000.0, 3000.0));
+        raw.events = vec![
+            egui::Event::PointerMoved(egui::pos2(500.0, 1500.0)),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -80.0),
+                modifiers: Default::default(),
+            },
+        ];
+        output = ctx.run(raw, |ctx| app.dialog_window(ctx));
+        texts.extend(text_positions(&output.shapes));
+    }
+    for expected in [
+        "Recording 1 of 2",
+        "Recording 2 of 2",
+        "24.486398 fps (1000000/40839)",
+        "59.940060 fps (60000/1001)",
+        "00:00:04.084 · frame 100",
+        "00:00:10.210 · frame 250",
+        "00:00:01.001 · frame 60",
+        "pcm_s16le",
+        "mjpeg · 640 × 480",
+    ] {
+        assert!(
+            texts.iter().any(|(t, _)| t == expected),
+            "missing {expected}: {texts:?}"
+        );
+    }
+    for _ in 0..8 {
+        output = ctx.run(input(egui::vec2(360.0, 480.0)), |ctx| {
+            app.dialog_window(ctx)
+        });
+    }
+    let close = text_positions(&output.shapes)
+        .into_iter()
+        .find(|(t, _)| t == "Close")
+        .unwrap()
+        .1;
+    assert!(
+        close.x >= 0.0 && close.x < 360.0 && close.y >= 0.0 && close.y < 480.0,
+        "Close remains visible: {close:?}"
+    );
+}

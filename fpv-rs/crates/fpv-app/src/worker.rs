@@ -29,6 +29,7 @@ pub enum Reply {
         thumbnail: Thumbnail,
     },
     Folders(Vec<FolderView>),
+    FlightInfo(Vec<fpv_library::RecordingInfo>),
     Reduce(ReducePreview),
     Relocation(RelocationPreview),
     Deletion(FlightDeletion),

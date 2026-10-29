@@ -1,5 +1,7 @@
 # Unreleased
 
+- Add thumbnail Info with copyable original/library paths, stored media metadata, availability and source-relative start/exclusive-end times for every recording (official #23).
+
 - Close submitted export panels immediately, keep progress/errors in Tasks and reopen frame-rate recovery without interrupting another dialog (official #22).
 
 - Validate exported video packets before publishing files; failed exports leave no empty or header-only destination and never replace an existing file (official #21).

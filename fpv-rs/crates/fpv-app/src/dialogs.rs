@@ -26,6 +26,7 @@ enum Kind {
     DeleteFlight,
     Title,
     Editor,
+    Info,
     Export,
     Bulk,
     Load,
@@ -49,6 +50,7 @@ pub(crate) struct Dialog {
     mode: ExportMode,
     acknowledged: bool,
     flight: Option<FlightView>,
+    info: Option<Vec<fpv_library::RecordingInfo>>,
     /// The reason a lossless export was refused, while the dialog asks how.
     mismatch: Option<String>,
     /// The file name an export proposes: "<session> — <title>.avi".
@@ -97,6 +99,7 @@ impl Dialog {
             mode: ExportMode::Lossless,
             acknowledged: false,
             flight: None,
+            info: None,
             mismatch: None,
             file_name: String::new(),
             flights: vec![],
@@ -212,6 +215,9 @@ impl Dialog {
     pub fn delete_flight(flight: &FlightView) -> Self {
         Self::of_flight(Kind::DeleteFlight, "Delete flight", flight)
     }
+    pub fn info(flight: &FlightView) -> Self {
+        Self::of_flight(Kind::Info, "Info", flight)
+    }
     pub fn title(flight: &FlightView) -> Self {
         Self::of_flight(Kind::Title, "Edit title", flight)
     }
@@ -248,6 +254,7 @@ impl Dialog {
     pub fn reply(&mut self, reply: Reply) {
         match reply {
             Reply::BoundarySource { clip, source } => self.editor_source = Some((clip, source)),
+            Reply::FlightInfo(parts) => self.info = Some(parts),
             Reply::Folders(folders) => self.folders = Some(folders),
             Reply::Reduce(preview) => self.reduction = Some(preview),
             Reply::Relocation(preview) => self.relocation = Some(preview),
@@ -296,7 +303,7 @@ impl App {
                     })
                     .map_or(Scope::None, |session| Scope::Session(session.to_owned()))
             }
-            Kind::Bulk => Scope::None,
+            Kind::Bulk | Kind::Info => Scope::None,
         }
     }
 
@@ -323,6 +330,8 @@ impl App {
         modal.show(ctx, |ui| {
             ui.set_width(if dialog.kind == Kind::Editor {
                 (ctx.content_rect().width() - 64.0).clamp(240.0, 1000.0)
+            } else if dialog.kind == Kind::Info {
+                (ctx.content_rect().width() - 64.0).clamp(160.0, 520.0)
             } else {
                 520.0
             });
@@ -960,6 +969,26 @@ impl App {
                         });
                 }
             }
+            Kind::Info => {
+                if let Some(parts) = &dialog.info {
+                    ui.label("Times refer to each original recording. End is exclusive.");
+                    if parts.is_empty() {
+                        ui.label("No recordings for this flight.");
+                    }
+                    for (index, part) in parts.iter().enumerate() {
+                        ui.separator();
+                        ui.strong(format!("Recording {} of {}", index + 1, parts.len()));
+                        recording_info(ui, part);
+                    }
+                } else if self.tasks.iter().any(|task| {
+                    Some(task.id) == self.dialog_request && !task.running && task.failed
+                }) {
+                    ui.label("Could not load recording information. See Tasks for details.");
+                } else {
+                    ui.spinner();
+                    ui.label("Loading recording information…");
+                }
+            }
             Kind::Export | Kind::Bulk => {
                 if dialog.kind == Kind::Bulk {
                     ui.add(egui::Label::new(format!(
@@ -1245,6 +1274,134 @@ impl App {
             }
         }
     }
+}
+
+fn info_time(seconds: f64) -> String {
+    let millis = (seconds.max(0.0) * 1000.0).round() as u64;
+    format!(
+        "{:02}:{:02}:{:02}.{:03}",
+        millis / 3_600_000,
+        millis / 60_000 % 60,
+        millis / 1000 % 60,
+        millis % 1000
+    )
+}
+
+fn info_value(ui: &mut egui::Ui, name: &str, value: impl Into<String>) {
+    let value = value.into();
+    ui.horizontal_wrapped(|ui| {
+        ui.strong(format!("{name}:"));
+        ui.add(egui::Label::new(value).selectable(true).wrap());
+    });
+}
+
+fn info_path(ui: &mut egui::Ui, name: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.strong(name);
+        if ui.small_button(format!("Copy {name}")).clicked() {
+            ui.ctx().copy_text(value.to_owned());
+        }
+    });
+    ui.add(egui::Label::new(value).selectable(true).wrap());
+}
+
+fn recording_info(ui: &mut egui::Ui, part: &fpv_library::RecordingInfo) {
+    let source = &part.source;
+    let media = &source.media;
+    let original = std::path::Path::new(&source.original_path);
+    info_value(
+        ui,
+        "Original file",
+        original
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Unknown".into()),
+    );
+    info_path(ui, "Original path", &source.original_path);
+    info_path(ui, "Library path", &source.imported_path);
+    info_value(
+        ui,
+        "Availability",
+        if part.cloud {
+            "Online only"
+        } else if part.available {
+            "Available locally"
+        } else {
+            "Source unavailable locally"
+        },
+    );
+    info_value(
+        ui,
+        "Container (file extension)",
+        original
+            .extension()
+            .map(|s| s.to_string_lossy().to_uppercase())
+            .unwrap_or_else(|| "Unknown".into()),
+    );
+    info_value(
+        ui,
+        "Video",
+        format!("{} · {} × {}", media.video_codec, media.width, media.height),
+    );
+    info_value(
+        ui,
+        "Frame rate",
+        format!(
+            "{:.6} fps ({}/{})",
+            media.frame_rate.value(),
+            media.frame_rate.numerator,
+            media.frame_rate.denominator
+        ),
+    );
+    info_value(ui, "Source duration", info_time(media.duration));
+    info_value(
+        ui,
+        "Audio",
+        media.audio_codec.as_deref().unwrap_or("No audio stream"),
+    );
+    info_value(
+        ui,
+        "Import audio policy",
+        if source.muted {
+            "No Sound"
+        } else {
+            "Keep source audio"
+        },
+    );
+    info_value(
+        ui,
+        "File size",
+        part.size_bytes
+            .map(crate::browse::size)
+            .unwrap_or_else(|| "Unavailable".into()),
+    );
+    info_value(
+        ui,
+        "Clip start",
+        format!(
+            "{} · frame {}",
+            info_time(media.frame_rate.seconds(part.clip.start_frame)),
+            part.clip.start_frame
+        ),
+    );
+    info_value(
+        ui,
+        "Clip end (exclusive)",
+        format!(
+            "{} · frame {}",
+            info_time(media.frame_rate.seconds(part.clip.end_frame)),
+            part.clip.end_frame
+        ),
+    );
+    info_value(
+        ui,
+        "Clip duration",
+        info_time(
+            media
+                .frame_rate
+                .seconds(part.clip.end_frame - part.clip.start_frame),
+        ),
+    );
 }
 
 fn field(ui: &mut egui::Ui, label: &str, text: &mut String) {

@@ -1466,3 +1466,45 @@ fn source_boundary_previews_and_multipart_edits_are_non_destructive() {
     fixture.library.store.save_source_files(&[SourceFile { muted: true, ..file }]).unwrap();
     assert!(!fixture.library.native_source_playback(&flight.clips[0].file_id).unwrap().has_audio);
 }
+
+#[test]
+fn flight_info_preserves_source_paths_rates_and_each_parts_exclusive_bounds_without_reading_media() {
+    use fpv_core::{FrameRate, Clip, Flight, DetectionRun};
+    let root = tempfile::tempdir().unwrap();
+    let library = open(root.path());
+    let session = Session::new("Info", None);
+    library.store.save_session(&session).unwrap();
+    let flight = Flight::new(session.id, 1);
+    let mut expected = Vec::new();
+    for (index, rate, start, end) in [(1, FrameRate::new(1_000_000, 33459), 100, 250),
+                                     (2, FrameRate::new(1_000_000, 40839), 0, 90)] {
+        let path = root.path().join(format!("PICT{index:04}.AVI"));
+        // Arbitrary bytes: Info must use stored metadata, not probe the file.
+        if index == 1 { std::fs::write(&path, b"unchanged source").unwrap(); }
+        let mut file = SourceFile::new(session.id, format!("/original/PICT{index:04}.AVI"),
+            path.to_string_lossy(), Some(index), MediaInfo::new(640, 480, rate, 20.0, "mjpeg"));
+        file.media.audio_codec = Some("pcm_s16le".into());
+        file.muted = index == 2;
+        library.store.save_source_files(std::slice::from_ref(&file)).unwrap();
+        let clip = Clip::new(flight.id, file.id, start, end);
+        library.store.replace_clips(file.id, std::slice::from_ref(&clip),
+            if index == 1 { std::slice::from_ref(&flight) } else { &[] },
+            &DetectionRun::new(file.id, "test", Default::default())).unwrap();
+        expected.push((clip, file));
+    }
+    let info = library.flight_info(&uuid_string(flight.id)).unwrap();
+    assert_eq!(info.len(), 2);
+    for (part, (clip, source)) in info.iter().zip(&expected) {
+        assert_eq!(&part.source, source);
+        assert_eq!(part.clip.start_frame, clip.start_frame);
+        assert_eq!(part.clip.end_frame, clip.end_frame);
+        assert_eq!(part.available, source.sequence_number == Some(1));
+        assert_eq!(part.size_bytes, if part.available { Some(16) } else { None });
+        assert!(!part.cloud);
+    }
+    assert_eq!(std::fs::read(&expected[0].1.imported_path).unwrap(), b"unchanged source");
+    assert!(!Path::new(&expected[1].1.imported_path).exists());
+    let again = library.flight_info(&uuid_string(flight.id)).unwrap();
+    assert_eq!(again[1].clip.end_frame, 90);
+    assert!(library.flight_info(&uuid_string(Uuid::new_v4())).is_err());
+}

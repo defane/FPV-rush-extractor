@@ -180,6 +180,16 @@ Space plays/pauses; Left/Right seek five seconds; I marks the start of a figure.
 Enter in the figure-name field records a point or completes the marked range.
 Click a figure to seek. Flight tags are separate from figure markers/ranges.
 
+A thumbnail's **… → Info** shows each original recording's name, original and
+library paths (selectable and copyable), stored video/audio properties and
+source-relative clip times. End times and frame indexes are exclusive. Each
+part keeps its own frame rate; missing or cloud-only sources still show their
+stored metadata without downloading media.
+
+Exports continue in **Tasks** after the export panel closes. A failed export
+leaves no empty final file; completed outputs are checked for readable video
+packets before publication. Existing destinations are never replaced.
+
 Edit source boundaries steps through a recording's own frames, with source
 previews and frame/quarter-second/second controls. Exports always read the
 recordings. MJPEG cuts are lossless; long-GOP material is stream-copied only

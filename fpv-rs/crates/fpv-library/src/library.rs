@@ -42,6 +42,17 @@ pub enum LibraryError {
 
 pub type Result<T> = std::result::Result<T, LibraryError>;
 
+/// Stored metadata for one clip's source; looking at Info never reads media
+/// content or downloads a cloud placeholder.
+#[derive(Debug, Clone)]
+pub struct RecordingInfo {
+    pub clip: Clip,
+    pub source: SourceFile,
+    pub available: bool,
+    pub cloud: bool,
+    pub size_bytes: Option<u64>,
+}
+
 /// How a flight is written out. `Lossless` refuses a flight whose recordings
 /// disagree on their rate; the user then picks one of the other two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -1633,6 +1644,18 @@ impl Library {
     }
 
     // Export
+
+    /// Metadata and source-relative bounds for every part, in playback order.
+    pub fn flight_info(&self, flight: &str) -> Result<Vec<RecordingInfo>> {
+        let (_, _, timeline) = self.flight(flight)?;
+        Ok(timeline.parts.into_iter().map(|(clip, source)| {
+            let path = Path::new(&source.imported_path);
+            let metadata = std::fs::metadata(path).ok().filter(|m| m.is_file());
+            let cloud = fpv_media::only_in_cloud(path);
+            RecordingInfo { clip, available: metadata.is_some() && !cloud,
+                cloud, size_bytes: metadata.map(|m| m.len()), source }
+        }).collect())
+    }
 
     /// Writes a flight out. Returns the files written.
     pub fn export(&self, flight: &str, destination: &Path, mode: ExportMode) -> Result<Vec<PathBuf>> {
