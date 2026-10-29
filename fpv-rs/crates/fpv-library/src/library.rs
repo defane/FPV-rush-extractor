@@ -1065,6 +1065,34 @@ impl Library {
         Ok(report)
     }
 
+    /// Analyze only sources delivered by this import, leaving reviewed flights alone.
+    pub fn segment_imported(&self, ids: &[Uuid], mut progress: impl FnMut(SegmentationEvent))
+        -> Result<SegmentationReport> {
+        let mut sessions: Vec<(Uuid, Vec<Uuid>)> = Vec::new();
+        for id in ids {
+            let file = self.store.source_file(*id)?
+                .ok_or_else(|| LibraryError::NotFound(format!("recording {id}")))?;
+            if let Some((_, files)) = sessions.iter_mut().find(|(s, _)| *s == file.session_id) {
+                if !files.contains(id) { files.push(*id); }
+            } else { sessions.push((file.session_id, vec![*id])); }
+        }
+        let ffmpeg = self.ffmpeg();
+        let mut combined = SegmentationReport::default();
+        for (session_id, files) in sessions {
+            let session = self.session(&uuid_string(session_id))?;
+            let settings = DetectorSettings::for_profile(session.detection_profile);
+            let detector = FileDetector::new(settings.clone(), FrameReader::new(self.tools.clone()));
+            let report = SegmentationService::new(&detector, &ffmpeg, &self.store, settings)
+                .segment_imported(session_id, &files, &self.posters(), &mut progress)?;
+            combined.flights += report.flights;
+            combined.clips += report.clips;
+            combined.failed.extend(report.failed);
+            combined.stitched.extend(report.stitched);
+        }
+        self.sweep_orphaned_thumbnails()?;
+        Ok(combined)
+    }
+
     // Editing
 
     /// Renames a session. Its media folder keeps the import-time name: every

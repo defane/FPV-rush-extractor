@@ -86,6 +86,19 @@ pub struct Progress {
 }
 
 impl Progress {
+    #[cfg(test)]
+    pub(crate) fn for_test(id: u64, context: egui::Context) -> (Self, Receiver<Event>) {
+        let (sender, events) = mpsc::channel();
+        (
+            Self {
+                id,
+                sender,
+                context,
+            },
+            events,
+        )
+    }
+
     pub fn step(&self, step: Step) {
         let _ = self.sender.send(Event::Progress { id: self.id, step });
         self.context.request_repaint();

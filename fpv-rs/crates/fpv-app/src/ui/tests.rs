@@ -3821,3 +3821,115 @@ fn import_dialog_shows_its_progress_then_keeps_it_after_close() {
     let texts = shown_texts(&ctx, &mut app, App::task_bar);
     assert!(texts.iter().any(|s| s.contains("1/3 videos imported")));
 }
+
+#[test]
+fn import_offers_segmentation_before_the_job_is_started() {
+    let ctx = egui::Context::default();
+    let mut app = app(&ctx);
+    app.dialog = Some(crate::dialogs::Dialog::import(None, "Training".into()));
+    let texts = shown_texts(&ctx, &mut app, App::dialog_window);
+    assert!(
+        texts.iter().any(|s| s == "Segment videos after import"),
+        "{texts:?}"
+    );
+}
+
+#[test]
+fn import_job_segments_by_default_and_supports_copy_only_optout() {
+    let root = tempfile::tempdir().unwrap();
+    let card = root.path().join("card");
+    std::fs::create_dir(&card).unwrap();
+    let sample = card.join("EACHINE.mp4");
+    let output = std::process::Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x120:rate=25:duration=6",
+            "-f",
+            "lavfi",
+            "-i",
+            "nullsrc=size=160x120:rate=25:duration=3,geq=lum='random(1)*255':cb=128:cr=128",
+            "-filter_complex",
+            "[0:v][1:v]concat=n=2:v=1:a=0",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-y",
+        ])
+        .arg(&sample)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for segment in [true, false] {
+        let ctx = egui::Context::default();
+        let (mut app, jobs, _) = app_with_worker(&ctx);
+        let local = root.path().join(if segment { "detect" } else { "copy" });
+        let config = fpv_library::Config {
+            media_root: local.join("media"),
+            ..Default::default()
+        };
+        let mut library = fpv_library::Library::open_with(
+            &local.join("config"),
+            &local.join("cache"),
+            config,
+            None,
+        )
+        .unwrap();
+        app.dialog = Some(crate::dialogs::Dialog::import(
+            Some(card.clone()),
+            "EACHINE".into(),
+        ));
+        if !segment {
+            click_text(
+                &ctx,
+                &mut app,
+                "Segment videos after import",
+                App::dialog_window,
+            );
+        }
+        click_text(&ctx, &mut app, "Import", App::dialog_window);
+        let job = jobs.try_recv().unwrap();
+        let (progress, events) = crate::worker::Progress::for_test(job.id, ctx.clone());
+        let reply = (job.work)(&mut library, &progress).unwrap();
+        let crate::worker::Reply::Done(summary) = reply else {
+            panic!("expected import summary")
+        };
+        let snapshot = library.snapshot().unwrap();
+        let clip = &snapshot[0].flights[0].clips[0];
+        let end = clip.end_frame as f64 / clip.fps;
+        let phases: Vec<_> = events
+            .try_iter()
+            .filter_map(|event| match event {
+                crate::worker::Event::Progress { step, .. } => Some(step.line),
+                _ => None,
+            })
+            .collect();
+        if segment {
+            assert!(
+                (5.75..=6.25).contains(&end),
+                "trailing snow must be excluded: {end}"
+            );
+            assert!(summary.contains("flights detected"));
+            assert!(
+                phases
+                    .iter()
+                    .any(|line| line.starts_with("Detecting flights ·"))
+            );
+        } else {
+            assert!((end - 9.0).abs() < 0.05, "copy only must keep whole take");
+            assert!(
+                !phases
+                    .iter()
+                    .any(|line| line.starts_with("Detecting flights ·"))
+            );
+        }
+    }
+}

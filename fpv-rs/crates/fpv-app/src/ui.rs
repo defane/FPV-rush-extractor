@@ -44,7 +44,11 @@ pub(crate) fn import_task_status(ui: &mut egui::Ui, task: &crate::Task) {
             ui.spinner();
         }
         ui.strong(if task.running {
-            "Importing videos"
+            if task.line.starts_with("Detecting flights ·") {
+                "Detecting flights"
+            } else {
+                "Importing videos"
+            }
         } else if task.failed {
             "Import failed"
         } else {
@@ -61,8 +65,18 @@ pub(crate) fn import_task_status(ui: &mut egui::Ui, task: &crate::Task) {
     });
     if task.running && task.total > 0 {
         ui.add(
-            egui::ProgressBar::new((task.done as f32 / task.total as f32).clamp(0.0, 1.0))
-                .text(format!("{}/{} videos processed", task.done, task.total)),
+            egui::ProgressBar::new((task.done as f32 / task.total as f32).clamp(0.0, 1.0)).text(
+                format!(
+                    "{}/{} videos {}",
+                    task.done,
+                    task.total,
+                    if task.line.starts_with("Detecting flights ·") {
+                        "analyzed"
+                    } else {
+                        "processed"
+                    }
+                ),
+            ),
         );
     }
 }
@@ -1008,7 +1022,7 @@ impl App {
                         session.segmentable && self.ffmpeg_ok,
                         egui::Button::new(browse::segment_label(session)),
                     )
-                    .on_hover_text("Action-cam takes are left as they are")
+                    .on_hover_text("Detect usable clips in every unreduced recording")
                     .clicked()
                 {
                     self.dialog = Some(Dialog::segment(session));

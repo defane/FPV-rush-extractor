@@ -17,3 +17,6 @@ pub use progress::{ImportProgress, SegmentProgress, Step, strip_line};
 pub use tools::{ffmpeg_available, tool_directory};
 pub use views::{ClipView, FileView, FlightView, SessionView, TagView};
 pub use library::{NativeSegment, RecordingInfo, export_name};
+
+// Import follow-up can track the sources actually delivered by the worker job.
+pub use fpv_import::ImportEvent;

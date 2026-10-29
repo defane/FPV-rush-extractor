@@ -20,8 +20,10 @@ clippy and the tests on Linux, macOS and Windows, against the system's FFmpeg â€
 **Current segmentation policy (2026-10-29, user request, #28):** all imported
 videos are eligible for signal segmentation, including H.264/HEVC and action-camera
 filenames. `needs_segmentation` is independent of the legacy `is_analog_dvr`
-source-label hint and `is_all_intra` export/reduction capability. Imported whole-file
-flights are provisional until Segment runs. Existing reduced pieces remain protected.
+source-label hint and `is_all_intra` export/reduction capability. The GUI import dialog defaults to Segment videos after import: only newly
+imported source IDs are analyzed, preserving previously reviewed flights and their
+numbering. Whole-file flights are provisional during copying or when the option
+is disabled; manual Segment remains available. Existing reduced pieces remain protected.
 `signal-detect-2` records the new policy and retains the true clean EOF beyond the
 sampling grid. Classifier thresholds are unchanged: the supplied Indoor MP4 already
 classifies both 115 s and 210 s as NoSignal when actually analyzed. Earlier notes

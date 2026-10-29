@@ -1670,3 +1670,44 @@ fn bulk_deletion_preserves_unreduced_dvr_originals_across_sessions() {
     assert!(library.snapshot().unwrap().iter().all(|s| s.flights.is_empty()));
     assert!(original.exists());
 }
+
+#[test]
+fn import_followup_splits_trailing_h264_snow_and_skips_known_recordings() {
+    let root = tempfile::tempdir().unwrap();
+    let library = open(root.path());
+    let card = root.path().join("card");
+    std::fs::create_dir(&card).unwrap();
+    let path = card.join("EACHINE.mp4");
+    let result = Command::new("ffmpeg").args(["-v", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=6",
+        "-f", "lavfi", "-i", "nullsrc=size=320x240:rate=25:duration=3,geq=lum='random(1)*255':cb=128:cr=128",
+        "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y"])
+        .arg(&path).output().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let original = std::fs::read(&path).unwrap();
+    let mut ids = Vec::new();
+    let imported = library.import_with_audio(&card, "EACHINE", None, false, true, |event| {
+        if let ImportEvent::Imported(file) = event { ids.push(file.id); }
+    }).unwrap();
+    assert_eq!(imported.imported, 1);
+    let provisional = library.snapshot().unwrap().remove(0);
+    assert_eq!(provisional.flights[0].clips[0].end_frame, 225);
+    let mut events = 0;
+    let report = library.segment_imported(&ids, |_| events += 1).unwrap();
+    assert!(report.failed.is_empty());
+    assert!(events >= 2);
+    let after = library.snapshot().unwrap().remove(0);
+    assert_eq!(after.flights.len(), 1);
+    let clip = &after.flights[0].clips[0];
+    assert!((5.75..=6.25).contains(&(clip.end_frame as f64 / clip.fps)));
+    assert!(library.store.source_file(ids[0]).unwrap().unwrap().muted, "No Sound survives detection");
+    assert_eq!(std::fs::read(path).unwrap(), original);
+    let mut skipped_ids = Vec::new();
+    let skipped = library.import_with_audio(&card, "EACHINE", None, false, false, |event| {
+        if let ImportEvent::Imported(file) = event { skipped_ids.push(file.id); }
+    }).unwrap();
+    assert_eq!((skipped.imported, skipped.skipped), (0,1));
+    let report = library.segment_imported(&skipped_ids, |_| panic!("no new recording to analyze")).unwrap();
+    assert_eq!(report.clips, 0);
+    assert_eq!(library.snapshot().unwrap()[0].flights[0].id, after.flights[0].id);
+}

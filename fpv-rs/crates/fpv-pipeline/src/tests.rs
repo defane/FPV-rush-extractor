@@ -213,3 +213,48 @@ fn clean_tail_keeps_the_final_source_frames_beyond_the_sampling_grid() {
     assert_eq!(saved.start_frame, 6548);
     assert_eq!(saved.end_frame, 18_002);
 }
+
+#[test]
+fn import_followup_analyzes_only_new_sources_and_keeps_reviewed_flights() {
+    let session = Session::new("Training", None);
+    let old = source(&session, "OLD.AVI", 1, FrameRate::new(30, 1), "mjpeg");
+    let new = source(&session, "NEW.MP4", 2, FrameRate::new(30, 1), "h264");
+    let fixture = Fixture::new(&[old.clone(), new.clone()], session);
+    let mut kept = Flight::new(fixture.session.id, 7);
+    kept.title = Some("Reviewed flight".into());
+    let boundary = Clip::new(kept.id, old.id, 30, 90);
+    fixture.store.replace_clips(old.id, std::slice::from_ref(&boundary), std::slice::from_ref(&kept),
+        &DetectionRun::new(old.id, "reviewed", Default::default())).unwrap();
+    fixture.store.add_flight_label(kept.id, "power loop").unwrap();
+    let detector = StubDetector(HashMap::from([("NEW.MP4", vec![clip(0.0, 22.25, ClipExit::SignalLoss, true, false)])]));
+    let service = SegmentationService::new(&detector, &SilentFfmpeg, &fixture.store, DetectorSettings::default());
+    let report = service.segment_imported(fixture.session.id, &[new.id], fixture.thumbnails.path(), |_|{}).unwrap();
+    assert!(report.failed.is_empty(), "old source must never be analyzed");
+    assert_eq!(report.clips, 1);
+    let (flight, clips) = fixture.store.flight(kept.id).unwrap().unwrap();
+    assert_eq!(flight, kept);
+    assert_eq!(clips, [boundary]);
+    assert_eq!(fixture.store.flight_labels_in_session(fixture.session.id).unwrap()[&kept.id], ["power loop"]);
+    let flights = fixture.store.flights(fixture.session.id).unwrap();
+    let created = flights.iter().find(|(f,_)| f.id != kept.id).unwrap();
+    assert_eq!(created.0.order_in_session, 8);
+    assert_eq!(created.1[0].end_frame, 668);
+}
+
+#[test]
+fn import_followup_keeps_failed_recording_and_reports_detection_error() {
+    let session = Session::new("Import", None);
+    let file = source(&session, "BROKEN.AVI", 1, FrameRate::new(30, 1), "mjpeg");
+    let fixture = Fixture::new(std::slice::from_ref(&file), session);
+    let flight = Flight::new(fixture.session.id, 1);
+    let original = Clip::new(flight.id, file.id, 0, 300);
+    fixture.store.replace_clips(file.id, std::slice::from_ref(&original), std::slice::from_ref(&flight),
+        &DetectionRun::new(file.id, "whole-file-1", Default::default())).unwrap();
+    let detector = StubDetector(HashMap::new());
+    let report = SegmentationService::new(&detector, &SilentFfmpeg, &fixture.store, DetectorSettings::default())
+        .segment_imported(fixture.session.id, &[file.id], fixture.thumbnails.path(), |_|{}).unwrap();
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.clips, 0);
+    assert_eq!(fixture.store.flight(flight.id).unwrap().unwrap().1, [original]);
+    assert!(fixture.store.source_file(file.id).unwrap().is_some());
+}

@@ -1,5 +1,7 @@
 # Unreleased
 
+- Segment newly imported videos automatically by default, with an opt-out checkbox and visible analysis progress; keep existing reviewed flights unchanged and exclude the EACHINE sample’s trailing snow (#31).
+
 - Show live video import counts, skipped/failed totals and processed progress in the import dialog and collapsed bottom panel (#29).
 
 - Delete selected flights together with one confirmation, shared-source protection and explicit Trash failure reporting (#30).

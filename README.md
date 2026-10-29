@@ -57,9 +57,11 @@ Select a detected card in the sidebar or choose **Import Folder**. Give the
 session a name and choose the flying date; new imports default to today.
 
 Recordings are copied to your library without changing their contents. Repeated
-imports skip recordings already known to the library. Action-camera recordings
-initially appear as whole-file takes. Use **Segment** to analyze every recording,
-including H.264, HEVC and MJPEG; no format bypasses detection.
+imports skip recordings already known to the library. **Segment videos after
+import** is enabled by default: after copying, FPV Rush detects usable clips in
+the new recordings, including H.264, HEVC and MJPEG. Follow copying and analysis
+in the import dialog or bottom panel. Existing reviewed flights keep their edits.
+Uncheck the option to copy first and run **Segment** later.
 
 **No Sound** on import keeps the original audio intact but silences playback and
 exports of newly imported recordings. It does not change recordings skipped as
@@ -72,7 +74,7 @@ only recordings successfully imported during that operation.
 
 ## Detect and organize flights
 
-Run **Segment** on any session to detect usable video. Detection follows the
+Use **Segment** or **Re-segment** on a session to run detection again. Detection follows the
 picture signal rather than the armed state or OSD timer. Review the results:
 noise, interference and very textured scenes can still produce incorrect cuts.
 The **Textured terrain** profile helps when the Standard profile splits good

@@ -71,6 +71,7 @@ pub(crate) struct Dialog {
     restore: HashSet<String>,
     budgets: [f64; 2],
     mute_videos: bool,
+    segment_after_import: bool,
     do_not_show_splash: bool,
     editor_clip: usize,
     editor_loading: Option<String>,
@@ -121,6 +122,7 @@ impl Dialog {
             budgets: [10.0, 2.0],
             emptying: None,
             mute_videos: false,
+            segment_after_import: false,
             do_not_show_splash: false,
             editor_clip: 0,
             editor_loading: None,
@@ -142,6 +144,7 @@ impl Dialog {
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             name,
+            segment_after_import: true,
             ..Self::new(Kind::Import, "Import recordings")
         }
     }
@@ -500,6 +503,8 @@ impl App {
                     }
                 });
                 ui.small("Each session gets its own folder inside, kept for later imports.");
+                ui.checkbox(&mut dialog.segment_after_import, "Segment videos after import")
+                    .on_hover_text("Detect usable clips in newly imported recordings; existing flights keep their edits.");
                 ui.checkbox(
                     &mut dialog.flag,
                     "Delete newly imported files from the card after verification",
@@ -518,13 +523,30 @@ impl App {
                         dialog.flag,
                         dialog.mute_videos,
                     );
+                    let segment = dialog.segment_after_import;
                     dialog.saving = Some(self.submit_in(Scope::Library, "Import recordings", false, move |library, progress| {
                         let mut counter = ImportProgress::default();
-                        let report = library.import_with_audio(&path, &name, date.as_deref(), delete, no_sound, |event| progress.step(counter.step(event)))?;
-                        if report.failed > 0 || !report.kept.is_empty() {
-                            return Err(fpv_library::LibraryError::Invalid(format!("Imported {}, skipped {}, failed {}. Kept on card: {}. See task logs.", report.imported, report.skipped, report.failed, report.kept.join("; "))));
+                        let mut imported = Vec::new();
+                        let report = library.import_with_audio(&path, &name, date.as_deref(), delete, no_sound, |event| {
+                            if let fpv_library::ImportEvent::Imported(ref file) = event { imported.push(file.id); }
+                            progress.step(counter.step(event));
+                        })?;
+                        let mut summary = import_summary(&report);
+                        let mut detection_failed = Vec::new();
+                        if segment && !imported.is_empty() {
+                            let mut counter = SegmentProgress::new(imported.len());
+                            let result = library.segment_imported(&imported, |event| {
+                                let mut step = counter.step(event);
+                                step.line = format!("Detecting flights · {} imported · {}", report.imported, step.line);
+                                progress.step(step);
+                            })?;
+                            summary = format!("{} imported, {} skipped, {} flights detected, {} clips", report.imported, report.skipped, result.flights, result.clips);
+                            detection_failed = result.failed;
                         }
-                        Ok(Reply::Done(import_summary(&report)))
+                        if report.failed > 0 || !report.kept.is_empty() || !detection_failed.is_empty() {
+                            return Err(fpv_library::LibraryError::Invalid(format!("{summary}. Import failures: {}. Kept on card: {}. Detection failures: {:?}. See task logs.", report.failed, report.kept.join("; "), detection_failed)));
+                        }
+                        Ok(Reply::Done(summary))
                     }));
                 }
             }

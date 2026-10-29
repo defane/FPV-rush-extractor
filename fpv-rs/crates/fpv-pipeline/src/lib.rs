@@ -50,7 +50,21 @@ impl<'a> SegmentationService<'a> {
     }
 
     pub fn segment(&self, session: Uuid, thumbnail_directory: &Path,
-                   mut progress: impl FnMut(SegmentationEvent))
+                   progress: impl FnMut(SegmentationEvent))
+        -> Result<SegmentationReport, StoreError> {
+        self.segment_files(session, thumbnail_directory, None, progress)
+    }
+
+    /// Import follow-up: analyze only the newly imported sources, preserving
+    /// previously reviewed flights and their numbering.
+    pub fn segment_imported(&self, session: Uuid, files: &[Uuid], thumbnail_directory: &Path,
+                            progress: impl FnMut(SegmentationEvent))
+        -> Result<SegmentationReport, StoreError> {
+        self.segment_files(session, thumbnail_directory, Some(files), progress)
+    }
+
+    fn segment_files(&self, session: Uuid, thumbnail_directory: &Path, only: Option<&[Uuid]>,
+                     mut progress: impl FnMut(SegmentationEvent))
         -> Result<SegmentationReport, StoreError> {
         let mut report = SegmentationReport::default();
         // Codec never determines whether a recording can contain snow. Reduced
@@ -58,7 +72,8 @@ impl<'a> SegmentationService<'a> {
         let reduced = self.store.reduced_files(session)?;
         let (mut files, whole): (Vec<SourceFile>, Vec<SourceFile>) =
             self.store.source_files(session)?.into_iter()
-                .partition(|file| file.media.needs_segmentation() && !reduced.contains(&file.id));
+                .partition(|file| file.media.needs_segmentation() && !reduced.contains(&file.id)
+                    && only.is_none_or(|ids| ids.contains(&file.id)));
         report.whole_file = whole.len();
         // Card order, because a flight continuing into the next file only makes
         // sense along it.
@@ -90,7 +105,11 @@ impl<'a> SegmentationService<'a> {
 
         let thumbnails = ThumbnailGenerator::new(self.ffmpeg);
         let mut made: HashSet<Uuid> = HashSet::new();
-        let mut order = 0;
+        let mut order = if only.is_some() {
+            self.store.flights(session)?.iter()
+                .filter(|(_, clips)| clips.iter().any(|c| !detected.iter().any(|(file, _)| file.id == c.source_file_id)))
+                .map(|(f, _)| f.order_in_session).max().unwrap_or(0)
+        } else { 0 };
         let mut carried: Option<Flight> = None;
         for (index, (file, detected_clips)) in detected.iter().enumerate() {
             let mut flights: Vec<Flight> = vec![];
@@ -133,7 +152,7 @@ impl<'a> SegmentationService<'a> {
             report.clips += clips.len();
         }
 
-        self.renumber_others(session, &made, order)?;
+        if only.is_none() { self.renumber_others(session, &made, order)?; }
         Ok(report)
     }
 
