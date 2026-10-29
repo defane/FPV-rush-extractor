@@ -3,20 +3,19 @@
 //! Analog DVR footage is MJPEG, which is all-intra: every frame is a keyframe, so
 //! a cut is frame-accurate with `-c copy`, lossless and without re-encoding
 //! (CLAUDE.md 2). H.264/HEVC from action cams is not: a copy cut may start on a
-//! frame that needs an earlier one. It is copied only when the cut opens on the
-//! file's first frame — always a keyframe — which covers whole takes and their
-//! chapters; anything else is refused rather than quietly broken.
+//! frame that needs an earlier one. Complete recordings can be stream-copied;
+//! interior cuts require an explicitly chosen re-encode, leaving sources intact.
 
 use std::path::{Path, PathBuf};
 
 use fpv_core::{Clip, FrameRate, SourceFile};
-use fpv_media::{FfmpegError, FfmpegInvoking, Workspace, run_writing, seconds_argument,
+use fpv_media::{FfmpegError, FfmpegInvoking, FfmpegTool, Workspace, run_writing, seconds_argument,
                 write_concat_list};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
-    #[error("{0} is not all-intra: cutting it with -c copy anywhere but at the start of the \
-             file would open the clip on an incomplete GOP")]
+    #[error("{0} is not all-intra: a precise cut inside the recording requires video re-encoding; \
+             a complete recording can still be stream-copied")]
     NotAllIntra(String),
     #[error("no clips to export")]
     NothingToExport,
@@ -57,9 +56,9 @@ impl<'a> ClipExporter<'a> {
 
     pub fn export_clip_with_mute(&self, clip: &Clip, file: &SourceFile, destination: &Path, mute: bool)
         -> Result<PathBuf, ExportError> {
-        let mut arguments = copy_arguments(clip, file, mute)?;
+        let mut arguments = copy_arguments(clip, file, mute, destination)?;
         arguments.extend(["-y".into(), destination.to_string_lossy().into_owned()]);
-        Ok(run_writing(self.ffmpeg, &arguments, destination)?)
+        self.write_video(&arguments, destination)
     }
 
     /// A whole flight, which may be spread over consecutive recordings. Parts
@@ -86,22 +85,22 @@ impl<'a> ClipExporter<'a> {
         let list = self.cut(parts, workspace.path(), destination, |(clip, file)| {
             if mixed_audio {
                 let source = SourceFile { muted: false, ..file.clone() };
-                let mut arguments = copy_arguments(clip, &source, false)?;
+                let mut arguments = copy_arguments(clip, &source, false, destination)?;
                 normalize_flight_audio(&mut arguments, file, destination);
                 Ok(arguments)
             } else {
-                copy_arguments(clip, file, mute)
+                copy_arguments(clip, file, mute, destination)
             }
         })?;
-        Ok(run_writing(self.ffmpeg, &concat_arguments(&list, destination), destination)?)
+        self.write_video(&concat_arguments(&list, destination), destination)
     }
 
     /// The deliberate exception to "never re-encode DVR footage" (CLAUDE.md 2):
-    /// a flight whose recordings were made at rates too far apart to
-    /// stream-copy can still become one file when the user chooses to
+    /// a precise interior long-GOP cut, or a flight whose recordings were made
+    /// at rates too far apart to stream-copy, can be exported when the user chooses to
     /// re-encode. Each part is cut *and resampled on its own* to `target` —
     /// by default the longest part's rate, so the fewest frames are touched —
-    /// at near-lossless MJPEG quality with the audio copied; the now-homogeneous
+    /// using MJPEG for all-intra sources or MPEG-4 for long-GOP cuts; the homogeneous
     /// parts are then concatenated with `-c copy`. The order matters: the
     /// concat demuxer times AVI packets at the first file's rate, so resampling
     /// *after* concatenation ran 60 s of PICT0031 into 49 (measured).
@@ -114,34 +113,74 @@ impl<'a> ClipExporter<'a> {
         match parts {
             [] => return Err(ExportError::NothingToExport),
             // One recording, nothing to reconcile: stay lossless.
-            [(clip, file)] => return self.export_clip_with_mute(clip, file, destination, mute),
+            [(clip, file)] if file.media.is_all_intra() => return self.export_clip_with_mute(clip, file, destination, mute),
             _ => {}
         }
+        let all_intra = parts.iter().all(|(_, file)| file.media.is_all_intra());
         let mixed_audio = !mute && parts.iter().any(|(_, f)| f.muted)
             && parts.iter().any(|(_, f)| !f.muted && f.media.audio_codec.is_some());
         let mute = mute || (parts.iter().any(|(_, f)| f.muted) && !mixed_audio);
-        let rate = target.unwrap_or_else(|| FrameRate::dominant(parts));
+        let requested_rate = target.unwrap_or_else(|| FrameRate::dominant(parts));
+        let rate = if all_intra { requested_rate } else { mpeg4_rate(requested_rate) };
         let workspace = Workspace::beside(destination, "fpv-export")?;
         let list = self.cut(parts, workspace.path(), destination, |(clip, file)| {
-            if !file.media.is_all_intra() {
-                return Err(ExportError::NotAllIntra(file.media.video_codec.clone()));
-            }
             let (start, duration) = span(clip, file);
             let mut arguments = vec![
                 "-hide_banner".into(), "-loglevel".into(), "error".into(),
                 "-i".into(), file.imported_path.clone(),
                 "-ss".into(), seconds_argument(start), "-t".into(), seconds_argument(duration),
                 "-vf".into(), format!("fps={}/{}", rate.numerator, rate.denominator),
-                "-c:v".into(), "mjpeg".into(), "-q:v".into(), "2".into(),
+                "-c:v".into(), if all_intra { "mjpeg" } else { "mpeg4" }.into(), "-q:v".into(), "2".into(),
             ];
+            if !all_intra { arguments.extend(["-pix_fmt".into(), "yuv420p".into()]); }
             if mixed_audio {
                 normalize_flight_audio(&mut arguments, file, destination);
             } else {
-                arguments.extend(if mute || file.muted { vec!["-an".into()] } else { vec!["-c:a".into(), "copy".into()] });
+                arguments.extend(if mute || file.muted { vec!["-an".into()] }
+                    else { vec!["-c:a".into(), if needs_aac(file, destination) { "aac" } else { "copy" }.into()] });
             }
             Ok(arguments)
         })?;
-        Ok(run_writing(self.ffmpeg, &concat_arguments(&list, destination), destination)?)
+        self.write_video(&concat_arguments(&list, destination), destination)
+    }
+
+    /// Stage beside the destination, validate actual video packets, then publish
+    /// without replacing an existing file. Failed muxers may leave zero bytes or
+    /// just a container header even when they report success.
+    fn write_video(&self, arguments: &[String], destination: &Path) -> Result<PathBuf, ExportError> {
+        if destination.exists() {
+            return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists,
+                format!("destination already exists: {}", destination.display())).into());
+        }
+        let workspace = Workspace::beside(destination, "fpv-output")?;
+        let staged = workspace.path().join(destination.file_name().unwrap_or_default());
+        let mut arguments = arguments.to_vec();
+        *arguments.last_mut().ok_or(ExportError::NothingToExport)? = staged.to_string_lossy().into_owned();
+        run_writing(self.ffmpeg, &arguments, &staged)?;
+        if std::fs::metadata(&staged)?.len() == 0 {
+            return Err(FfmpegError::ToolFailed { tool: "ffmpeg".into(), arguments,
+                status: 0, message: "export produced an empty file".into() }.into());
+        }
+        let probe: Vec<String> = ["-v", "error", "-select_streams", "v:0", "-count_packets",
+            "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0"]
+            .into_iter().map(String::from).chain([staged.to_string_lossy().into_owned()]).collect();
+        let result = self.ffmpeg.run(FfmpegTool::Ffprobe, &probe)?;
+        if !result.succeeded() {
+            return Err(FfmpegError::tool_failed(FfmpegTool::Ffprobe, &probe, &result).into());
+        }
+        if !String::from_utf8_lossy(&result.stdout).trim().parse::<u64>().is_ok_and(|count| count > 0) {
+            return Err(FfmpegError::ToolFailed { tool: "ffprobe".into(), arguments: probe,
+                status: 0, message: "export contains no readable video packets".into() }.into());
+        }
+        // Same filesystem: link publishes the completed file atomically and
+        // refuses a destination created during the export, on every desktop OS.
+        if let Err(error) = std::fs::hard_link(&staged, destination) {
+            if error.kind() == std::io::ErrorKind::AlreadyExists { return Err(error.into()); }
+            // exFAT and some cloud providers have no hard links. Reserve the
+            // final name without overwriting, then copy the validated content.
+            copy_new(&staged, destination)?;
+        }
+        Ok(destination.to_path_buf())
     }
 
     /// Writes every part into `workspace` — with the arguments `arguments`
@@ -155,13 +194,44 @@ impl<'a> ClipExporter<'a> {
             let piece = workspace.join(format!("part{index:03}.{extension}"));
             let mut piece_arguments = arguments(part)?;
             piece_arguments.extend(["-y".into(), piece.to_string_lossy().into_owned()]);
-            run_writing(self.ffmpeg, &piece_arguments, &piece)?;
+            self.write_video(&piece_arguments, &piece)?;
             pieces.push(piece);
         }
         let list = workspace.join("parts.txt");
         write_concat_list(&pieces, &list)?;
         Ok(list)
     }
+}
+
+/// MPEG-4's time-increment resolution is 16-bit. Keep the requested rate
+/// whenever representable; otherwise use its nearest bounded rational rather
+/// than forcing every recording to a nominal 25/30 fps.
+fn mpeg4_rate(rate: FrameRate) -> FrameRate {
+    if rate.numerator <= 65_535 { return rate; }
+    let fps = rate.value();
+    let limit = ((65_535.0 / fps).floor() as i64).clamp(1, 65_535);
+    let mut best = rate;
+    let mut error = f64::INFINITY;
+    for denominator in 1..=limit {
+        let numerator = (fps * denominator as f64).round() as i64;
+        if !(1..=65_535).contains(&numerator) { continue; }
+        let candidate = FrameRate::new(numerator, denominator);
+        let difference = (candidate.value() - fps).abs();
+        if difference < error { error = difference; best = candidate; }
+    }
+    best
+}
+
+fn copy_new(source: &Path, destination: &Path) -> std::io::Result<()> {
+    let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(destination)?;
+    let result = (|| {
+        let mut input = std::fs::File::open(source)?;
+        std::io::copy(&mut input, &mut output)?;
+        Ok(())
+    })();
+    drop(output);
+    if result.is_err() { let _ = std::fs::remove_file(destination); }
+    result
 }
 
 /// Mixed mute policies need homogeneous audio streams for concatenation. Only
@@ -188,8 +258,17 @@ fn span(clip: &Clip, file: &SourceFile) -> (f64, f64) {
     (start, rate.seconds(clip.end_frame) - start)
 }
 
-fn copy_arguments(clip: &Clip, file: &SourceFile, mute: bool) -> Result<Vec<String>, ExportError> {
-    if !file.media.is_all_intra() && clip.start_frame != 0 {
+fn needs_aac(file: &SourceFile, destination: &Path) -> bool {
+    destination.extension().is_some_and(|extension|
+        extension.eq_ignore_ascii_case("mp4") || extension.eq_ignore_ascii_case("m4v"))
+        && file.media.audio_codec.as_deref().is_some_and(|codec|
+            !matches!(codec, "aac" | "mp3" | "alac" | "ac3" | "eac3" | "opus"))
+}
+
+fn copy_arguments(clip: &Clip, file: &SourceFile, mute: bool, destination: &Path) -> Result<Vec<String>, ExportError> {
+    let whole_frames = file.media.frame_count.unwrap_or_else(||
+        file.media.frame_rate.frame_index(file.media.duration));
+    if !file.media.is_all_intra() && (clip.start_frame != 0 || clip.end_frame < whole_frames) {
         return Err(ExportError::NotAllIntra(file.media.video_codec.clone()));
     }
     let (start, duration) = span(clip, file);
@@ -217,6 +296,11 @@ fn copy_arguments(clip: &Clip, file: &SourceFile, mute: bool) -> Result<Vec<Stri
     // PCM out holds the very same samples, now cut on the frame.
     if mute || file.muted {
         arguments.extend(["-c:v".into(), "copy".into(), "-an".into()]);
+    } else if needs_aac(file, destination) {
+        // EV300D records H.264 + ADPCM in AVI. The GUI suggests MP4 for
+        // H.264 takes, whose muxer cannot carry that audio. Keep every video
+        // packet unchanged and convert only the incompatible audio stream.
+        arguments.extend(["-c:v".into(), "copy".into(), "-c:a".into(), "aac".into()]);
     } else { match file.media.audio_codec.as_deref() {
         Some(codec) if codec.starts_with("pcm_") && file.media.is_all_intra() =>
             arguments.extend(["-c:v".into(), "copy".into(), "-c:a".into(), codec.into()]),

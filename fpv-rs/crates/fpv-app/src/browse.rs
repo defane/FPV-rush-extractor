@@ -275,10 +275,10 @@ pub fn session_meta(day: &str, files: usize, flights: usize) -> String {
     }
 }
 
-/// The session header's button: "Re-segment" once DVR flights exist — a
+/// The session header's button: "Re-segment" once flights exist — a
 /// re-segment remakes them — "Segment" before.
 pub fn segment_label(session: &SessionView) -> &'static str {
-    if session.flights.iter().any(|f| !f.action_cam) {
+    if session.flights.iter().any(|f| !f.reduced) {
         "Re-segment"
     } else {
         "Segment"
@@ -499,10 +499,9 @@ pub fn suggest<'a>(
     found
 }
 
-/// What a re-segment remakes, and so loses: the session's DVR flights with
-/// their titles, likes and tags. Action-cam takes are not touched.
+/// What re-segmentation replaces for every codec; reduced clips are preserved.
 pub fn resegment_losses(session: &SessionView) -> Vec<String> {
-    let flights: Vec<&FlightView> = session.flights.iter().filter(|f| !f.action_cam).collect();
+    let flights: Vec<&FlightView> = session.flights.iter().filter(|f| !f.reduced).collect();
     if flights.is_empty() {
         // A first segmentation: there is nothing to lose.
         return vec![];
@@ -511,7 +510,7 @@ pub fn resegment_losses(session: &SessionView) -> Vec<String> {
     let count = |keep: fn(&FlightView) -> bool| flights.iter().filter(|f| keep(f)).count();
     let mut lost = vec![format!(
         "The {} of this session will be found again from scratch and replaced. Lost with them:",
-        plural(flights.len(), "DVR flight")
+        plural(flights.len(), "flight")
     )];
     let titled = count(|f| f.title.is_some());
     if titled > 0 {
@@ -625,13 +624,17 @@ mod tests {
     }
 
     #[test]
-    fn the_button_says_re_segment_once_dvr_flights_exist() {
+    fn the_button_says_re_segment_for_every_existing_codec() {
         let take = FlightView {
             action_cam: true,
             ..flight("take", 1, false, &[], 60.0)
         };
         let mut letz = session("letz", None, vec![take], &[]);
-        assert_eq!(segment_label(&letz), "Segment", "takes are not remade");
+        assert_eq!(
+            segment_label(&letz),
+            "Re-segment",
+            "all codecs are analyzed"
+        );
         letz.flights.push(flight("dvr", 2, false, &[], 60.0));
         assert_eq!(segment_label(&letz), "Re-segment");
     }
@@ -836,7 +839,7 @@ mod tests {
                 dvr(Some("Bando"), true, &["gates"]),
                 dvr(None, true, &[]),
                 dvr(None, false, &[]),
-                // A take is not remade: its title is safe.
+                // H.264 takes are analyzed too, so their edits are counted.
                 FlightView {
                     title: Some("Osmo".into()),
                     action_cam: true,
@@ -848,14 +851,14 @@ mod tests {
         assert_eq!(
             resegment_losses(&session),
             [
-                "The 3 DVR flights of this session will be found again from scratch and replaced. Lost with them:",
-                "1 title",
+                "The 4 flights of this session will be found again from scratch and replaced. Lost with them:",
+                "2 titles",
                 "2 likes",
                 "the tags of 1 flight",
                 "every boundary corrected by hand",
             ]
         );
-        session.flights.retain(|f| f.action_cam);
+        session.flights.clear();
         assert!(
             resegment_losses(&session).is_empty(),
             "nothing segmented yet"

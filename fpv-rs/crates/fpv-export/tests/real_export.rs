@@ -113,3 +113,115 @@ fn mixed_recording_mute_preserves_sound_in_other_parts_and_fills_only_muted_part
     }
     assert_eq!(std::fs::read(recording).unwrap(), original);
 }
+
+#[test]
+fn failed_container_export_leaves_no_empty_file_and_can_be_retried() {
+    let folder = tempfile::tempdir().unwrap();
+    let recording = folder.path().join("source.avi");
+    assert!(Command::new("ffmpeg").args(["-v", "error", "-f", "lavfi", "-i",
+        "testsrc2=size=64x48:rate=25:duration=1", "-f", "lavfi", "-i",
+        "sine=duration=1:sample_rate=8000", "-c:v", "mjpeg", "-c:a", "pcm_s16le",
+        "-shortest", "-y"]).arg(&recording).status().unwrap().success());
+    let media = MediaInfo { audio_codec: Some("pcm_s16le".into()),
+        ..MediaInfo::new(64, 48, FrameRate::new(25, 1), 1.0, "mjpeg") };
+    let file = SourceFile::new(Uuid::new_v4(), "card", recording.to_string_lossy(), None, media);
+    let original = std::fs::read(&recording).unwrap();
+    let clip = Clip::new(Uuid::new_v4(), file.id, 0, 25);
+    // PCM cannot be muxed in this container: ffmpeg creates an empty file
+    // before returning the header error. The app must not leave it behind.
+    let destination = folder.path().join("flight.webm");
+    let runner = FfmpegRunner::default();
+    let exporter = ClipExporter::new(&runner);
+    assert!(exporter.export_clip(&clip, &file, &destination).is_err());
+    assert!(!destination.exists(), "failed export left an empty final file");
+    let destination = folder.path().join("flight.avi");
+    exporter.export_clip(&clip, &file, &destination).unwrap();
+    assert_eq!(frames(&destination), "25");
+    assert!(exporter.export_clip(&clip, &file, &destination).is_err(), "never overwrite");
+    assert_eq!(frames(&destination), "25");
+    let past_end = Clip::new(Uuid::new_v4(), file.id, 250, 275);
+    let empty = folder.path().join("empty.avi");
+    assert!(exporter.export_clip(&past_end, &file, &empty).is_err(), "header-only video is not a success");
+    assert!(!empty.exists());
+    assert_eq!(std::fs::read(recording).unwrap(), original);
+}
+
+#[test]
+fn h264_avi_exports_to_mp4_with_video_unchanged_and_incompatible_audio_converted() {
+    let folder = tempfile::tempdir().unwrap();
+    let recording = folder.path().join("EV300D.AVI");
+    assert!(Command::new("ffmpeg").args(["-v", "error", "-f", "lavfi", "-i",
+        "testsrc2=size=64x48:rate=25:duration=2", "-f", "lavfi", "-i",
+        "sine=duration=2:sample_rate=8000", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-c:a", "adpcm_ima_wav", "-shortest", "-y"]).arg(&recording).status().unwrap().success());
+    let file = SourceFile::new(Uuid::new_v4(), "card", recording.to_string_lossy(), None,
+        MediaInfo { audio_codec: Some("adpcm_ima_wav".into()),
+            ..MediaInfo::new(64, 48, FrameRate::new(25, 1), 2.0, "h264") });
+    let original = std::fs::read(&recording).unwrap();
+    let clip = Clip::new(Uuid::new_v4(), file.id, 0, 50);
+    let runner = FfmpegRunner::default();
+    let exporter = ClipExporter::new(&runner);
+    for muted in [false, true] {
+        let destination = folder.path().join(format!("export-{muted}.mp4"));
+        exporter.export_clip_with_mute(&clip, &file, &destination, muted).unwrap();
+        assert_eq!(frames(&destination), "50");
+        let audio = Command::new("ffprobe").args(["-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=codec_name", "-of", "csv=p=0"]).arg(&destination).output().unwrap();
+        assert!(audio.status.success());
+        assert_eq!(String::from_utf8_lossy(&audio.stdout).trim(), if muted { "" } else { "aac" });
+        let video_hashes = |path: &std::path::Path| {
+            let hash = |flag, mode| Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(path)
+                .args(["-map", "0:v:0", flag, mode, "-f", "framemd5", "-"]).output().unwrap();
+            let mut output = hash("-fps_mode", "passthrough");
+            // Match the proxy's compatibility path: FFmpeg 4 predates fps_mode,
+            // while FFmpeg 9 removed vsync. Never resample frames for comparison.
+            if !output.status.success() && String::from_utf8_lossy(&output.stderr)
+                .contains("Unrecognized option 'fps_mode'") {
+                output = hash("-vsync", "0");
+            }
+            assert!(output.status.success(), "frame hash failed for {}: {}", path.display(), String::from_utf8_lossy(&output.stderr));
+            String::from_utf8_lossy(&output.stdout).lines().filter(|line| !line.starts_with('#'))
+                .map(|line| line.rsplit(',').next().unwrap().trim().to_owned()).collect::<Vec<_>>()
+        };
+        assert_eq!(video_hashes(&destination), video_hashes(&recording));
+    }
+    assert_eq!(std::fs::read(recording).unwrap(), original);
+}
+
+#[test]
+fn precise_long_gop_cuts_reencode_only_when_explicitly_requested() {
+    for rate in [FrameRate::new(25, 1), FrameRate::new(1_000_000, 33459)] {
+    let folder = tempfile::tempdir().unwrap();
+    let recording = folder.path().join("source.mp4");
+    assert!(Command::new("ffmpeg").args(["-v", "error", "-f", "lavfi", "-i",
+        &format!("color=c=red:s=64x48:r={}/{}:d=2", rate.numerator, rate.denominator),
+        "-f", "lavfi", "-i", &format!("color=c=blue:s=64x48:r={}/{}:d=2", rate.numerator, rate.denominator),
+        "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0", "-c:v", "libx264", "-g", "100",
+        "-pix_fmt", "yuv420p", "-y"]).arg(&recording).status().unwrap().success());
+    let source = SourceFile::new(Uuid::new_v4(), "card", recording.to_string_lossy(), None,
+        MediaInfo::new(64, 48, rate, 4.0, "h264"));
+    let original = std::fs::read(&recording).unwrap();
+    let clip = Clip::new(Uuid::new_v4(), source.id, 30, 70);
+    let runner = FfmpegRunner::default();
+    let exporter = ClipExporter::new(&runner);
+    let rejected = folder.path().join("copy.mp4");
+    assert!(exporter.export_clip(&clip, &source, &rejected).is_err());
+    assert!(!rejected.exists());
+    let out = folder.path().join("cut.mp4");
+    exporter.export_flight_reencoded(&[(clip, source)], &out, None).unwrap();
+    assert_eq!(frames(&out), "40");
+    let encoded = fpv_media::MediaProbe::new(&runner).probe(&out).unwrap();
+    assert!((encoded.frame_rate.value() / rate.value() - 1.0).abs() < 1e-6);
+    let pixel = |seconds: &str| {
+        let data = Command::new("ffmpeg").args(["-v", "error", "-ss", seconds, "-i"])
+            .arg(&out).args(["-vf", "scale=1:1:flags=area", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output().unwrap();
+        assert!(data.status.success(), "{}", String::from_utf8_lossy(&data.stderr));
+        data.stdout
+    };
+    let first = pixel("0"); let last = pixel(&format!("{}", rate.seconds(38)));
+    assert!(first[0] > 200 && first[2] < 30, "starts in the source's red interval");
+    assert!(last[2] > 200 && last[0] < 30, "ends in the source's blue interval");
+    assert_eq!(std::fs::read(recording).unwrap(), original);
+    }
+}

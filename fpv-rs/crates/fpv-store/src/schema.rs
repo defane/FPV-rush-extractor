@@ -68,6 +68,11 @@ pub(crate) const MIGRATIONS: &[(&str, &str)] = &[
     ("v8", r#"
         ALTER TABLE "sourceFile" ADD COLUMN "muted" INTEGER NOT NULL DEFAULT 0 CHECK ("muted" IN (0, 1));
     "#),
+    // Playback preference only: independent of import/export audio policy.
+    ("v9", r#"
+        CREATE TABLE "flightPlayback" ("flightId" TEXT PRIMARY KEY NOT NULL REFERENCES "flight"("id") ON DELETE CASCADE,
+            "muted" INTEGER NOT NULL CHECK ("muted" IN (0, 1)));
+    "#),
 ];
 
 /// Applies every migration not yet in the ledger, up to and including

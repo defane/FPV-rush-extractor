@@ -133,10 +133,17 @@ impl LibraryStore {
     /// those that held nothing but it. Its clips, labels and the recordings'
     /// figure tags and runs go by cascade. The files on disk are the caller's.
     pub fn delete_flight(&self, flight_id: Uuid, files: &[Uuid]) -> Result<()> {
+        self.delete_flights(&[flight_id], files)
+    }
+
+    /// Removes a validated selection atomically, before disposing of its files.
+    pub fn delete_flights(&self, flights: &[Uuid], files: &[Uuid]) -> Result<()> {
         let mut db = self.db();
         let transaction = db.transaction()?;
-        let changed = transaction.execute("DELETE FROM flight WHERE id = ?", [Id(flight_id)])?;
-        not_found_unless(changed, "flight", flight_id)?;
+        for flight in flights {
+            let changed = transaction.execute("DELETE FROM flight WHERE id = ?", [Id(*flight)])?;
+            not_found_unless(changed, "flight", *flight)?;
+        }
         for file in files {
             transaction.execute("INSERT OR IGNORE INTO deletedRecording (path)
                                  SELECT importedPath FROM sourceFile WHERE id = ?", [Id(*file)])?;
@@ -198,6 +205,18 @@ impl LibraryStore {
                  thumbnailPath = ?11 WHERE id = ?1"#,
             clip_params(clip))?;
         not_found_unless(changed, "clip", clip.id)
+    }
+
+    /// None means no explicit playback preference; use the app's default.
+    pub fn playback_mute(&self, flight: Uuid) -> Result<Option<bool>> {
+        Ok(self.db().query_row("SELECT muted FROM flightPlayback WHERE flightId = ?",
+            [Id(flight)], |row| row.get(0)).optional()?)
+    }
+
+    pub fn set_playback_mute(&self, flight: Uuid, muted: bool) -> Result<()> {
+        self.db().execute("INSERT INTO flightPlayback (flightId, muted) VALUES (?1, ?2) \
+            ON CONFLICT(flightId) DO UPDATE SET muted = excluded.muted", params![Id(flight), muted])?;
+        Ok(())
     }
 
     /// Persists a user edit to a flight — its rating or title.

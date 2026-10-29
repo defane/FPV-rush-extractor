@@ -285,7 +285,8 @@ mod tests {
         let info = probe(OSMO_NANO).unwrap();
         assert_eq!(info.camera.as_deref(), Some("DJI Osmo Nano"));
         assert_eq!((info.video_codec.as_str(), info.width), ("hevc", 3840));
-        assert!(!info.needs_segmentation(), "its MJPEG cover is not a DVR recording");
+        assert!(!info.is_analog_dvr(), "its MJPEG cover does not identify the main video codec");
+        assert!(info.needs_segmentation(), "HEVC recordings are eligible too");
     }
 
     #[test]

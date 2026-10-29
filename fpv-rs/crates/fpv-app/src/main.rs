@@ -32,6 +32,20 @@ pub(crate) enum Scope {
     None,
     Library,
     Session(String),
+    Sessions(Vec<String>),
+}
+
+fn scopes_overlap(a: &Scope, b: &Scope) -> bool {
+    match (a, b) {
+        (Scope::None, _) | (_, Scope::None) => false,
+        (Scope::Library, Scope::Library) => true,
+        (Scope::Session(a), Scope::Session(b)) => a == b,
+        (Scope::Sessions(a), Scope::Session(b)) | (Scope::Session(b), Scope::Sessions(a)) => {
+            a.contains(b)
+        }
+        (Scope::Sessions(a), Scope::Sessions(b)) => a.iter().any(|id| b.contains(id)),
+        _ => false,
+    }
 }
 
 /// What Escape closes: the topmost thing open, one press at a time.
@@ -136,6 +150,7 @@ pub(crate) struct App {
     next_id: u64,
     dialog: Option<Dialog>,
     dialog_request: Option<u64>,
+    export_dialogs: std::collections::BTreeMap<u64, Dialog>,
     viewer: Option<Viewer>,
     /// A flight waiting for its recordings to come down before it plays.
     cloud_wait: Option<cloudwait::CloudWait>,
@@ -278,6 +293,7 @@ impl App {
             tasks: vec![],
             next_id: 1,
             dialog: None,
+            export_dialogs: Default::default(),
             dialog_request: None,
             viewer: None,
             cloud_wait: None,
@@ -366,7 +382,7 @@ impl App {
             && self
                 .tasks
                 .iter()
-                .any(|task| task.running && !task.quiet && task.scope == *scope)
+                .any(|task| task.running && !task.quiet && scopes_overlap(&task.scope, scope))
     }
 
     fn session_busy(&self, session: &str) -> bool {
@@ -438,7 +454,7 @@ impl App {
                         && result.is_ok()
                         && self.tasks.iter().any(|task| task.id == id && !task.quiet);
                     // A refused lossless export keeps its dialog open, to ask how.
-                    let done = matches!(&result, Ok(reply) if !matches!(reply, Reply::Mismatch(_)));
+                    let done = matches!(&result, Ok(reply) if !matches!(reply, Reply::Mismatch(_) | Reply::NeedsReencode(_)));
                     if self
                         .dialog
                         .as_mut()
@@ -456,17 +472,27 @@ impl App {
                             Err(error) => error.clone(),
                         };
                     }
+                    let recovery = match &result {
+                        Ok(Reply::Mismatch(reason)) => Some(Reply::Mismatch(reason.clone())),
+                        Ok(Reply::NeedsReencode(reason)) => {
+                            Some(Reply::NeedsReencode(reason.clone()))
+                        }
+                        _ => None,
+                    };
+                    if let Some(mut dialog) = self.export_dialogs.remove(&id)
+                        && let Some(reply) = recovery
+                    {
+                        dialog.finished(id, false);
+                        dialog.reply(reply);
+                        self.export_dialogs.insert(id, dialog);
+                    }
                     match result {
                         Err(error) if strip_batch => {
                             self.strips.failed();
                             self.notices.push(format!("Hover strips: {error}"));
                         }
                         Err(error) => self.notices.push(error),
-                        Ok(Reply::Mismatch(reason)) => {
-                            if let Some(dialog) = &mut self.dialog {
-                                dialog.reply(Reply::Mismatch(reason));
-                            }
-                        }
+                        Ok(Reply::Mismatch(_) | Reply::NeedsReencode(_)) => {}
                         Ok(Reply::Strips(prepared)) => {
                             let (next, failed) =
                                 self.strips
@@ -489,7 +515,12 @@ impl App {
                         }
                         // Downloaded in the background, as asked: nothing opens.
                         Ok(Reply::Playback { .. }) if detached => {}
-                        Ok(Reply::Playback { flight, at, parts }) => {
+                        Ok(Reply::Playback {
+                            flight,
+                            at,
+                            parts,
+                            playback_mute,
+                        }) => {
                             if let Some(flight) = self
                                 .sessions
                                 .iter()
@@ -500,7 +531,8 @@ impl App {
                                 // with No Sound. Mute videos only starts muted:
                                 // the speaker brings the sound back.
                                 let silent = parts.iter().all(|part| !part.has_audio);
-                                let muted = silent || self.config.mute_videos;
+                                let muted =
+                                    silent || playback_mute.unwrap_or(self.config.mute_videos);
                                 let player = player::Player::new_with_volume(
                                     parts,
                                     self.tools.clone(),
@@ -660,6 +692,7 @@ impl App {
                 }
                 Ok(Reply::Playback {
                     parts: library.native_playback(&id)?,
+                    playback_mute: library.playback_mute(&id)?,
                     flight: id,
                     at,
                 })

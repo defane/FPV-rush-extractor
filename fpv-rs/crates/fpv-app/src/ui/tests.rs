@@ -21,6 +21,7 @@ fn app(ctx: &egui::Context) -> App {
         tasks: vec![],
         next_id: 1,
         dialog: None,
+        export_dialogs: Default::default(),
         dialog_request: None,
         viewer: None,
         cloud_wait: None,
@@ -1519,6 +1520,7 @@ fn a_flight_in_the_cloud_waits_for_its_videos_then_plays() {
         .send(crate::worker::Event::Finished {
             id: job.id,
             result: Ok(crate::worker::Reply::Playback {
+                playback_mute: None,
                 flight: in_cloud.id.clone(),
                 at: 0.0,
                 parts: vec![],
@@ -1561,6 +1563,7 @@ fn continuing_in_the_background_leaves_the_flight_unplayed() {
         .send(crate::worker::Event::Finished {
             id: job.id,
             result: Ok(crate::worker::Reply::Playback {
+                playback_mute: None,
                 flight: in_cloud.id.clone(),
                 at: 0.0,
                 parts: vec![],
@@ -1691,15 +1694,15 @@ fn a_re_segment_names_what_it_loses_and_waits_for_consent_but_a_first_one_does_n
     click_text(
         &ctx,
         &mut app,
-        "I accept replacing the existing DVR segmentation",
+        "I accept replacing the existing segmentation",
         draw,
     );
     click_text(&ctx, &mut app, "Save and segment", draw);
     assert!(jobs.try_recv().is_ok(), "agreed: it runs");
 
-    // Only takes so far: a first segmentation loses nothing.
+    // No flights yet: a first segmentation loses nothing.
     let (mut app, jobs, _events) = app_with_worker(&ctx);
-    let fresh = session_of(vec![flight()]);
+    let fresh = session_of(vec![]);
     app.dialog = Some(crate::dialogs::Dialog::segment(&fresh));
     app.sessions = vec![fresh];
     let texts = shown_texts(&ctx, &mut app, draw);
@@ -1915,6 +1918,7 @@ fn a_flight_opened_muted_by_the_setting_can_be_unmuted_from_the_speaker() {
         .send(crate::worker::Event::Finished {
             id: 99,
             result: Ok(crate::worker::Reply::Playback {
+                playback_mute: None,
                 flight: flight().id,
                 at: 0.0,
                 parts: vec![part],
@@ -2069,6 +2073,7 @@ fn an_export_across_rates_asks_how_instead_of_failing() {
         app.dialog = Some(dialog);
         click_text(&ctx, &mut app, "Export", draw);
         let export = jobs.try_recv().expect("a lossless export first");
+        assert!(app.dialog.is_none(), "accepted export closes immediately");
         events
             .send(crate::worker::Event::Finished {
                 id: export.id,
@@ -2084,10 +2089,9 @@ fn an_export_across_rates_asks_how_instead_of_failing() {
             "{texts:?}"
         );
         assert!(texts.iter().any(|t| t.contains("29.887")), "{texts:?}");
-        assert_eq!(
+        assert!(
             texts.iter().any(|t| t == "Re-encode into one file"),
-            !action_cam,
-            "re-encoding is the DVR's: {texts:?}"
+            "explicit re-encoding works for every codec: {texts:?}"
         );
         click_text(&ctx, &mut app, "Export 2 parts separately", draw);
         assert!(jobs.try_recv().is_ok(), "exported in parts");
@@ -3234,4 +3238,728 @@ fn only_the_chosen_view_tab_is_coloured() {
         "the others plain"
     );
     assert_eq!(colour("Figures"), ctx.style().visuals.text_color());
+}
+
+#[test]
+fn submitting_export_closes_the_panel_and_reports_background_failure() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, events) = app_with_worker(&ctx);
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| {
+        app.receive(ctx);
+        app.dialog_window(ctx);
+    };
+    app.sessions = vec![session_of(vec![flight()])];
+    let mut dialog = crate::dialogs::Dialog::export("Test", &flight());
+    dialog.reply(Reply::Picked(Some("/destination/out.avi".into())));
+    app.dialog = Some(dialog);
+    click_text(&ctx, &mut app, "Export", draw);
+    let job = jobs.try_recv().unwrap();
+    assert!(
+        app.dialog.is_none(),
+        "export continues in Tasks without its panel"
+    );
+    assert!(jobs.try_recv().is_err(), "only one export submitted");
+    assert!(app.tasks.iter().any(|t| t.id == job.id && t.running));
+    events
+        .send(crate::worker::Event::Finished {
+            id: job.id,
+            result: Err("Cannot write destination".into()),
+        })
+        .unwrap();
+    shown_texts(&ctx, &mut app, draw);
+    let task = app.tasks.iter().find(|t| t.id == job.id).unwrap();
+    assert!(!task.running && task.failed);
+    assert!(task.line.contains("Cannot write"));
+    assert!(app.dialog.is_none());
+}
+
+#[test]
+fn export_completion_keeps_other_dialogs_and_mismatch_recovery_waits_its_turn() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, events) = app_with_worker(&ctx);
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| {
+        app.receive(ctx);
+        app.dialog_window(ctx);
+    };
+    app.sessions = vec![session_of(vec![flight()])];
+    app.dialog = Some(crate::dialogs::Dialog::export("Test", &flight()));
+    click_text(&ctx, &mut app, "Export", draw);
+    assert!(app.dialog.is_some(), "empty destination keeps the panel");
+    assert!(jobs.try_recv().is_err());
+    app.dialog
+        .as_mut()
+        .unwrap()
+        .reply(Reply::Picked(Some("/destination/out.avi".into())));
+    click_text(&ctx, &mut app, "Export", draw);
+    let job = jobs.try_recv().unwrap();
+    app.dialog = Some(crate::dialogs::Dialog::import(None, String::new()));
+    events
+        .send(crate::worker::Event::Finished {
+            id: job.id,
+            result: Ok(Reply::Mismatch("different rates".into())),
+        })
+        .unwrap();
+    shown_texts(&ctx, &mut app, draw);
+    assert!(app.dialog.is_some());
+    assert_eq!(
+        app.export_dialogs.len(),
+        1,
+        "recovery is retained behind the import panel"
+    );
+    app.dialog = None;
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(texts.iter().any(|t| t == "Different frame rates"));
+    while jobs.try_recv().is_ok() {} // Discard unrelated strip preparation.
+    click_text(&ctx, &mut app, "Export 1 parts separately", draw);
+    let job = jobs.try_recv().unwrap();
+    assert!(app.dialog.is_none());
+    events
+        .send(crate::worker::Event::Finished {
+            id: job.id,
+            result: Ok(Reply::Done("Exported out.avi".into())),
+        })
+        .unwrap();
+    shown_texts(&ctx, &mut app, draw);
+    assert!(app.export_dialogs.is_empty());
+    assert!(
+        app.tasks
+            .iter()
+            .any(|t| t.id == job.id && !t.running && !t.failed)
+    );
+}
+
+fn info_part() -> fpv_library::RecordingInfo {
+    let source = fpv_core::SourceFile::new(
+        "00000000-0000-0000-0000-000000000001".parse().unwrap(),
+        "/card/Original video.AVI",
+        "/library/Imported video.AVI",
+        None,
+        fpv_core::MediaInfo {
+            audio_codec: Some("pcm_s16le".into()),
+            ..fpv_core::MediaInfo::new(
+                640,
+                480,
+                fpv_core::FrameRate::new(1_000_000, 40839),
+                120.0,
+                "mjpeg",
+            )
+        },
+    );
+    let clip = fpv_core::Clip::new(source.session_id, source.id, 100, 250);
+    fpv_library::RecordingInfo {
+        clip,
+        source,
+        available: false,
+        cloud: false,
+        size_bytes: None,
+    }
+}
+
+#[test]
+fn thumbnail_info_requests_metadata_and_shows_copyable_source_paths() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, events) = app_with_worker(&ctx);
+    app.sessions = vec![session_of(vec![flight()])];
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| {
+        app.receive(ctx);
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.menu_button("…", |ui| app.flight_menu(ui, "test-session", &flight()));
+        });
+        app.dialog_window(ctx);
+    };
+    click_text(&ctx, &mut app, "…", draw);
+    click_text(&ctx, &mut app, "Info", draw);
+    let job = jobs
+        .try_recv()
+        .expect("metadata is requested on the worker");
+    assert!(app.dialog.is_some());
+    events
+        .send(crate::worker::Event::Finished {
+            id: job.id,
+            result: Ok(Reply::FlightInfo(vec![info_part()])),
+        })
+        .unwrap();
+    let texts = shown_texts(&ctx, &mut app, draw);
+    for expected in [
+        "Original video.AVI",
+        "/card/Original video.AVI",
+        "/library/Imported video.AVI",
+        "Source unavailable locally",
+    ] {
+        assert!(
+            texts.iter().any(|t| t == expected),
+            "missing {expected}: {texts:?}"
+        );
+    }
+    click_text(&ctx, &mut app, "Copy Original path", draw);
+    // The click emits a clipboard command rather than opening or changing the file.
+    assert!(app.dialog.is_some());
+    assert!(
+        jobs.try_recv().is_err(),
+        "Info actions do not submit writes"
+    );
+    click_text(&ctx, &mut app, "Close", draw);
+    assert!(app.dialog.is_none());
+}
+
+#[test]
+fn info_displays_each_sources_exact_rate_and_exclusive_bounds_and_fits_small_windows() {
+    let ctx = egui::Context::default();
+    let mut app = app(&ctx);
+    let mut second = info_part();
+    second.source.original_path = "/second/card/second.mp4".into();
+    second.source.media.frame_rate = fpv_core::FrameRate::new(60000, 1001);
+    second.clip.start_frame = 0;
+    second.clip.end_frame = 60;
+    let mut dialog = crate::dialogs::Dialog::info(&flight());
+    dialog.reply(Reply::FlightInfo(vec![info_part(), second]));
+    app.dialog = Some(dialog);
+    let mut output = ctx.run(input(egui::vec2(1000.0, 3000.0)), |ctx| {
+        app.dialog_window(ctx)
+    });
+    for _ in 0..8 {
+        output = ctx.run(input(egui::vec2(1000.0, 3000.0)), |ctx| {
+            app.dialog_window(ctx)
+        });
+    }
+    let mut texts = text_positions(&output.shapes);
+    for _ in 0..36 {
+        let mut raw = input(egui::vec2(1000.0, 3000.0));
+        raw.events = vec![
+            egui::Event::PointerMoved(egui::pos2(500.0, 1500.0)),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -80.0),
+                modifiers: Default::default(),
+            },
+        ];
+        output = ctx.run(raw, |ctx| app.dialog_window(ctx));
+        texts.extend(text_positions(&output.shapes));
+    }
+    for expected in [
+        "Recording 1 of 2",
+        "Recording 2 of 2",
+        "24.486398 fps (1000000/40839)",
+        "59.940060 fps (60000/1001)",
+        "00:00:04.084 · frame 100",
+        "00:00:10.210 · frame 250",
+        "00:00:01.001 · frame 60",
+        "pcm_s16le",
+        "mjpeg · 640 × 480",
+    ] {
+        assert!(
+            texts.iter().any(|(t, _)| t == expected),
+            "missing {expected}: {texts:?}"
+        );
+    }
+    for _ in 0..8 {
+        output = ctx.run(input(egui::vec2(360.0, 480.0)), |ctx| {
+            app.dialog_window(ctx)
+        });
+    }
+    let close = text_positions(&output.shapes)
+        .into_iter()
+        .find(|(t, _)| t == "Close")
+        .unwrap()
+        .1;
+    assert!(
+        close.x >= 0.0 && close.x < 360.0 && close.y >= 0.0 && close.y < 480.0,
+        "Close remains visible: {close:?}"
+    );
+}
+
+#[test]
+fn reopening_clips_restores_their_own_playback_mute_and_keeps_no_sound_authoritative() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, events) = app_with_worker(&ctx);
+    let a = flight();
+    let b = FlightView {
+        id: "other-flight".into(),
+        ..flight()
+    };
+    app.sessions = vec![session_of(vec![a.clone(), b.clone()])];
+    for (id, saved, has_audio, default, expected) in [
+        (&a.id, Some(true), true, false, true),
+        (&b.id, Some(false), true, false, false),
+        (&a.id, Some(true), true, false, true),
+        (&a.id, Some(false), true, true, false),
+        (&b.id, None, true, true, true),
+        (&a.id, Some(false), false, false, true),
+    ] {
+        app.config.mute_videos = default;
+        events
+            .send(crate::worker::Event::Finished {
+                id: 999,
+                result: Ok(Reply::Playback {
+                    flight: id.clone(),
+                    at: 0.0,
+                    playback_mute: saved,
+                    parts: vec![fpv_library::NativeSegment {
+                        segment: fpv_library::Segment {
+                            path: "not-decoded".into(),
+                            start: 0.0,
+                            end: 1.0,
+                            offset: 0.0,
+                        },
+                        width: 64,
+                        height: 48,
+                        has_audio,
+                        all_intra: true,
+                    }],
+                }),
+            })
+            .unwrap();
+        app.receive(&ctx);
+        let viewer = app.viewer.as_ref().unwrap();
+        assert_eq!(viewer.player.volume() == 0.0, expected);
+        assert_eq!(viewer.muted, !has_audio);
+        app.viewer = None;
+    }
+}
+
+#[test]
+fn speaker_changes_submit_a_playback_preference_without_waiting_for_close() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, _events) = app_with_worker(&ctx);
+    app.viewer = Some(test_viewer(&ctx));
+    for expected in [true, false] {
+        let mut output = ctx.run(input(egui::vec2(1280.0, 820.0)), |ctx| {
+            app.player_window(ctx)
+        });
+        for _ in 0..8 {
+            output = ctx.run(input(egui::vec2(1280.0, 820.0)), |ctx| {
+                app.player_window(ctx)
+            });
+        }
+        let (pos, width) = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t)
+                    if t.galley.job.text == "Play" || t.galley.job.text == "Pause" =>
+                {
+                    Some((t.pos, t.galley.size().x))
+                }
+                _ => None,
+            })
+            .unwrap();
+        let spacing = ctx.style().spacing.clone();
+        let point = pos
+            + egui::vec2(
+                width + spacing.button_padding.x + spacing.item_spacing.x + 13.0,
+                8.0,
+            );
+        for pressed in [true, false] {
+            let mut raw = input(egui::vec2(1280.0, 820.0));
+            raw.events = vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ];
+            let _ = ctx.run(raw, |ctx| app.player_window(ctx));
+        }
+        assert_eq!(app.viewer.as_ref().unwrap().playback_muted, expected);
+        let job = jobs.try_recv().expect("mute preference queued immediately");
+        assert!(
+            app.tasks
+                .iter()
+                .any(|t| t.id == job.id && t.label == "Remember playback mute")
+        );
+        assert!(jobs.try_recv().is_err(), "one write per change");
+    }
+}
+
+#[test]
+fn a_precise_long_gop_cut_offers_explicit_reencoding_instead_of_impossible_lossless_parts() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, events) = app_with_worker(&ctx);
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| {
+        app.receive(ctx);
+        app.dialog_window(ctx);
+    };
+    app.sessions = vec![session_of(vec![flight()])];
+    let mut dialog = crate::dialogs::Dialog::export("Indoor", &flight());
+    dialog.reply(Reply::Picked(Some("/export/clip.mp4".into())));
+    app.dialog = Some(dialog);
+    click_text(&ctx, &mut app, "Export", draw);
+    let job = jobs.try_recv().unwrap();
+    events
+        .send(crate::worker::Event::Finished {
+            id: job.id,
+            result: Ok(Reply::NeedsReencode(
+                "H.264 cut starts between keyframes".into(),
+            )),
+        })
+        .unwrap();
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(texts.iter().any(|t| t == "Precise cut needs re-encoding"));
+    assert!(!texts.iter().any(|t| t.contains("parts separately")));
+    assert!(texts.iter().any(|t| t.contains("MPEG-4")));
+    while jobs.try_recv().is_ok() {}
+    click_text(&ctx, &mut app, "Re-encode into one file", draw);
+    assert!(jobs.try_recv().is_ok());
+    assert!(app.dialog.is_none(), "export continues in Tasks");
+}
+
+#[test]
+fn dragging_player_corner_grows_video_and_restore_preserves_manual_size() {
+    for source in [[1600, 900], [400, 300], [450, 800]] {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        let mut viewer = test_viewer(&ctx);
+        let texture = ctx.load_texture(
+            "manual-resize",
+            egui::ColorImage::filled(source, Color32::GRAY),
+            Default::default(),
+        );
+        let id = texture.id();
+        viewer.texture = Some(texture);
+        app.viewer = Some(viewer);
+        let size = egui::vec2(1800.0, 1200.0);
+        let mut render = |events: Vec<egui::Event>| {
+            let mut raw = input(size);
+            raw.events = events;
+            ctx.run(raw, |ctx| app.player_window(ctx))
+        };
+        for _ in 0..5 {
+            render(vec![]);
+        }
+        let before = render(vec![]);
+        let initial_video = texture_rect(&before.shapes, id).unwrap();
+        let initial = ctx
+            .memory(|m| m.area_rect(egui::Id::new("player")))
+            .unwrap();
+        let corner = initial.max - egui::vec2(2.0, 2.0);
+        let target = corner + egui::vec2(240.0, 180.0);
+        render(vec![egui::Event::PointerMoved(corner)]);
+        render(vec![egui::Event::PointerButton {
+            pos: corner,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        }]);
+        render(vec![egui::Event::PointerMoved(target)]);
+        render(vec![egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        }]);
+        for _ in 0..5 {
+            render(vec![]);
+        }
+        let enlarged = render(vec![]);
+        let video = texture_rect(&enlarged.shapes, id).unwrap();
+        let window = ctx
+            .memory(|m| m.area_rect(egui::Id::new("player")))
+            .unwrap();
+        assert!(
+            window.width() > initial.width() + 150.0 && window.height() > initial.height() + 100.0,
+            "actual corner gesture must resize: {initial:?} -> {window:?}"
+        );
+        assert!(
+            video.height() > initial_video.height() + 50.0,
+            "manual resize must grow {source:?} video: {initial_video:?} -> {video:?}; window {window:?}"
+        );
+        assert!(
+            (video.width() / video.height() - source[0] as f32 / source[1] as f32).abs() < 0.002
+        );
+        assert!(window.contains_rect(video));
+        for label in ["Maximize", "Restore"] {
+            let out = render(vec![]);
+            let pos = text_positions(&out.shapes)
+                .into_iter()
+                .find(|(text, _)| text == label)
+                .unwrap()
+                .1
+                + egui::vec2(5.0, 5.0);
+            for pressed in [true, false] {
+                render(vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ]);
+            }
+            for _ in 0..5 {
+                render(vec![]);
+            }
+        }
+        let restored = texture_rect(&render(vec![]).shapes, id).unwrap();
+        assert!(
+            (restored.size() - video.size()).length() < 3.0,
+            "restore must recover manually resized video: {video:?} -> {restored:?}"
+        );
+    }
+}
+
+#[test]
+fn selected_flights_offer_bulk_delete_without_ffmpeg() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, _) = app_with_worker(&ctx);
+    let first = flight();
+    app.sessions = vec![session_of(vec![first.clone()])];
+    app.browse.view = View::Flights;
+    app.selecting = true;
+    app.selected.insert(first.id.clone());
+    app.ffmpeg_ok = false;
+    let texts = shown_texts(&ctx, &mut app, App::browser);
+    assert!(texts.iter().any(|s| s == "Delete 1…"), "{texts:?}");
+    click_text(&ctx, &mut app, "Delete 1…", App::browser);
+    assert!(app.dialog.is_some());
+    let _ = jobs.try_recv().expect("deletion preview is queued");
+    click_text(&ctx, &mut app, "Close", App::dialog_window);
+    assert!(app.dialog.is_none());
+    assert!(app.selected.contains(&first.id));
+    assert!(jobs.try_recv().is_err(), "cancelling must not delete");
+}
+
+#[test]
+fn batch_deletion_holds_each_affected_session_until_finished() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    app.submit_in(
+        crate::Scope::Sessions(vec!["one".into(), "two".into()]),
+        "Delete flights",
+        false,
+        |_, _| unreachable!(),
+    );
+    assert!(app.session_busy("one") && app.session_busy("two"));
+    assert!(!app.session_busy("other"));
+    assert!(app.busy_with(&crate::Scope::Sessions(vec!["two".into(), "three".into()])));
+    assert!(!app.busy_with(&crate::Scope::Sessions(vec!["other".into()])));
+}
+
+#[test]
+fn import_counter_remains_visible_when_tasks_are_collapsed_and_another_job_runs() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, events) = app_with_worker(&ctx);
+    let id = app.submit("Import recordings", false, |_, _| unreachable!());
+    let _ = jobs.try_recv();
+    app.submit("Export flights", false, |_, _| unreachable!());
+    let _ = jobs.try_recv();
+    events
+        .send(crate::worker::Event::Progress {
+            id,
+            step: fpv_library::Step {
+                done: 2,
+                total: 4,
+                line: "1/4 videos imported · 1 skipped · 0 failed — Copying movie.mp4…".into(),
+            },
+        })
+        .unwrap();
+    app.receive(&ctx);
+    assert!(!app.show_tasks);
+    let texts = shown_texts(&ctx, &mut app, App::task_bar);
+    assert!(
+        texts
+            .iter()
+            .any(|s| s.contains("1/4 videos imported") && s.contains("movie.mp4")),
+        "{texts:?}"
+    );
+    events
+        .send(crate::worker::Event::Finished {
+            id,
+            result: Err("Imported 1, skipped 1, failed 2".into()),
+        })
+        .unwrap();
+    app.receive(&ctx);
+    let texts = shown_texts(&ctx, &mut app, App::task_bar);
+    assert!(
+        texts
+            .iter()
+            .any(|s| s.contains("Imported 1, skipped 1, failed 2")),
+        "{texts:?}"
+    );
+}
+
+#[test]
+fn import_dialog_shows_its_progress_then_keeps_it_after_close() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, events) = app_with_worker(&ctx);
+    app.dialog = Some(crate::dialogs::Dialog::import(
+        Some(PathBuf::from("/card")),
+        "Training".into(),
+    ));
+    click_text(&ctx, &mut app, "Import", App::dialog_window);
+    let job = jobs.try_recv().unwrap();
+    let texts = shown_texts(&ctx, &mut app, App::dialog_window);
+    assert!(texts.iter().any(|s| s == "Scanning videos…"));
+    events
+        .send(crate::worker::Event::Progress {
+            id: job.id,
+            step: fpv_library::Step {
+                done: 1,
+                total: 3,
+                line: "1/3 videos imported · 0 skipped · 0 failed — Copying next.mp4…".into(),
+            },
+        })
+        .unwrap();
+    app.receive(&ctx);
+    let texts = shown_texts(&ctx, &mut app, App::dialog_window);
+    assert!(
+        texts
+            .iter()
+            .any(|s| s.contains("1/3 videos imported") && s.contains("next.mp4")),
+        "{texts:?}"
+    );
+    assert!(
+        !texts
+            .iter()
+            .any(|s| s.contains("progress is shown in Tasks"))
+    );
+    click_text(&ctx, &mut app, "Close", App::dialog_window);
+    assert!(app.dialog.is_none());
+    assert!(app.tasks.iter().any(|t| t.id == job.id && t.running));
+    let texts = shown_texts(&ctx, &mut app, App::task_bar);
+    assert!(texts.iter().any(|s| s.contains("1/3 videos imported")));
+}
+
+#[test]
+fn import_offers_segmentation_before_the_job_is_started() {
+    let ctx = egui::Context::default();
+    let mut app = app(&ctx);
+    app.dialog = Some(crate::dialogs::Dialog::import(None, "Training".into()));
+    let texts = shown_texts(&ctx, &mut app, App::dialog_window);
+    assert!(
+        texts.iter().any(|s| s == "Segment videos after import"),
+        "{texts:?}"
+    );
+    assert!(texts.iter().any(|s| s == "Detection profile"), "{texts:?}");
+    click_text(
+        &ctx,
+        &mut app,
+        "Segment videos after import",
+        App::dialog_window,
+    );
+    let texts = shown_texts(&ctx, &mut app, App::dialog_window);
+    assert!(!texts.iter().any(|s| s == "Detection profile"));
+}
+
+#[test]
+fn import_job_segments_by_default_and_supports_copy_only_optout() {
+    let root = tempfile::tempdir().unwrap();
+    let card = root.path().join("card");
+    std::fs::create_dir(&card).unwrap();
+    let sample = card.join("EACHINE.mp4");
+    let output = std::process::Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x240:rate=25:duration=6",
+            "-f",
+            "lavfi",
+            "-i",
+            "nullsrc=size=320x240:rate=25:duration=3,geq=lum='random(1)*255':cb=128:cr=128",
+            "-filter_complex",
+            "[0:v][1:v]concat=n=2:v=1:a=0",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-y",
+        ])
+        .arg(&sample)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for (profile, segment) in [("standard", true), ("textured", true), ("textured", false)] {
+        let ctx = egui::Context::default();
+        let (mut app, jobs, _) = app_with_worker(&ctx);
+        let local = root.path().join(format!("{profile}-{segment}"));
+        let config = fpv_library::Config {
+            media_root: local.join("media"),
+            ..Default::default()
+        };
+        let mut library = fpv_library::Library::open_with(
+            &local.join("config"),
+            &local.join("cache"),
+            config,
+            None,
+        )
+        .unwrap();
+        app.dialog = Some(crate::dialogs::Dialog::import(
+            Some(card.clone()),
+            "EACHINE".into(),
+        ));
+        if profile == "textured" {
+            click_text(&ctx, &mut app, "Standard", App::dialog_window);
+            click_text(&ctx, &mut app, "Textured terrain", App::dialog_window);
+        }
+        if !segment {
+            click_text(
+                &ctx,
+                &mut app,
+                "Segment videos after import",
+                App::dialog_window,
+            );
+        }
+        click_text(&ctx, &mut app, "Import", App::dialog_window);
+        let job = jobs.try_recv().unwrap();
+        let (progress, events) = crate::worker::Progress::for_test(job.id, ctx.clone());
+        let reply = (job.work)(&mut library, &progress).unwrap();
+        let crate::worker::Reply::Done(summary) = reply else {
+            panic!("expected import summary")
+        };
+        let snapshot = library.snapshot().unwrap();
+        assert_eq!(
+            snapshot[0].detection_profile,
+            if segment { profile } else { "standard" }
+        );
+        let clip = &snapshot[0].flights[0].clips[0];
+        let end = clip.end_frame as f64 / clip.fps;
+        let phases: Vec<_> = events
+            .try_iter()
+            .filter_map(|event| match event {
+                crate::worker::Event::Progress { step, .. } => Some(step.line),
+                _ => None,
+            })
+            .collect();
+        if segment {
+            assert!(
+                (5.75..=6.25).contains(&end),
+                "trailing snow must be excluded: {end}"
+            );
+            assert!(summary.contains("flights detected"));
+            assert!(
+                phases
+                    .iter()
+                    .any(|line| line.starts_with("Detecting flights ·"))
+            );
+        } else {
+            assert!((end - 9.0).abs() < 0.05, "copy only must keep whole take");
+            assert!(
+                !phases
+                    .iter()
+                    .any(|line| line.starts_with("Detecting flights ·"))
+            );
+        }
+    }
+}
+
+#[test]
+fn importing_into_an_existing_session_prefills_its_profile() {
+    let ctx = egui::Context::default();
+    let mut app = app(&ctx);
+    let mut session = session_of(vec![flight()]);
+    session.detection_profile = "textured".into();
+    let name = session.name.clone();
+    app.sessions = vec![session];
+    app.dialog = Some(crate::dialogs::Dialog::import(None, name));
+    let texts = shown_texts(&ctx, &mut app, App::dialog_window);
+    assert!(texts.iter().any(|s| s == "Textured terrain"), "{texts:?}");
 }

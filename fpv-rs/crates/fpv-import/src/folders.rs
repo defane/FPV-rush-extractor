@@ -73,7 +73,7 @@ impl Default for FolderPattern {
 /// names they give their files.
 pub fn source_label(file: &DiscoveredFile, media: &MediaInfo) -> &'static str {
     let name = file.name().to_ascii_uppercase();
-    if media.needs_segmentation() {
+    if media.is_analog_dvr() {
         "FATSHARK"
     } else if file.gopro.is_some() {
         "GOPRO"
@@ -92,7 +92,7 @@ pub fn source_label(file: &DiscoveredFile, media: &MediaInfo) -> &'static str {
 /// or else the brand its file names give away, and `Action cam` when neither
 /// says.
 pub fn source_name(file: &DiscoveredFile, media: &MediaInfo) -> String {
-    if media.needs_segmentation() {
+    if media.is_analog_dvr() {
         return "DVR".into();
     }
     if let Some(camera) = &media.camera {
