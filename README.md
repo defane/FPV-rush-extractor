@@ -125,7 +125,9 @@ Existing destination files are never overwritten; failed exports report their
 errors in Tasks.
 
 Analog MJPEG footage can be cut losslessly at exact frames. Action-camera
-H.264/HEVC takes are stream-copied from the start of each file. Flights whose
+H.264/HEVC takes are stream-copied from the start of each file. When exporting
+to MP4, audio that the container cannot carry (such as DVR ADPCM) is converted
+to AAC while the video remains unchanged. Flights whose
 recordings have incompatible frame rates can be exported as separate lossless
 parts or explicitly re-encoded into one file.
 

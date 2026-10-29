@@ -121,7 +121,10 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   playback emits silence for their parts and exports honor that choice. Mixed
   muted/audible flights normalize audio and synthesize silence only for muted
   parts; lossless exports keep the original video packets. Reduction preserves
-  source audio and carries the policy onto its pieces.
+  source audio and carries the policy onto its pieces. MP4 exports of AVI-based
+  H.264 takes (EV300D: ADPCM audio) copy video packets and convert incompatible
+  audio to AAC; compatible AAC audio and AVI exports retain their existing copy
+  behavior. Staged exports must contain readable video packets before publication.
 - Schema `v9` adds `flightPlayback`, a per-flight persisted playback mute override.
   Missing preferences follow Settings' initial mute default; explicit speaker/volume
   choices survive player navigation and app restart. Import No Sound remains

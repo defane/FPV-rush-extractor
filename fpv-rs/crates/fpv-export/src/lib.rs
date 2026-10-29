@@ -57,7 +57,7 @@ impl<'a> ClipExporter<'a> {
 
     pub fn export_clip_with_mute(&self, clip: &Clip, file: &SourceFile, destination: &Path, mute: bool)
         -> Result<PathBuf, ExportError> {
-        let mut arguments = copy_arguments(clip, file, mute)?;
+        let mut arguments = copy_arguments(clip, file, mute, destination)?;
         arguments.extend(["-y".into(), destination.to_string_lossy().into_owned()]);
         self.write_video(&arguments, destination)
     }
@@ -86,11 +86,11 @@ impl<'a> ClipExporter<'a> {
         let list = self.cut(parts, workspace.path(), destination, |(clip, file)| {
             if mixed_audio {
                 let source = SourceFile { muted: false, ..file.clone() };
-                let mut arguments = copy_arguments(clip, &source, false)?;
+                let mut arguments = copy_arguments(clip, &source, false, destination)?;
                 normalize_flight_audio(&mut arguments, file, destination);
                 Ok(arguments)
             } else {
-                copy_arguments(clip, file, mute)
+                copy_arguments(clip, file, mute, destination)
             }
         })?;
         self.write_video(&concat_arguments(&list, destination), destination)
@@ -137,7 +137,8 @@ impl<'a> ClipExporter<'a> {
             if mixed_audio {
                 normalize_flight_audio(&mut arguments, file, destination);
             } else {
-                arguments.extend(if mute || file.muted { vec!["-an".into()] } else { vec!["-c:a".into(), "copy".into()] });
+                arguments.extend(if mute || file.muted { vec!["-an".into()] }
+                    else { vec!["-c:a".into(), if needs_aac(file, destination) { "aac" } else { "copy" }.into()] });
             }
             Ok(arguments)
         })?;
@@ -239,7 +240,14 @@ fn span(clip: &Clip, file: &SourceFile) -> (f64, f64) {
     (start, rate.seconds(clip.end_frame) - start)
 }
 
-fn copy_arguments(clip: &Clip, file: &SourceFile, mute: bool) -> Result<Vec<String>, ExportError> {
+fn needs_aac(file: &SourceFile, destination: &Path) -> bool {
+    destination.extension().is_some_and(|extension|
+        extension.eq_ignore_ascii_case("mp4") || extension.eq_ignore_ascii_case("m4v"))
+        && file.media.audio_codec.as_deref().is_some_and(|codec|
+            !matches!(codec, "aac" | "mp3" | "alac" | "ac3" | "eac3" | "opus"))
+}
+
+fn copy_arguments(clip: &Clip, file: &SourceFile, mute: bool, destination: &Path) -> Result<Vec<String>, ExportError> {
     if !file.media.is_all_intra() && clip.start_frame != 0 {
         return Err(ExportError::NotAllIntra(file.media.video_codec.clone()));
     }
@@ -268,6 +276,11 @@ fn copy_arguments(clip: &Clip, file: &SourceFile, mute: bool) -> Result<Vec<Stri
     // PCM out holds the very same samples, now cut on the frame.
     if mute || file.muted {
         arguments.extend(["-c:v".into(), "copy".into(), "-an".into()]);
+    } else if needs_aac(file, destination) {
+        // EV300D records H.264 + ADPCM in AVI. The GUI suggests MP4 for
+        // H.264 takes, whose muxer cannot carry that audio. Keep every video
+        // packet unchanged and convert only the incompatible audio stream.
+        arguments.extend(["-c:v".into(), "copy".into(), "-c:a".into(), "aac".into()]);
     } else { match file.media.audio_codec.as_deref() {
         Some(codec) if codec.starts_with("pcm_") && file.media.is_all_intra() =>
             arguments.extend(["-c:v".into(), "copy".into(), "-c:a".into(), codec.into()]),

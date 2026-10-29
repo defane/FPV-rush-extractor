@@ -145,3 +145,38 @@ fn failed_container_export_leaves_no_empty_file_and_can_be_retried() {
     assert!(!empty.exists());
     assert_eq!(std::fs::read(recording).unwrap(), original);
 }
+
+#[test]
+fn h264_avi_exports_to_mp4_with_video_unchanged_and_incompatible_audio_converted() {
+    let folder = tempfile::tempdir().unwrap();
+    let recording = folder.path().join("EV300D.AVI");
+    assert!(Command::new("ffmpeg").args(["-v", "error", "-f", "lavfi", "-i",
+        "testsrc2=size=64x48:rate=25:duration=2", "-f", "lavfi", "-i",
+        "sine=duration=2:sample_rate=8000", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-c:a", "adpcm_ima_wav", "-shortest", "-y"]).arg(&recording).status().unwrap().success());
+    let file = SourceFile::new(Uuid::new_v4(), "card", recording.to_string_lossy(), None,
+        MediaInfo { audio_codec: Some("adpcm_ima_wav".into()),
+            ..MediaInfo::new(64, 48, FrameRate::new(25, 1), 2.0, "h264") });
+    let original = std::fs::read(&recording).unwrap();
+    let clip = Clip::new(Uuid::new_v4(), file.id, 0, 50);
+    let runner = FfmpegRunner::default();
+    let exporter = ClipExporter::new(&runner);
+    for muted in [false, true] {
+        let destination = folder.path().join(format!("export-{muted}.mp4"));
+        exporter.export_clip_with_mute(&clip, &file, &destination, muted).unwrap();
+        assert_eq!(frames(&destination), "50");
+        let audio = Command::new("ffprobe").args(["-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=codec_name", "-of", "csv=p=0"]).arg(&destination).output().unwrap();
+        assert!(audio.status.success());
+        assert_eq!(String::from_utf8_lossy(&audio.stdout).trim(), if muted { "" } else { "aac" });
+        let video_hashes = |path: &std::path::Path| {
+            let output = Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(path)
+                .args(["-map", "0:v:0", "-vsync", "0", "-f", "framemd5", "-"]).output().unwrap();
+            assert!(output.status.success());
+            String::from_utf8_lossy(&output.stdout).lines().filter(|line| !line.starts_with('#'))
+                .map(|line| line.rsplit(',').next().unwrap().trim().to_owned()).collect::<Vec<_>>()
+        };
+        assert_eq!(video_hashes(&destination), video_hashes(&recording));
+    }
+    assert_eq!(std::fs::read(recording).unwrap(), original);
+}

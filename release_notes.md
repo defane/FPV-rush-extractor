@@ -1,5 +1,7 @@
 # Unreleased
 
+- Fix EV300D H.264/ADPCM AVI exports to MP4: preserve video packets and convert only incompatible audio to AAC, avoiding the reproduced zero-byte muxer failure (official #21).
+
 - Add a full-original-video filmstrip to Edit boundaries, independent hover/scrub preview, selected-range shading and draggable start/end handles; load images incrementally (official #24).
 
 - Support validated export publication on filesystems without hard links, including exFAT, while preserving no-overwrite and failed-copy cleanup (official #21).

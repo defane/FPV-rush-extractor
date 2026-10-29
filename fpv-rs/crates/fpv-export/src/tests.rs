@@ -76,7 +76,7 @@ fn muted_copy_export_keeps_video_and_drops_audio() {
     let mut file = source("PICT0032.AVI", rate, "mjpeg");
     file.media.audio_codec = Some("pcm_s16le".into());
     let (clip, _) = part(&file, 100, 500);
-    let arguments = copy_arguments(&clip, &file, true).unwrap();
+    let arguments = copy_arguments(&clip, &file, true, Path::new("muted.avi")).unwrap();
     assert!(arguments.windows(2).any(|w| w == ["-c:v", "copy"]));
     assert!(arguments.iter().any(|arg| arg == "-an"));
     assert!(!arguments.iter().any(|arg| arg == "-c:a" || arg == "-c"));
@@ -226,4 +226,21 @@ fn publication_without_hard_links_never_overwrites_and_cleans_up_failed_copies()
     let failed = root.path().join("failed.avi");
     assert!(copy_new(&root.path().join("missing"), &failed).is_err());
     assert!(!failed.exists());
+}
+
+#[test]
+fn incompatible_mp4_audio_is_converted_without_reencoding_video_or_changing_avi_exports() {
+    let mut file = source("EV300D.AVI", FrameRate::new(30, 1), "h264");
+    let (clip, _) = part(&file, 0, 90);
+    for codec in ["adpcm_ima_wav", "pcm_s16le", "flac"] {
+        file.media.audio_codec = Some(codec.into());
+        let args = copy_arguments(&clip, &file, false, Path::new("export.MP4")).unwrap();
+        assert!(args.windows(2).any(|pair| pair == ["-c:v", "copy"]));
+        assert!(args.windows(2).any(|pair| pair == ["-c:a", "aac"]));
+        let args = copy_arguments(&clip, &file, false, Path::new("export.avi")).unwrap();
+        assert!(args.windows(2).any(|pair| pair == ["-c", "copy"]));
+    }
+    file.media.audio_codec = Some("aac".into());
+    let args = copy_arguments(&clip, &file, false, Path::new("export.mp4")).unwrap();
+    assert!(args.windows(2).any(|pair| pair == ["-c", "copy"]));
 }
