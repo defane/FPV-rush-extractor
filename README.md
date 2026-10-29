@@ -132,13 +132,12 @@ recordings skipped during import keep their previous choice. Settings' global
 Long-running work appears in a collapsible Tasks panel along the bottom of the
 main window, where progress, notifications, and task logs stay available
 without floating notification windows. Settings includes Mute videos, which
-silences player playback and exported video, and the splash-screen preference.
+silences player playback and exported video.
 The About window displays the Letz Kwad logo, project link, and developer
 credits.
 It includes **Coded by Claude, Codex, Driven by Defane, Thanat0s** and a link to
 [LetzKwad](https://letzkwad.lu/). On macOS the system About panel includes the same
-branding and links through bundled rich-text credits. The splash dismisses
-automatically with a 2.5× zoom and fade; it has no Close button.
+branding and links through the same native About window.
 
 Segment analyzes DVR recordings only. Picture statistics determine boundaries,
 independently of OSD or armed state. It joins flights continuing into the next
@@ -235,8 +234,6 @@ available alongside their download. See https://ffmpeg.org/legal.html.
 
 FFmpeg 8.1.3 source: https://ffmpeg.org/releases/ffmpeg-8.1.3.tar.xz
 
-The startup logo approaches continuously from a small distant size and fades as it zooms forward, without a pause. Disable it with Do not show splash in Settings.
-
 Edit boundaries opens a source-video preview with a trim range: drag its left
 handle to move the start, and its right handle to move the exclusive end. The
 preview follows the edited source frame; numeric fields allow fine adjustment.
@@ -245,7 +242,6 @@ range. Closing without saving discards the draft and never changes source files.
 
 On macOS, the application-menu About command opens the same branded window as
 Settings About, including the grouped contributor credits and LetzKwad link.
-The startup splash uses the transparent logo directly, without a white frame.
 
 The fullscreen player covers the library completely. Play/Pause is hidden only
 in fullscreen: click the video or press Space instead; windowed playback buttons
