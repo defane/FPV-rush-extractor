@@ -21,6 +21,7 @@ fn app(ctx: &egui::Context) -> App {
         tasks: vec![],
         next_id: 1,
         dialog: None,
+        export_dialogs: Default::default(),
         dialog_request: None,
         viewer: None,
         cloud_wait: None,
@@ -2069,6 +2070,7 @@ fn an_export_across_rates_asks_how_instead_of_failing() {
         app.dialog = Some(dialog);
         click_text(&ctx, &mut app, "Export", draw);
         let export = jobs.try_recv().expect("a lossless export first");
+        assert!(app.dialog.is_none(), "accepted export closes immediately");
         events
             .send(crate::worker::Event::Finished {
                 id: export.id,
@@ -3234,4 +3236,92 @@ fn only_the_chosen_view_tab_is_coloured() {
         "the others plain"
     );
     assert_eq!(colour("Figures"), ctx.style().visuals.text_color());
+}
+
+#[test]
+fn submitting_export_closes_the_panel_and_reports_background_failure() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, events) = app_with_worker(&ctx);
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| {
+        app.receive(ctx);
+        app.dialog_window(ctx);
+    };
+    app.sessions = vec![session_of(vec![flight()])];
+    let mut dialog = crate::dialogs::Dialog::export("Test", &flight());
+    dialog.reply(Reply::Picked(Some("/destination/out.avi".into())));
+    app.dialog = Some(dialog);
+    click_text(&ctx, &mut app, "Export", draw);
+    let job = jobs.try_recv().unwrap();
+    assert!(
+        app.dialog.is_none(),
+        "export continues in Tasks without its panel"
+    );
+    assert!(jobs.try_recv().is_err(), "only one export submitted");
+    assert!(app.tasks.iter().any(|t| t.id == job.id && t.running));
+    events
+        .send(crate::worker::Event::Finished {
+            id: job.id,
+            result: Err("Cannot write destination".into()),
+        })
+        .unwrap();
+    shown_texts(&ctx, &mut app, draw);
+    let task = app.tasks.iter().find(|t| t.id == job.id).unwrap();
+    assert!(!task.running && task.failed);
+    assert!(task.line.contains("Cannot write"));
+    assert!(app.dialog.is_none());
+}
+
+#[test]
+fn export_completion_keeps_other_dialogs_and_mismatch_recovery_waits_its_turn() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, events) = app_with_worker(&ctx);
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| {
+        app.receive(ctx);
+        app.dialog_window(ctx);
+    };
+    app.sessions = vec![session_of(vec![flight()])];
+    app.dialog = Some(crate::dialogs::Dialog::export("Test", &flight()));
+    click_text(&ctx, &mut app, "Export", draw);
+    assert!(app.dialog.is_some(), "empty destination keeps the panel");
+    assert!(jobs.try_recv().is_err());
+    app.dialog
+        .as_mut()
+        .unwrap()
+        .reply(Reply::Picked(Some("/destination/out.avi".into())));
+    click_text(&ctx, &mut app, "Export", draw);
+    let job = jobs.try_recv().unwrap();
+    app.dialog = Some(crate::dialogs::Dialog::import(None, String::new()));
+    events
+        .send(crate::worker::Event::Finished {
+            id: job.id,
+            result: Ok(Reply::Mismatch("different rates".into())),
+        })
+        .unwrap();
+    shown_texts(&ctx, &mut app, draw);
+    assert!(app.dialog.is_some());
+    assert_eq!(
+        app.export_dialogs.len(),
+        1,
+        "recovery is retained behind the import panel"
+    );
+    app.dialog = None;
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(texts.iter().any(|t| t == "Different frame rates"));
+    while jobs.try_recv().is_ok() {} // Discard unrelated strip preparation.
+    click_text(&ctx, &mut app, "Export 1 parts separately", draw);
+    let job = jobs.try_recv().unwrap();
+    assert!(app.dialog.is_none());
+    events
+        .send(crate::worker::Event::Finished {
+            id: job.id,
+            result: Ok(Reply::Done("Exported out.avi".into())),
+        })
+        .unwrap();
+    shown_texts(&ctx, &mut app, draw);
+    assert!(app.export_dialogs.is_empty());
+    assert!(
+        app.tasks
+            .iter()
+            .any(|t| t.id == job.id && !t.running && !t.failed)
+    );
 }

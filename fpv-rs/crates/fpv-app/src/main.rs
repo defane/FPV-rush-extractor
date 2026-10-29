@@ -136,6 +136,7 @@ pub(crate) struct App {
     next_id: u64,
     dialog: Option<Dialog>,
     dialog_request: Option<u64>,
+    export_dialogs: std::collections::BTreeMap<u64, Dialog>,
     viewer: Option<Viewer>,
     /// A flight waiting for its recordings to come down before it plays.
     cloud_wait: Option<cloudwait::CloudWait>,
@@ -278,6 +279,7 @@ impl App {
             tasks: vec![],
             next_id: 1,
             dialog: None,
+            export_dialogs: Default::default(),
             dialog_request: None,
             viewer: None,
             cloud_wait: None,
@@ -456,17 +458,21 @@ impl App {
                             Err(error) => error.clone(),
                         };
                     }
+                    if let Some(mut dialog) = self.export_dialogs.remove(&id)
+                        && let Ok(Reply::Mismatch(reason)) = &result
+                    {
+                        dialog.finished(id, false);
+                        dialog.reply(Reply::Mismatch(reason.clone()));
+                        // Keep the recovery choice even if another panel is open.
+                        self.export_dialogs.insert(id, dialog);
+                    }
                     match result {
                         Err(error) if strip_batch => {
                             self.strips.failed();
                             self.notices.push(format!("Hover strips: {error}"));
                         }
                         Err(error) => self.notices.push(error),
-                        Ok(Reply::Mismatch(reason)) => {
-                            if let Some(dialog) = &mut self.dialog {
-                                dialog.reply(Reply::Mismatch(reason));
-                            }
-                        }
+                        Ok(Reply::Mismatch(_)) => {}
                         Ok(Reply::Strips(prepared)) => {
                             let (next, failed) =
                                 self.strips

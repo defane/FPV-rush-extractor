@@ -301,6 +301,14 @@ impl App {
     }
 
     pub(crate) fn dialog_window(&mut self, ctx: &egui::Context) {
+        if self.dialog.is_none()
+            && let Some(id) = self
+                .export_dialogs
+                .iter()
+                .find_map(|(&id, dialog)| dialog.saving.is_none().then_some(id))
+        {
+            self.dialog = self.export_dialogs.remove(&id);
+        }
         let Some(mut dialog) = self.dialog.take() else {
             return;
         };
@@ -346,7 +354,11 @@ impl App {
                 close = true;
             }
         });
-        if !close {
+        if matches!(dialog.kind, Kind::Export | Kind::Bulk)
+            && let Some(id) = dialog.saving
+        {
+            self.export_dialogs.insert(id, dialog);
+        } else if !close {
             self.dialog = Some(dialog);
         } else {
             self.dialog_request = None;

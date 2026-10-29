@@ -1,5 +1,7 @@
 # Unreleased
 
+- Close submitted export panels immediately, keep progress/errors in Tasks and reopen frame-rate recovery without interrupting another dialog (official #22).
+
 - Validate exported video packets before publishing files; failed exports leave no empty or header-only destination and never replace an existing file (official #21).
 
 - Moved notifications into the collapsible bottom task panel (#1).
