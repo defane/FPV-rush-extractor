@@ -3604,3 +3604,98 @@ fn a_precise_long_gop_cut_offers_explicit_reencoding_instead_of_impossible_lossl
     assert!(jobs.try_recv().is_ok());
     assert!(app.dialog.is_none(), "export continues in Tasks");
 }
+
+#[test]
+fn dragging_player_corner_grows_video_and_restore_preserves_manual_size() {
+    for source in [[1600, 900], [400, 300], [450, 800]] {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        let mut viewer = test_viewer(&ctx);
+        let texture = ctx.load_texture(
+            "manual-resize",
+            egui::ColorImage::filled(source, Color32::GRAY),
+            Default::default(),
+        );
+        let id = texture.id();
+        viewer.texture = Some(texture);
+        app.viewer = Some(viewer);
+        let size = egui::vec2(1800.0, 1200.0);
+        let mut render = |events: Vec<egui::Event>| {
+            let mut raw = input(size);
+            raw.events = events;
+            ctx.run(raw, |ctx| app.player_window(ctx))
+        };
+        for _ in 0..5 {
+            render(vec![]);
+        }
+        let before = render(vec![]);
+        let initial_video = texture_rect(&before.shapes, id).unwrap();
+        let initial = ctx
+            .memory(|m| m.area_rect(egui::Id::new("player")))
+            .unwrap();
+        let corner = initial.max - egui::vec2(2.0, 2.0);
+        let target = corner + egui::vec2(240.0, 180.0);
+        render(vec![egui::Event::PointerMoved(corner)]);
+        render(vec![egui::Event::PointerButton {
+            pos: corner,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        }]);
+        render(vec![egui::Event::PointerMoved(target)]);
+        render(vec![egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        }]);
+        for _ in 0..5 {
+            render(vec![]);
+        }
+        let enlarged = render(vec![]);
+        let video = texture_rect(&enlarged.shapes, id).unwrap();
+        let window = ctx
+            .memory(|m| m.area_rect(egui::Id::new("player")))
+            .unwrap();
+        assert!(
+            window.width() > initial.width() + 150.0 && window.height() > initial.height() + 100.0,
+            "actual corner gesture must resize: {initial:?} -> {window:?}"
+        );
+        assert!(
+            video.height() > initial_video.height() + 50.0,
+            "manual resize must grow {source:?} video: {initial_video:?} -> {video:?}; window {window:?}"
+        );
+        assert!(
+            (video.width() / video.height() - source[0] as f32 / source[1] as f32).abs() < 0.002
+        );
+        assert!(window.contains_rect(video));
+        for label in ["Maximize", "Restore"] {
+            let out = render(vec![]);
+            let pos = text_positions(&out.shapes)
+                .into_iter()
+                .find(|(text, _)| text == label)
+                .unwrap()
+                .1
+                + egui::vec2(5.0, 5.0);
+            for pressed in [true, false] {
+                render(vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ]);
+            }
+            for _ in 0..5 {
+                render(vec![]);
+            }
+        }
+        let restored = texture_rect(&render(vec![]).shapes, id).unwrap();
+        assert!(
+            (restored.size() - video.size()).length() < 3.0,
+            "restore must recover manually resized video: {video:?} -> {restored:?}"
+        );
+    }
+}
