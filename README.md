@@ -1,8 +1,19 @@
 # FPV Rush
 
-Turn FPV recordings into a browsable library of sessions, flights and figures.
-Import analog DVR footage and action-camera takes, find flights between signal
-losses, review them, and export the footage you want to keep.
+Empty your FPV memory cards, spend less time sorting footage, and track your
+training sessions.
+
+FPV Rush copies your recordings into an organized library, finds flights in
+analog DVR footage, and helps you review manoeuvres and keep useful clips.
+
+- **Free your cards:** import recordings, then optionally remove the copies on
+  the card once their transfer has been verified.
+- **Save review time:** browse detected flights instead of scrubbing through
+  entire DVR recordings and stretches of snow.
+- **Track your training:** organize sessions by date and location, tag figures,
+  mark favourites, and return to the moments you want to work on.
+- **Keep and share useful footage:** adjust clip boundaries and export selected
+  flights, with audio or muted.
 
 Available for **macOS, Linux and Windows**. Video tools are included in the
 installation packages.
