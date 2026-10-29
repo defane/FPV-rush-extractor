@@ -131,7 +131,11 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   handles, and (2026-10-28, #11) the Tauri editor's nudges again: Start/End, −1 s, −¼ s,
   −1 fr, +1 fr, +¼ s, +1 s at the recording's own rate (`nudge_steps`, `nudge`), the edge's
   "x.xxx s · frame N", "start → end at fps", the 0.25 s-grid hint, and Reset to what is
-  saved while "changed — not saved". Its bounded native source preview decodes at the recording's own
+  saved while "changed — not saved". A full-source filmstrip loads cached 160px
+  images on the library worker one request at a time (`source_strip_frame`).
+  Hover/scrub changes only the preview; start/end handles change only the draft.
+  Stale strip replies from a previous source are ignored, and repeated hover on
+  the same frame never restarts its decoder. Its bounded native source preview decodes at the recording's own
   cadence without the player's normal display-rate conversion. Decoder restarts
   are coalesced while dragging; the final requested frame is retained. Only
   Save this clip persists the draft, through `Library::update_clip`.

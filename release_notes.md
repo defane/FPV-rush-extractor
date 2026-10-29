@@ -1,5 +1,7 @@
 # Unreleased
 
+- Add a full-original-video filmstrip to Edit boundaries, independent hover/scrub preview, selected-range shading and draggable start/end handles; load images incrementally (official #24).
+
 - Support validated export publication on filesystems without hard links, including exFAT, while preserving no-overwrite and failed-copy cleanup (official #21).
 
 - Remember each flight's playback mute across navigation and restarts, independently of import/export audio policies (official #25).

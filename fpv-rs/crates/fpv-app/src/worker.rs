@@ -29,6 +29,11 @@ pub enum Reply {
         key: String,
         thumbnail: Thumbnail,
     },
+    BoundaryStrip {
+        clip: String,
+        index: usize,
+        thumbnail: Thumbnail,
+    },
     Folders(Vec<FolderView>),
     FlightInfo(Vec<fpv_library::RecordingInfo>),
     Reduce(ReducePreview),

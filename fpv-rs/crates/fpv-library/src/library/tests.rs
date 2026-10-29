@@ -1508,3 +1508,39 @@ fn flight_info_preserves_source_paths_rates_and_each_parts_exclusive_bounds_with
     assert_eq!(again[1].clip.end_frame, 90);
     assert!(library.flight_info(&uuid_string(Uuid::new_v4())).is_err());
 }
+
+#[test]
+fn source_filmstrip_spans_the_original_recording_and_reuses_cached_images_after_boundary_edits() {
+    use fpv_core::{FrameRate, Clip, Flight, DetectionRun};
+    let root = tempfile::tempdir().unwrap();
+    let library = open(root.path());
+    let path = root.path().join("source.mp4");
+    assert!(Command::new("ffmpeg").args(["-v", "error", "-f", "lavfi", "-i",
+        "testsrc2=size=160x120:rate=30:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y"])
+        .arg(&path).status().unwrap().success());
+    let original = std::fs::read(&path).unwrap();
+    let session = Session::new("Strip", None);
+    library.store.save_session(&session).unwrap();
+    let file = SourceFile::new(session.id, "card", path.to_string_lossy(), None,
+        MediaInfo { frame_count: Some(60), ..MediaInfo::new(160, 120, FrameRate::new(30, 1), 2.0, "h264") });
+    library.store.save_source_files(std::slice::from_ref(&file)).unwrap();
+    let flight = Flight::new(session.id, 1);
+    let clip = Clip::new(flight.id, file.id, 20, 30);
+    library.store.replace_clips(file.id, std::slice::from_ref(&clip), &[flight],
+        &DetectionRun::new(file.id, "test", Default::default())).unwrap();
+    let id = uuid_string(file.id);
+    let first = library.source_strip_frame(&id, 0, 3).unwrap();
+    let last = library.source_strip_frame(&id, 2, 3).unwrap();
+    assert!(first.made && last.made);
+    let runner = FfmpegRunner::default();
+    for (image, frame) in [(&first, 0), (&last, 59)] {
+        let expected = root.path().join(format!("expected-{frame}.jpg"));
+        ThumbnailGenerator::new(&runner).generate(&path, frame as f64 / 30.0, 160, &expected).unwrap();
+        assert_eq!(std::fs::read(&image.path).unwrap(), std::fs::read(expected).unwrap());
+    }
+    library.update_clip(&uuid_string(clip.id), 10, 40).unwrap();
+    assert!(!library.source_strip_frame(&id, 2, 3).unwrap().made);
+    assert!(library.source_strip_frame(&id, 3, 3).is_err());
+    assert!(library.source_strip_frame(&id, 0, 0).is_err());
+    assert_eq!(std::fs::read(path).unwrap(), original);
+}

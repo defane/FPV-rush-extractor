@@ -112,9 +112,10 @@ own frame rate. End times and frame indexes are exclusive.
 
 ## Adjust boundaries and export
 
-**Edit boundaries** lets you adjust a clip against its original recording.
-Move the left handle for the start and the right handle for the end, or use
-frame and time-step controls for fine adjustment. For multipart flights, select
+**Edit boundaries** shows the full original recording as an image strip below
+the preview. Hover or scrub the strip to inspect the source at that position,
+including outside the selected clip. Move the left handle for the start and the
+right handle for the end, or use frame and time-step controls for fine adjustment. For multipart flights, select
 the source clip to edit. **Save this clip** applies the range; closing without
 saving discards the draft. Editing boundaries does not change source files.
 

@@ -1605,6 +1605,29 @@ impl Library {
         Ok(shown)
     }
 
+    /// A thumbnail across the complete original source, not the flight's trim.
+    pub fn source_strip_frame(&self, file: &str, index: usize, count: usize) -> Result<Thumbnail> {
+        if count == 0 || index >= count {
+            return Err(LibraryError::Invalid("invalid source filmstrip position".into()));
+        }
+        let source = self.store.source_file(parse(file)?)?
+            .ok_or_else(|| LibraryError::NotFound(format!("recording {file}")))?;
+        let path = Path::new(&source.imported_path);
+        if fpv_media::only_in_cloud(path) { return Err(Self::in_cloud_error(&source)); }
+        let frames = source.media.frame_count.unwrap_or_else(||
+            (source.media.duration * source.media.frame_rate.value()).round() as i64).max(1);
+        let frame = if count == 1 { 0 } else {
+            ((frames - 1) as f64 * index as f64 / (count - 1) as f64).round() as i64
+        };
+        let cached = self.cache_directory.join("preview").join(format!("{file}-strip-{count}-{index}.jpg"));
+        if cached.exists() { return Ok(Thumbnail::cached(cached)); }
+        let runner = self.ffmpeg();
+        let generator = ThumbnailGenerator::new(&runner);
+        let seconds = source.media.frame_rate.seconds(frame);
+        let image = generator.generate(path, seconds, 160, &cached)?;
+        Ok(Thumbnail::made(image))
+    }
+
     /// The source frame under a boundary, for the editor — decoded from the
     /// recording itself, never the proxy, whose frames are resampled.
     pub fn preview_frame(&self, file: &str, frame: i64) -> Result<Thumbnail> {

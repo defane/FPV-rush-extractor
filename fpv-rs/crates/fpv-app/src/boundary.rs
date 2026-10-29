@@ -97,7 +97,12 @@ pub(crate) fn nudge_controls(
     preview
 }
 
-pub(crate) fn trim_timeline(ui: &mut egui::Ui, clip: &mut ClipView) -> Option<i64> {
+pub(crate) fn trim_timeline(
+    ui: &mut egui::Ui,
+    clip: &mut ClipView,
+    textures: &[Option<egui::TextureHandle>],
+    playhead: Option<i64>,
+) -> Option<i64> {
     let mut preview = None;
     ui.horizontal(|ui| {
         ui.label("Start");
@@ -120,19 +125,68 @@ pub(crate) fn trim_timeline(ui: &mut egui::Ui, clip: &mut ClipView) -> Option<i6
             ui.label("End (exclusive)");
         });
     });
-    let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 54.0), egui::Sense::hover());
+    let (rect, strip_response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 86.0),
+        egui::Sense::click_and_drag(),
+    );
     let rail = rect.shrink2(egui::vec2(14.0, 8.0));
     let limit = clip.last_frame.saturating_add(1).max(1) as f64;
     let x = |frame: i64| rail.left() + (frame as f64 / limit) as f32 * rail.width();
     let left = x(clip.start_frame);
     let right = x(clip.end_frame);
     ui.painter().rect_filled(rail, 3.0, Color32::from_gray(50));
-    ui.painter().rect_filled(
+    let cells = ((rail.width() / 80.0).ceil() as usize).clamp(1, textures.len().max(1));
+    for cell in 0..cells {
+        let index = if cells == 1 {
+            0
+        } else {
+            cell * textures.len().saturating_sub(1) / (cells - 1)
+        };
+        if let Some(Some(texture)) = textures.get(index) {
+            let tile = egui::Rect::from_x_y_ranges(
+                rail.left() + rail.width() * cell as f32 / cells as f32
+                    ..=rail.left() + rail.width() * (cell + 1) as f32 / cells as f32,
+                rail.y_range(),
+            );
+            let ratio =
+                (tile.width() / tile.height()) / (texture.size_vec2().x / texture.size_vec2().y);
+            let uv = if ratio < 1.0 {
+                egui::Rect::from_center_size(egui::pos2(0.5, 0.5), egui::vec2(ratio, 1.0))
+            } else {
+                egui::Rect::from_center_size(egui::pos2(0.5, 0.5), egui::vec2(1.0, 1.0 / ratio))
+            };
+            ui.painter().image(texture.id(), tile, uv, Color32::WHITE);
+        }
+    }
+    for range in [rail.left()..=left, right..=rail.right()] {
+        ui.painter().rect_filled(
+            egui::Rect::from_x_y_ranges(range, rail.y_range()),
+            0.0,
+            Color32::from_black_alpha(170),
+        );
+    }
+    ui.painter().rect_stroke(
         egui::Rect::from_x_y_ranges(left..=right, rail.y_range()),
-        2.0,
-        ACCENT.gamma_multiply(0.5),
+        0.0,
+        egui::Stroke::new(2.0_f32, ACCENT),
+        egui::StrokeKind::Inside,
     );
+    if (strip_response.hovered() || strip_response.dragged())
+        && let Some(pointer) = strip_response
+            .hover_pos()
+            .or_else(|| strip_response.interact_pointer_pos())
+    {
+        let fraction = ((pointer.x - rail.left()) / rail.width().max(1.0)).clamp(0.0, 1.0);
+        preview = Some(((fraction as f64 * limit).floor() as i64).clamp(0, clip.last_frame));
+    }
+    if let Some(frame) = preview.or(playhead) {
+        let position = x(frame);
+        ui.painter().vline(
+            position,
+            rail.y_range(),
+            egui::Stroke::new(2.0_f32, Color32::WHITE),
+        );
+    }
     for (edge, position) in [(Edge::Start, left), (Edge::End, right)] {
         // Outward handles remain individually reachable even for a one-frame range.
         let handle = egui::Rect::from_min_max(
@@ -189,9 +243,15 @@ pub(crate) fn trim_timeline(ui: &mut egui::Ui, clip: &mut ClipView) -> Option<i6
         }
     }
     ui.horizontal(|ui| {
-        ui.small(clock(clip.start_frame as f64 / clip.fps));
+        ui.small("0:00 · source start");
+        if let Some(frame) = preview.or(playhead) {
+            ui.small(format!(
+                "Preview {:.3} s · frame {frame}",
+                frame as f64 / clip.fps
+            ));
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.small(clock(clip.end_frame as f64 / clip.fps));
+            ui.small(format!("{} · source end", clock(limit / clip.fps)));
         });
     });
     preview
@@ -201,6 +261,7 @@ pub(crate) struct SourcePreview {
     player: Player,
     texture: Option<egui::TextureHandle>,
     pending_frame: Option<i64>,
+    requested_frame: Option<i64>,
     last_seek: Instant,
 }
 
@@ -225,13 +286,22 @@ impl SourcePreview {
             player,
             texture: None,
             pending_frame: None,
+            requested_frame: Some(clip.start_frame),
             last_seek: Instant::now() - Duration::from_secs(1),
         }
     }
 
     pub fn seek_frame(&mut self, frame: i64) {
-        self.pending_frame = Some(frame);
-        self.player.pause(true);
+        if self.requested_frame != Some(frame) {
+            self.requested_frame = Some(frame);
+            self.pending_frame = Some(frame);
+            self.player.pause(true);
+        }
+    }
+
+    pub fn position_frame(&self, fps: f64) -> i64 {
+        self.pending_frame
+            .unwrap_or_else(|| (self.player.position() * fps).round() as i64)
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, clip: &ClipView) -> Vec<String> {
@@ -267,6 +337,8 @@ impl SourcePreview {
             })
             .clicked();
         if clicked || button {
+            self.pending_frame = None;
+            self.requested_frame = None;
             if self.player.paused()
                 && (self.player.position() >= clip.end_frame as f64 / clip.fps
                     || self.player.position() < clip.start_frame as f64 / clip.fps)
@@ -293,7 +365,7 @@ pub(crate) fn preview_canvas(
 ) -> egui::Response {
     let height = (ui.available_width() * 9.0 / 16.0)
         .min(400.0)
-        .min(ui.ctx().content_rect().height() * 0.42);
+        .min(ui.ctx().content_rect().height() * 0.30);
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), height),
         egui::Sense::click(),
@@ -371,6 +443,103 @@ mod tests {
         }
     }
     #[test]
+    fn hovering_full_source_strip_previews_inside_and_outside_selection_without_editing() {
+        let ctx = egui::Context::default();
+        let mut clip = clip();
+        let textures: Vec<_> = [Color32::RED, Color32::BLUE]
+            .into_iter()
+            .enumerate()
+            .map(|(i, color)| {
+                Some(ctx.load_texture(
+                    format!("strip-{i}"),
+                    egui::ColorImage::filled([160, 120], color),
+                    Default::default(),
+                ))
+            })
+            .collect();
+        let mut render = |pointer: Option<egui::Pos2>| {
+            let mut raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(600.0, 220.0),
+                )),
+                ..Default::default()
+            };
+            if let Some(pointer) = pointer {
+                raw.events.push(egui::Event::PointerMoved(pointer));
+            }
+            let mut requested = None;
+            let output = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    requested = trim_timeline(ui, &mut clip, &textures, Some(25));
+                });
+            });
+            (output, requested)
+        };
+        render(None);
+        let (output, _) = render(None);
+        let rail = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if r.fill == Color32::from_gray(50) => Some(r.rect),
+                _ => None,
+            })
+            .unwrap();
+        for (fraction, frame) in [(0.0, 0), (0.1, 10), (0.5, 50), (0.9, 90), (1.0, 99)] {
+            let point = egui::pos2(rail.left() + rail.width() * fraction, rail.center().y);
+            render(Some(point));
+            let (output, requested) = render(Some(point));
+            assert_eq!(requested, Some(frame), "full-source frame at {fraction}");
+            for texture in textures.iter().flatten() {
+                assert!(output.shapes.iter().any(
+                    |s| matches!(&s.shape, egui::Shape::Mesh(m) if m.texture_id == texture.id())
+                ));
+            }
+        }
+        assert_eq!(
+            (clip.start_frame, clip.end_frame),
+            (20, 80),
+            "hover never edits selection"
+        );
+    }
+
+    #[test]
+    fn repeated_hover_does_not_restart_the_same_preview_and_latest_frame_is_retained() {
+        let ctx = egui::Context::default();
+        let clip = clip();
+        let source = NativeSegment {
+            segment: fpv_library::Segment {
+                path: "unavailable".into(),
+                start: 0.0,
+                end: 4.0,
+                offset: 0.0,
+            },
+            width: 64,
+            height: 48,
+            has_audio: false,
+            all_intra: true,
+        };
+        let mut preview = SourcePreview::new(&clip, source, None, true, &ctx);
+        preview.seek_frame(10);
+        assert_eq!(preview.pending_frame.take(), Some(10));
+        preview.seek_frame(10);
+        assert_eq!(
+            preview.pending_frame, None,
+            "stationary pointer does not seek again"
+        );
+        preview.seek_frame(90);
+        preview.seek_frame(99);
+        assert_eq!(
+            preview.pending_frame,
+            Some(99),
+            "coalescing preserves final hover position"
+        );
+        assert_eq!(preview.position_frame(clip.fps), 99);
+        assert_eq!((clip.start_frame, clip.end_frame), (20, 80));
+    }
+
+    #[test]
     fn edges_stay_inside_source_and_cannot_cross() {
         let mut clip = clip();
         assert_eq!(set_edge(&mut clip, Edge::Start, -100), 0);
@@ -400,7 +569,7 @@ mod tests {
                 };
                 ctx.run(raw, |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        trim_timeline(ui, clip);
+                        trim_timeline(ui, clip, &[], None);
                     });
                 })
             };

@@ -78,6 +78,9 @@ pub(crate) struct Dialog {
     editor_saved: Vec<(i64, i64)>,
     editor_source: Option<(String, fpv_library::NativeSegment)>,
     editor_preview: Option<crate::boundary::SourcePreview>,
+    editor_strip: Vec<Option<String>>,
+    editor_strip_next: usize,
+    editor_strip_job: Option<u64>,
 }
 
 impl Dialog {
@@ -122,6 +125,9 @@ impl Dialog {
             editor_saved: vec![],
             editor_source: None,
             editor_preview: None,
+            editor_strip: vec![None; crate::strips::STRIP],
+            editor_strip_next: 0,
+            editor_strip_job: None,
         }
     }
     pub fn import(folder: Option<PathBuf>, name: String) -> Self {
@@ -254,6 +260,17 @@ impl Dialog {
     pub fn reply(&mut self, reply: Reply) {
         match reply {
             Reply::BoundarySource { clip, source } => self.editor_source = Some((clip, source)),
+            Reply::BoundaryStrip {
+                clip,
+                index,
+                thumbnail,
+            } if self.editor_loading.as_deref() == Some(&clip)
+                && index < self.editor_strip.len() =>
+            {
+                self.editor_strip[index] = Some(thumbnail.path.to_string_lossy().into_owned());
+                self.editor_strip_next = index + 1;
+                self.editor_strip_job = None;
+            }
             Reply::FlightInfo(parts) => self.info = Some(parts),
             Reply::Folders(folders) => self.folders = Some(folders),
             Reply::Reduce(preview) => self.reduction = Some(preview),
@@ -359,9 +376,27 @@ impl App {
                     ui.label("Working… progress is shown in Tasks.");
                 });
             }
-            if ui.button("Close").clicked() {
-                close = true;
-            }
+            ui.horizontal(|ui| {
+                if dialog.kind == Kind::Editor
+                    && let Some(clip) = dialog
+                        .flight
+                        .as_ref()
+                        .and_then(|flight| flight.clips.get(dialog.editor_clip))
+                    && ui
+                        .add_enabled(enabled, egui::Button::new("Save this clip"))
+                        .clicked()
+                {
+                    let (id, start, end) = (clip.id.clone(), clip.start_frame, clip.end_frame);
+                    dialog.saving =
+                        Some(self.submit("Save clip boundary", false, move |library, _| {
+                            library.update_clip(&id, start, end)?;
+                            Ok(Reply::Done("Boundaries saved".into()))
+                        }));
+                }
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
         });
         if matches!(dialog.kind, Kind::Export | Kind::Bulk)
             && let Some(id) = dialog.saving
@@ -920,6 +955,9 @@ impl App {
                             if dialog.editor_loading.as_deref() != Some(&clip.id) {
                                 dialog.editor_preview = None;
                                 dialog.editor_source = None;
+                                dialog.editor_strip.fill(None);
+                                dialog.editor_strip_next = 0;
+                                dialog.editor_strip_job = None;
                                 dialog.editor_loading = Some(clip.id.clone());
                                 let id = clip.file_id.clone();
                                 let clip_id = clip.id.clone();
@@ -946,25 +984,40 @@ impl App {
                                     if ui.button("Retry preview").clicked() { dialog.editor_loading = None; }
                                 } else { ui.label("Preparing source preview…"); }
                             }
+                            if let Some(job) = dialog.editor_strip_job
+                                && self.tasks.iter().any(|task| task.id == job && !task.running && task.failed) {
+                                dialog.editor_strip_job = None;
+                                dialog.editor_strip_next += 1;
+                            }
+                            // One thumbnail request at a time: closing or changing source
+                            // cannot leave a queue of an entire filmstrip blocking work.
+                            if dialog.editor_preview.is_some() && dialog.editor_strip_job.is_none()
+                                && dialog.editor_strip_next < dialog.editor_strip.len() {
+                                let index = dialog.editor_strip_next;
+                                let count = dialog.editor_strip.len();
+                                let file = clip.file_id.clone();
+                                let id = clip.id.clone();
+                                let job = self.submit("Source filmstrip", true, move |library, _| {
+                                    Ok(Reply::BoundaryStrip { clip: id, index, thumbnail: library.source_strip_frame(&file, index, count)? })
+                                });
+                                dialog.editor_strip_job = Some(job);
+                                self.dialog_request = Some(job);
+                            }
+                            let textures: Vec<_> = dialog.editor_strip.iter().map(|path|
+                                path.as_deref().and_then(|path| self.images.get(ui.ctx(), path))).collect();
+                            let playhead = dialog.editor_preview.as_ref().map(|p| p.position_frame(clip.fps));
                             ui.separator();
-                            if let Some(frame) = crate::boundary::trim_timeline(ui, clip)
+                            if let Some(frame) = crate::boundary::trim_timeline(ui, clip, &textures, playhead)
                                 && let Some(preview) = &mut dialog.editor_preview {
                                 preview.seek_frame(frame);
                                 ui.ctx().request_repaint();
                             }
-                            ui.small("Drag the left edge for start and the right edge for end. End is exclusive.");
+                            ui.small("Entire source recording: hover or scrub to preview. Drag left/start and right/end handles to select the clip. End is exclusive.");
                             let saved = dialog.editor_saved.get(dialog.editor_clip).copied();
                             if let Some(frame) = crate::boundary::nudge_controls(ui, clip, &mut dialog.editor_edge, saved)
                                 && let Some(preview) = &mut dialog.editor_preview {
                                 preview.seek_frame(frame);
                                 ui.ctx().request_repaint();
-                            }
-                            if ui.button("Save this clip").clicked() {
-                                let (id, start, end) = (clip.id.clone(), clip.start_frame, clip.end_frame);
-                                dialog.saving = Some(self.submit("Save clip boundary", false, move |library, _| {
-                                    library.update_clip(&id, start, end)?;
-                                    Ok(Reply::Done("Boundaries saved".into()))
-                                }));
                             }
                         });
                 }
@@ -1896,6 +1949,38 @@ mod date_picker_tests {
         assert_eq!(
             december.checked_sub_months(Months::new(1)).unwrap(),
             NaiveDate::from_ymd_opt(2025, 11, 1).unwrap()
+        );
+    }
+}
+
+#[cfg(test)]
+mod source_strip_tests {
+    use super::*;
+
+    #[test]
+    fn source_filmstrip_replies_only_fill_the_current_source_and_advance_one_image() {
+        let mut dialog = Dialog::new(Kind::Editor, "Editor");
+        dialog.editor_loading = Some("current".into());
+        dialog.editor_strip_job = Some(7);
+        let reply = |clip: &str, index| Reply::BoundaryStrip {
+            clip: clip.into(),
+            index,
+            thumbnail: fpv_library::Thumbnail {
+                path: "preview.jpg".into(),
+                made: true,
+            },
+        };
+        dialog.reply(reply("old", 0));
+        assert!(dialog.editor_strip.iter().all(Option::is_none));
+        assert_eq!(dialog.editor_strip_job, Some(7));
+        dialog.reply(reply("current", 0));
+        assert_eq!(dialog.editor_strip[0].as_deref(), Some("preview.jpg"));
+        assert_eq!(dialog.editor_strip_next, 1);
+        assert!(dialog.editor_strip_job.is_none());
+        dialog.reply(reply("current", crate::strips::STRIP));
+        assert_eq!(
+            dialog.editor_strip_next, 1,
+            "invalid indices cannot advance the strip"
         );
     }
 }
