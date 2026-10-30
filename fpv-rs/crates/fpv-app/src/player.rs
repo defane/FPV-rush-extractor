@@ -690,14 +690,23 @@ fn decode_video(
     Ok(())
 }
 
+/// The machine's sound card, never opened by the tests: on the headless
+/// Windows runner, WASAPI streams opened by tests running side by side
+/// crashed the whole test process (STATUS_ACCESS_VIOLATION, 2026-10-28).
+/// Tests play through the no-device path, on the wall clock, on every OS.
+fn output_device() -> Option<cpal::Device> {
+    if cfg!(test) {
+        return None;
+    }
+    cpal::default_host().default_output_device()
+}
+
 fn audio_output(
     state: &Arc<State>,
     parts: Vec<NativeSegment>,
     tools: Option<PathBuf>,
 ) -> Result<(), String> {
-    let device = cpal::default_host()
-        .default_output_device()
-        .ok_or("no output device")?;
+    let device = output_device().ok_or("no output device")?;
     let config = device
         .default_output_config()
         .map_err(|error| error.to_string())?;
@@ -997,6 +1006,12 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(player.warnings().is_empty(), "{:?}", player.warnings());
+    }
+
+    #[test]
+    fn the_tests_never_open_the_sound_card() {
+        // Opened by tests running side by side, it crashed the Windows runner.
+        assert!(output_device().is_none());
     }
 
     #[test]

@@ -116,6 +116,10 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   *Mute videos* left no way back. Now only a flight with no sound to play (no audio
   track, or imported with No Sound) is silent; *Mute videos* opens it muted, and the
   speaker or the volume restarts the audio where the video is (`Player::set_volume`).
+  **The tests never open the sound card** (`output_device`, 2026-10-30): the two tests of
+  that fix were the first to play with sound, and on the headless Windows runner the WASAPI
+  streams they opened side by side crashed the test process (`STATUS_ACCESS_VIOLATION`, CI
+  and Packaging alike). Under `cfg(test)` the player takes the no-device path on every OS.
 - **Import audio policy:** schema `v8` adds `sourceFile.muted`, default false for
   existing recordings. Import's No Sound option marks only new recordings;
   playback emits silence for their parts and exports honor that choice. Mixed
