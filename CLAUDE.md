@@ -576,6 +576,19 @@ Tauri app's (§10).
    `LICENSE-APACHE`). Keep the FFmpeg license, exact source archive, SHA-256 and
    build instructions beside redistributed tools; GPL/nonfree components are
    forbidden in the bundled FFmpeg build.
+   **The Mac build's two deadlines** (2026-10-31, left as they are on the pilot's call):
+   - `hdiutil create -volname … -format …` warns on macOS 27 that it is deprecated
+     for `diskutil image create`, and still makes the DMG (the pilot's `make macos`).
+     It stays: the universal DMG is built on `macos-15-intel`, where `diskutil image`
+     has not been checked to exist. Change it when a macOS drops `hdiutil create`, or
+     after checking the replacement on every runner that packages.
+   - The Intel half of the universal DMG comes from GitHub's `macos-15-intel` runner,
+     announced as its last Intel image, expected to go around 2027 (not checked). macOS 15 itself
+     loses security updates when macOS 28 ships (Apple supports the current release and
+     the two before it, expected autumn 2027), and Apple has said macOS 26 is the last
+     release for Intel Macs. When the runner goes: drop the Intel half, or cross-compile
+     it from an Apple Silicon runner — `build-ffmpeg.sh universal` already cross-compiles
+     FFmpeg for x86_64.
 
 ### Settled 2026-09-03
 

@@ -54,7 +54,9 @@ if [ "$PLATFORM" = macos ]; then
     codesign --force --sign "${MACOS_SIGN_IDENTITY:--}" "$APP"
     codesign --verify --deep --strict "$APP"
     ln -s /Applications "$WORK/Applications"
-    # Put just the app and Applications link into the image.
+    # Put just the app and Applications link into the image. macOS 27 says this
+    # form is deprecated for `diskutil image create`; kept while the packaging
+    # runners include macos-15 (CLAUDE.md §9.4, "The Mac build's two deadlines").
     hdiutil create -volname "FPV Rush" -srcfolder "$WORK" -format UDZO -ov "$DIST/FPV-Rush-$VERSION-macos-$ARCH.dmg"
 else
     (cd "$ROOT/fpv-rs" && cargo build --release --locked -p fpv-app)
