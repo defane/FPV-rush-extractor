@@ -98,6 +98,12 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   **A tool there is removed before the new one is written**: macOS caches a binary's code
   signature by file, and the arm64 `ffmpeg` copied over the universal one of a previous
   run was killed on its first start ("Killed: 9", the pilot's Mac, 2026-10-28).
+  **A build folder is started over when the compiler or SDK changes** (2026-10-31): an
+  Xcode update put a new SDK behind the same `MacOSX.sdk` link, configure saw nothing
+  new, and make stopped on the old SDK's `SDKSettings.json`, listed by the earlier
+  objects. `build-<arch>/toolchain.txt` keeps the resolved SDK path and the compiler's
+  version; reproduced on Linux with a vanished header and a stand-in `cc`, and **verified
+  by the pilot on their Mac**: the next `make macos` rebuilt FFmpeg and went through.
 - Bundled FFmpeg must enable its internal `extract_extradata` bitstream filter:
   stream probing needs it to retain H.264/HEVC headers before indexed seeks.
   The player tries input-side seeking, with a sequential fallback if no video
