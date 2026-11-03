@@ -1,10 +1,11 @@
-# Proposed snow-only segmentation — issue #35
+# Snow Split — proposed segmentation algorithm (#35)
 
 Status: implementation proposal; detector behavior has not been changed.
+The user-facing algorithm name is **Snow Split**.
 
 ## Required behavior
 
-Add a separate `Snow only` choice to import and session detection controls.
+Add a separate `Snow Split` choice to import and session detection controls.
 Only positively identified analog RF static can create excluded intervals.
 Black frames, goggle menus, low temporal coherence, short clips, disarming and
 OSD timers must not independently cause a cut or discard footage. A recording
