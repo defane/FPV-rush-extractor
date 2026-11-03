@@ -258,3 +258,20 @@ fn import_followup_keeps_failed_recording_and_reports_detection_error() {
     assert_eq!(fixture.store.flight(flight.id).unwrap().unwrap().1, [original]);
     assert!(fixture.store.source_file(file.id).unwrap().is_some());
 }
+
+#[test]
+fn snow_split_records_its_version_and_preserves_actual_eof_frames() {
+    let session = Session::new("Snow Split", None);
+    let mut file = source(&session, "CLEAN.MP4", 1, FrameRate::new(30,1), "h264");
+    file.media.frame_count=Some(18002);
+    let fixture=Fixture::new(std::slice::from_ref(&file),session);
+    let detector=StubDetector(HashMap::from([("CLEAN.MP4",vec![clip(0.0,600.25,ClipExit::Eof,true,true)])]));
+    let settings=DetectorSettings::for_profile(fpv_core::DetectionProfile::SnowSplit);
+    let report=SegmentationService::new(&detector,&SilentFfmpeg,&fixture.store,settings)
+        .segment(fixture.session.id,fixture.thumbnails.path(), |_|{}).unwrap();
+    assert_eq!(report.clips,1);
+    assert_eq!(fixture.store.flights(fixture.session.id).unwrap()[0].1[0].end_frame,18002);
+    let runs=fixture.store.detection_runs(file.id).unwrap();
+    assert_eq!(runs[0].algorithm_version,fpv_detect::SNOW_SPLIT_VERSION);
+    assert_eq!(runs[0].parameters["snowSplit"],1.0);
+}

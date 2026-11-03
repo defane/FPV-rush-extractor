@@ -520,10 +520,10 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.label("Detection profile");
                         egui::ComboBox::from_id_salt("import-detection-profile")
-                            .selected_text(if dialog.profile == "textured" {
-                                "Textured terrain"
-                            } else {
-                                "Standard"
+                            .selected_text(match dialog.profile.as_str() {
+                                "textured" => "Textured terrain",
+                                "snowSplit" => "Snow Split",
+                                _ => "Standard",
                             })
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
@@ -536,9 +536,16 @@ impl App {
                                     "textured".into(),
                                     "Textured terrain",
                                 );
+                                ui.selectable_value(
+                                    &mut dialog.profile,
+                                    "snowSplit".into(),
+                                    "Snow Split",
+                                );
                             });
                     });
-                    ui.small(if dialog.profile == "textured" {
+                    ui.small(if dialog.profile == "snowSplit" {
+                        "Experimental: cut only on confirmed analog snow. Keep black screens, menus and short clips."
+                    } else if dialog.profile == "textured" {
                         "For rocky or highly detailed terrain that Standard may mistake for snow."
                     } else {
                         "Standard signal and snow detection."
@@ -777,6 +784,10 @@ impl App {
                     ui.radio_value(&mut dialog.profile, "textured".into(), "Textured terrain");
                     ui.indent("textured", |ui| {
                         ui.small("Rock faces, alpine slopes: a clean picture the standard profile reads as snow. Absorbs dropouts under 1 s.");
+                    });
+                    ui.radio_value(&mut dialog.profile, "snowSplit".into(), "Snow Split");
+                    ui.indent("snow-split", |ui| {
+                        ui.small("Experimental: cut only on confirmed analog snow. Keep black screens, menus and short clips.");
                     });
                     ui.small("A change applies at the next segmentation.");
                     if ui.button("Save").clicked() {

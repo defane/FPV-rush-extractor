@@ -1711,3 +1711,20 @@ fn import_followup_splits_trailing_h264_snow_and_skips_known_recordings() {
     assert_eq!(report.clips, 0);
     assert_eq!(library.snapshot().unwrap()[0].flights[0].id, after.flights[0].id);
 }
+
+#[test]
+fn snow_split_import_keeps_clean_short_takes_and_saves_the_selected_profile() {
+    let (fixture,session)=imported();let library=&fixture.library;
+    let ids:Vec<_>=session.files.iter().map(|f|parse(&f.id).unwrap()).collect();
+    let report=library.segment_imported_with_profile(&ids,"snowSplit", |_|{}).unwrap();
+    assert!(report.failed.is_empty());
+    let after=library.snapshot().unwrap().remove(0);
+    assert_eq!(after.detection_profile,"snowSplit");
+    assert_eq!(after.flights.len(),session.flights.len());
+    for clip in after.flights.iter().flat_map(|f|&f.clips) {
+        let file=library.store.source_file(parse(&clip.file_id).unwrap()).unwrap().unwrap();
+        assert_eq!(clip.start_frame,0);
+        assert_eq!(clip.end_frame,file.media.frame_count.unwrap());
+        assert_eq!(library.store.detection_runs(file.id).unwrap().first().unwrap().algorithm_version,fpv_detect::SNOW_SPLIT_VERSION);
+    }
+}

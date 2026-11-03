@@ -146,7 +146,8 @@ impl<'a> SegmentationService<'a> {
                     .generate_for_clip(clip, file, thumbnail_directory, 480).ok()
                     .map(|path| path.to_string_lossy().into_owned());
             }
-            let run = DetectionRun::new(file.id, ALGORITHM_VERSION, self.settings.parameters());
+            let version = if self.settings.snow_split {fpv_detect::SNOW_SPLIT_VERSION} else {ALGORITHM_VERSION};
+            let run = DetectionRun::new(file.id, version, self.settings.parameters());
             self.store.replace_clips(file.id, &clips, &flights, &run)?;
             report.flights += flights.len();
             report.clips += clips.len();

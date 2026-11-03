@@ -329,6 +329,8 @@ fn keeps_a_sessions_detection_profile_and_defaults_old_ones_to_standard() {
     store.save_session(&alps).unwrap();
     let read = store.sessions().unwrap().into_iter().find(|s| s.id == alps.id).unwrap();
     assert_eq!(read.detection_profile, DetectionProfile::Textured);
+    store.save_session(&Session { detection_profile: DetectionProfile::SnowSplit, ..alps.clone() }).unwrap();
+    assert_eq!(store.sessions().unwrap().into_iter().find(|s| s.id == alps.id).unwrap().detection_profile, DetectionProfile::SnowSplit);
 }
 
 #[test]

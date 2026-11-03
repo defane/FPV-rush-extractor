@@ -59,8 +59,8 @@ session a name and choose the flying date; new imports default to today.
 Recordings are copied to your library without changing their contents. Repeated
 imports skip recordings already known to the library. **Segment videos after
 import** is enabled by default: after copying, FPV Rush detects usable clips in
-the new recordings, including H.264, HEVC and MJPEG. Choose **Standard** or
-**Textured terrain** in the import's **Detection profile** dropdown; an existing
+the new recordings, including H.264, HEVC and MJPEG. Choose **Standard**,
+**Textured terrain** or **Snow Split** in the import's **Detection profile** dropdown; an existing
 session starts with its saved profile. Follow copying and analysis
 in the import dialog or bottom panel. Existing reviewed flights keep their edits.
 Uncheck the option to copy first and run **Segment** later.
@@ -81,6 +81,13 @@ picture signal rather than the armed state or OSD timer. Review the results:
 noise, interference and very textured scenes can still produce incorrect cuts.
 The **Textured terrain** profile helps when the Standard profile splits good
 footage too aggressively.
+
+**Snow Split** is an experimental alternative that removes only confirmed analog
+static. It keeps black screens, menus and short usable takes. It samples four
+times per second and requires three consecutive snow samples before excluding a
+run; brief interference and uncertain or frozen static can remain. Review its
+results before exporting or reducing recordings. It is also available in the
+session's detection settings.
 
 Re-segmenting replaces flights from all unreduced recordings, including manually
 adjusted boundaries, flight names, favourites and flight tags. The confirmation

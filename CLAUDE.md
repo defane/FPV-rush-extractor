@@ -31,6 +31,17 @@ about action-camera recordings never being segmented describe retired behavior.
 Long-GOP interior cuts require an explicit MPEG-4 re-encode; complete takes and
 MJPEG retain their lossless paths. Reduce remains limited to all-intra recordings.
 
+**Experimental Snow Split (#35):** `DetectionProfile::SnowSplit` (`snowSplit`)
+uses a separate noise-evidence classifier and interval builder. Only jointly
+confirmed local spatial/temporal static excludes footage; Black/Menu, minimum
+clip duration and whole-clip coherence do not reject clips in this mode. Four
+samples/second and three consecutive snow votes confirm a run, backdated to its
+first sample. `snow-split-1` and its thresholds are stored in `DetectionRun`.
+Import and session settings expose the profile; Standard/Textured are unchanged.
+See `docs/snow-only-segmentation-plan.md` and `docs/benchmarks/snow-split.md` for
+the implementation, measurements and limitations. This is not a validated
+state-of-the-art FPV detector; frozen static and ambiguous interference may remain.
+
 
 ---
 

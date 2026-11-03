@@ -1,7 +1,12 @@
-# Snow Split — proposed segmentation algorithm (#35)
+# Snow Split — segmentation design (#35)
 
-Status: implementation proposal; detector behavior has not been changed.
+Status: implemented as an experimental selectable profile; broader validation is pending.
 The user-facing algorithm name is **Snow Split**.
+
+The original proposal below records the requirements and candidate approaches.
+The implemented method and measured comparisons are documented in
+[the benchmark report](benchmarks/snow-split.md). Its limitations mean #35 must
+remain open for broader independent FPV evaluation and offline learned comparisons.
 
 ## Required behavior
 
@@ -35,7 +40,7 @@ Any learned comparison needs appropriate weights, licensing review and evaluatio
 on the same FPV labels. Do not add a neural inference dependency merely to claim
 use of a recent paper. Record unavailable comparisons and domain-transfer limits.
 
-## Proposed implementation
+## Original implementation proposal
 
 1. Establish a snow-only baseline using the existing spatial measurements but
    separate its semantics from Black/Menu and whole-clip rejection. Measure its

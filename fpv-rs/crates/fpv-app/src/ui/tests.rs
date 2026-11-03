@@ -3877,7 +3877,12 @@ fn import_job_segments_by_default_and_supports_copy_only_optout() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    for (profile, segment) in [("standard", true), ("textured", true), ("textured", false)] {
+    for (profile, segment) in [
+        ("standard", true),
+        ("textured", true),
+        ("snowSplit", true),
+        ("textured", false),
+    ] {
         let ctx = egui::Context::default();
         let (mut app, jobs, _) = app_with_worker(&ctx);
         let local = root.path().join(format!("{profile}-{segment}"));
@@ -3896,9 +3901,18 @@ fn import_job_segments_by_default_and_supports_copy_only_optout() {
             Some(card.clone()),
             "EACHINE".into(),
         ));
-        if profile == "textured" {
+        if profile != "standard" {
             click_text(&ctx, &mut app, "Standard", App::dialog_window);
-            click_text(&ctx, &mut app, "Textured terrain", App::dialog_window);
+            click_text(
+                &ctx,
+                &mut app,
+                if profile == "snowSplit" {
+                    "Snow Split"
+                } else {
+                    "Textured terrain"
+                },
+                App::dialog_window,
+            );
         }
         if !segment {
             click_text(

@@ -1,5 +1,7 @@
 # Unreleased
 
+- Add experimental Snow Split to import/session detection profiles: combine local spatial and temporal noise evidence, keep black/menu/short takes, and record versioned parameters. Include synthetic regressions and a documented Linux ARM comparison; broader FPV validation remains open (#35).
+
 - Choose Standard or Textured terrain directly during import when segmentation is enabled; reuse an existing session’s saved profile and remember the selected profile for later segmentation.
 
 - Segment newly imported videos automatically by default, with an opt-out checkbox and visible analysis progress; keep existing reviewed flights unchanged and exclude the EACHINE sample’s trailing snow (#31).
