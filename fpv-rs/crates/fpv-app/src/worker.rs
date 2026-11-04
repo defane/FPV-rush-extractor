@@ -15,6 +15,7 @@ pub type Work =
 #[derive(Debug)]
 pub enum Reply {
     Done(String),
+    SessionCreated(String),
     Playback {
         flight: String,
         at: f64,

@@ -1151,12 +1151,22 @@ impl Library {
     /// notes and tags. Text is trimmed, and an emptied place or note is none.
     /// A tag given twice, in any case, is kept once as first written. The
     /// day only dates the session: folders already on disk keep their names.
+    pub fn create_session(&self, edit: &SessionEdit) -> Result<String> {
+        let session = Session::new("", None);
+        let id = session.id;
+        self.save_session_details(session, edit)?;
+        Ok(uuid_string(id))
+    }
+
     pub fn update_session(&self, id: &str, edit: &SessionEdit) -> Result<()> {
+        self.save_session_details(self.session(id)?, edit)
+    }
+
+    fn save_session_details(&self, session: Session, edit: &SessionEdit) -> Result<()> {
         let name = edit.name.trim();
         if name.is_empty() {
             return Err(LibraryError::Invalid("a session needs a name".into()));
         }
-        let session = self.session(id)?;
         let date = match edit.date.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
             Some(day) => Some(local_midnight(day)?),
             None => None,
@@ -1168,10 +1178,9 @@ impl Library {
                 labels.push(label.to_owned());
             }
         }
-        self.store.save_session(&Session {
+        Ok(self.store.save_session_details(&Session {
             name: name.into(), date, location: text(&edit.location), notes: text(&edit.notes), ..session
-        })?;
-        Ok(self.store.set_session_labels(session.id, &labels)?)
+        }, &labels)?)
     }
 
     pub fn set_detection_profile(&self, id: &str, profile: &str) -> Result<()> {

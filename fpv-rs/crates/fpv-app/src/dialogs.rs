@@ -18,6 +18,7 @@ enum Kind {
     Import,
     Settings,
     Session,
+    NewSession,
     Profile,
     Segment,
     RemoveSession,
@@ -158,6 +159,14 @@ impl Dialog {
             mute_videos: config.mute_videos,
             do_not_show_splash: config.do_not_show_splash,
             ..Self::new(Kind::Settings, "Settings")
+        }
+    }
+    pub fn new_session() -> Self {
+        let today = chrono::Local::now().date_naive();
+        Self {
+            date: Some(today),
+            calendar_month: today.with_day(1).unwrap(),
+            ..Self::new(Kind::NewSession, "New session")
         }
     }
     pub fn session(session: &SessionView) -> Self {
@@ -324,7 +333,7 @@ impl App {
     /// ones, a task remaking its session for the others.
     fn dialog_scope(&self, dialog: &Dialog) -> Scope {
         match dialog.kind {
-            Kind::Import | Kind::Load | Kind::Settings => Scope::Library,
+            Kind::Import | Kind::Load | Kind::Settings | Kind::NewSession => Scope::Library,
             Kind::Session
             | Kind::Profile
             | Kind::Segment
@@ -746,7 +755,7 @@ impl App {
                 ui.small("FPV Rush · MIT OR Apache-2.0");
                 ui.small("This software uses FFmpeg. Bundled tools, license, corresponding source and build instructions are in resources/licenses/ffmpeg.");
             }
-            Kind::Session => {
+            Kind::Session | Kind::NewSession => {
                 field(ui, "Name", &mut dialog.name);
                 date_picker(
                     ui,
@@ -769,10 +778,29 @@ impl App {
                         notes: dialog.notes.clone(),
                         labels: labels(&dialog.labels),
                     };
-                    dialog.saving = Some(self.submit("Edit session", false, move |library, _| {
-                        library.update_session(&id, &edit)?;
-                        Ok(Reply::Done("Session saved".into()))
-                    }));
+                    let creating = dialog.kind == Kind::NewSession;
+                    let scope = if creating {
+                        Scope::Library
+                    } else {
+                        Scope::Session(id.clone())
+                    };
+                    dialog.saving = Some(self.submit_in(
+                        scope,
+                        if creating {
+                            "Create session"
+                        } else {
+                            "Edit session"
+                        },
+                        false,
+                        move |library, _| {
+                            if creating {
+                                Ok(Reply::SessionCreated(library.create_session(&edit)?))
+                            } else {
+                                library.update_session(&id, &edit)?;
+                                Ok(Reply::Done("Session saved".into()))
+                            }
+                        },
+                    ));
                 }
             }
             Kind::Profile | Kind::Segment => {

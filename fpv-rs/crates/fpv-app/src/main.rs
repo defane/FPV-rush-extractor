@@ -506,6 +506,12 @@ impl App {
                             }
                         }
                         Ok(Reply::Done(_)) => {}
+                        Ok(Reply::SessionCreated(id)) => {
+                            self.browse.view = browse::View::Sessions;
+                            self.browse.session = Some(id);
+                            self.browse.page = 0;
+                            self.selected.clear();
+                        }
                         Ok(Reply::VideoPreferences {
                             mute_videos,
                             do_not_show_splash,

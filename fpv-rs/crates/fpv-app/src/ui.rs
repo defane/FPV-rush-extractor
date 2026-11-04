@@ -787,7 +787,16 @@ impl App {
                 });
                 ui.separator();
                 if self.browse.view == View::Sessions {
-                    ui.small(RichText::new("SESSIONS").strong().color(ACCENT));
+                    ui.horizontal(|ui| {
+                        ui.small(RichText::new("SESSIONS").strong().color(ACCENT));
+                        if ui
+                            .add_enabled(!self.busy_with(&Scope::Library), egui::Button::new("+"))
+                            .on_hover_text("New session")
+                            .clicked()
+                        {
+                            self.dialog = Some(Dialog::new_session());
+                        }
+                    });
                     let ids: Vec<&str> = self.sessions.iter().map(|s| s.id.as_str()).collect();
                     browse::follow(
                         &ids,

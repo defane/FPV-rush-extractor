@@ -94,6 +94,10 @@ adjusted boundaries, flight names, favourites and flight tags. The confirmation
 describes what will be lost. Figure tags attached to source recordings and
 already reduced clips are retained.
 
+Create an empty session with **+** beside **SESSIONS**, then choose its name,
+flying day and optional details. Sessions can share a name without replacing
+one another.
+
 Use session and flight tags to organize your library. Figure tags identify a
 moment or a range inside a recording and let you jump back to a manoeuvre.
 

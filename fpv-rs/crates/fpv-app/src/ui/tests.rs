@@ -3977,3 +3977,41 @@ fn importing_into_an_existing_session_prefills_its_profile() {
     let texts = shown_texts(&ctx, &mut app, App::dialog_window);
     assert!(texts.iter().any(|s| s == "Textured terrain"), "{texts:?}");
 }
+
+#[test]
+fn session_plus_opens_a_today_dated_form_without_media_tools_and_cancels_cleanly() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, events) = app_with_worker(&ctx);
+    app.sessions.clear();
+    app.ffmpeg_ok = false;
+    click_text(&ctx, &mut app, "+", App::sidebar);
+    let texts = shown_texts(&ctx, &mut app, App::dialog_window);
+    assert!(texts.iter().any(|t| t == "New session"), "{texts:?}");
+    assert!(
+        texts
+            .iter()
+            .any(|t| t == &chrono::Local::now().format("%a, %b %d, %Y").to_string()),
+        "{texts:?}"
+    );
+    click_text(&ctx, &mut app, "Close", App::dialog_window);
+    assert!(app.dialog.is_none());
+    assert!(jobs.try_recv().is_err());
+    events
+        .send(crate::worker::Event::Finished {
+            id: 999,
+            result: Ok(Reply::SessionCreated("created".into())),
+        })
+        .unwrap();
+    let mut created = session_of(vec![]);
+    created.id = "created".into();
+    events
+        .send(crate::worker::Event::Snapshot(
+            vec![created],
+            app.config.clone(),
+        ))
+        .unwrap();
+    app.receive(&ctx);
+    assert_eq!(app.browse.session.as_deref(), Some("created"));
+    assert_eq!(app.browse.view, View::Sessions);
+    assert!(app.sessions[0].flights.is_empty());
+}

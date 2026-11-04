@@ -88,6 +88,23 @@ impl LibraryStore {
         Ok(())
     }
 
+    /// Save session details and tags together, including an empty new session.
+    pub fn save_session_details(&self, session: &Session, labels: &[String]) -> Result<()> {
+        let mut db = self.db();
+        let tx = db.transaction()?;
+        tx.execute(r#"INSERT INTO session (id, name, date, location, notes, detectionProfile)
+            VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET
+            name=excluded.name, date=excluded.date, location=excluded.location,
+            notes=excluded.notes, detectionProfile=excluded.detectionProfile"#,
+            params![Id(session.id),session.name,session.date.map(Date),session.location,session.notes,session.detection_profile.as_str()])?;
+        tx.execute("DELETE FROM sessionLabel WHERE sessionId=?1", [Id(session.id)])?;
+        for label in labels {
+            tx.execute("INSERT OR IGNORE INTO sessionLabel (sessionId,label) VALUES (?1,?2)",params![Id(session.id),label])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn save_source_files(&self, files: &[SourceFile]) -> Result<()> {
         let mut db = self.db();
         let transaction = db.transaction()?;

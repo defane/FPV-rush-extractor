@@ -590,3 +590,13 @@ fn batch_deletion_rolls_back_when_any_selected_flight_is_missing() {
     assert!(store.source_file(file.id).unwrap().is_some());
     assert!(store.deleted_paths().unwrap().is_empty());
 }
+
+
+#[test]
+fn session_details_and_labels_roll_back_together() {
+    let store = LibraryStore::in_memory().unwrap();
+    store.db().execute_batch("CREATE TRIGGER reject_session_label BEFORE INSERT ON sessionLabel BEGIN SELECT RAISE(ABORT, 'test failure'); END;").unwrap();
+    let session = Session::new("New", None);
+    assert!(store.save_session_details(&session, &["tag".into()]).is_err());
+    assert!(store.sessions().unwrap().is_empty());
+}

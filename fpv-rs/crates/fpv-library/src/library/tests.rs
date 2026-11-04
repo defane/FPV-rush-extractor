@@ -1728,3 +1728,29 @@ fn snow_split_import_keeps_clean_short_takes_and_saves_the_selected_profile() {
         assert_eq!(library.store.detection_runs(file.id).unwrap().first().unwrap().algorithm_version,fpv_detect::SNOW_SPLIT_VERSION);
     }
 }
+
+#[test]
+fn creates_empty_sessions_with_validated_details_and_distinct_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let library = open(root.path());
+    let edit = SessionEdit { name: "  Training  ".into(), date: Some("2026-11-04".into()),
+        location: " Indoor ".into(), notes: " drills ".into(), labels: vec!["race".into(), "Race".into()], };
+    let first = library.create_session(&edit).unwrap();
+    let second = library.create_session(&edit).unwrap();
+    assert_ne!(first, second);
+    for invalid in [SessionEdit::default(), SessionEdit { name: "Bad".into(), date: Some("invalid".into()), ..Default::default() }] {
+        assert!(library.create_session(&invalid).is_err());
+    }
+    drop(library);
+    let sessions = open(root.path()).snapshot().unwrap();
+    assert_eq!(sessions.len(), 2);
+    for session in sessions {
+        assert!(session.files.is_empty() && session.flights.is_empty());
+        assert_eq!(session.name, "Training");
+        assert_eq!(session.location.as_deref(), Some("Indoor"));
+        assert_eq!(session.notes.as_deref(), Some("drills"));
+        assert_eq!(session.labels, ["race"]);
+        let day = chrono::DateTime::parse_from_rfc3339(session.date.as_ref().unwrap()).unwrap().with_timezone(&chrono::Local).date_naive();
+        assert_eq!(day.to_string(), "2026-11-04");
+    }
+}
