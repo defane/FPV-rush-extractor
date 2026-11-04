@@ -39,13 +39,27 @@ pub type Part = (Clip, SourceFile);
 /// frames per second apart.
 pub const FRAME_RATE_TOLERANCE: f64 = 0.5;
 
+/// Library context, distinct from the source camera's capture timestamp.
+#[derive(Debug, Clone)]
+pub struct ExportMetadata {
+    pub session_name: String,
+    /// Calendar day as displayed in the library, never converted to a UTC instant.
+    pub flying_day: Option<String>,
+}
+
 pub struct ClipExporter<'a> {
     ffmpeg: &'a dyn FfmpegInvoking,
+    metadata: Option<ExportMetadata>,
 }
 
 impl<'a> ClipExporter<'a> {
     pub fn new(ffmpeg: &'a dyn FfmpegInvoking) -> Self {
-        Self { ffmpeg }
+        Self { ffmpeg, metadata: None }
+    }
+
+    pub fn with_metadata(mut self, metadata: ExportMetadata) -> Self {
+        self.metadata = Some(metadata);
+        self
     }
 
     /// One clip, cut losslessly.
@@ -156,6 +170,18 @@ impl<'a> ClipExporter<'a> {
         let staged = workspace.path().join(destination.file_name().unwrap_or_default());
         let mut arguments = arguments.to_vec();
         *arguments.last_mut().ok_or(ExportError::NothingToExport)? = staged.to_string_lossy().into_owned();
+        if let Some(metadata) = &self.metadata {
+            let mut tags = vec!["-map_metadata".into(),"0".into(),
+                "-metadata".into(),format!("title={}",metadata.session_name),
+                "-metadata".into(),format!("date={}",metadata.flying_day.as_deref().unwrap_or(""))];
+            if destination.extension().and_then(|e|e.to_str())
+                .is_some_and(|e| ["mp4","mov","m4v"].iter().any(|v|e.eq_ignore_ascii_case(v))) {
+                tags.extend(["-movflags".into(),"+use_metadata_tags".into(),
+                    "-metadata".into(),format!("session={}",metadata.session_name),
+                    "-metadata".into(),format!("session_date={}",metadata.flying_day.as_deref().unwrap_or(""))]);
+            }
+            arguments.splice(arguments.len()-1..arguments.len()-1,tags);
+        }
         run_writing(self.ffmpeg, &arguments, &staged)?;
         if std::fs::metadata(&staged)?.len() == 0 {
             return Err(FfmpegError::ToolFailed { tool: "ffmpeg".into(), arguments,

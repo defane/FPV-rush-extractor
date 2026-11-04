@@ -129,6 +129,8 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   run was killed on its first start ("Killed: 9", the pilot's Mac, 2026-10-28).
 - Bundled FFmpeg must enable its internal `extract_extradata` bitstream filter:
   stream probing needs it to retain H.264/HEVC headers before indexed seeks.
+  Its `h264_mp4toannexb` filter is also required by the concat demuxer for
+  stream-copying MP4 H.264 chapters; bundled-tool export tests cover this.
   The player tries input-side seeking, with a sequential fallback if no video
   frame is emitted. See `docs/player-buffering.md` and the generated AVI fixture.
 - **Long-GOP footage is decoded by the hardware first** (2026-10-28): on the Mac the
@@ -207,6 +209,13 @@ and **recordings never segmented** (no flights is not "no flight in it"). On the
 Test (2) copy of PICT0031+0032: 829 MB → 508 MB, 7 flights of identical durations, figures at
 the same times. Doing it on real footage first exposed the rounding bug in cut boundaries
 (§6, "Cut boundaries are truncated").
+
+**Export context (#34):** `ClipExporter::with_metadata` adds library session
+`title` and calendar `date` to final staged outputs, including parts. MP4/MOV
+also use `session`/`session_date` with `use_metadata_tags`; AVI uses standard
+RIFF INAM/ICRD mappings. Flying dates are date-only strings matching the library's
+local display, not fabricated capture timestamps; existing source `creation_time`
+remains distinct. Unset session dates clear inherited generic `date` tags.
 
 **Session transfers (#33):** library `transfer_flights` prepares new immutable
 recording paths (hard links, checked copies when unsupported) and independent

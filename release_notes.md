@@ -1,5 +1,7 @@
 # Unreleased
 
+- Write current session names and flying dates into final MP4/AVI exports, including batch, concatenated, re-encoded and separate-part exports; enable the bundled H.264 concat bitstream filter required by multipart exports (#34).
+
 - Move or copy selected flights into another session, preserving annotations and audio policies with independent recording references and transactional failure recovery (#33).
 
 - Create empty sessions with the sidebar + button, today’s date and optional details; select the new session immediately and save its details atomically (#32).

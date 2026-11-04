@@ -1823,3 +1823,44 @@ fn transferring_one_shared_source_clip_keeps_other_flights_and_copies_tags_indep
     assert_eq!(std::fs::read(&path).unwrap(),b"immutable video");
     assert!(library.store.flight(second.id).unwrap().is_some());
 }
+
+#[test]
+fn exports_current_session_name_and_flying_day_as_container_metadata() {
+    fn tags(path:&Path)->serde_json::Value {
+        let output=Command::new("ffprobe").args(["-v","error","-show_entries","format_tags","-of","json"]).arg(path).output().unwrap();
+        assert!(output.status.success());
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["format"]["tags"].clone()
+    }
+    let (mut fixture,session) = imported();
+    let library=&mut fixture.library;
+    let name="Training été — Indoor";
+    library.update_session(&session.id,&SessionEdit{name:name.into(),date:Some("2026-11-04".into()),..Default::default()}).unwrap();
+    let mut tools=vec![None];
+    if let Some(path)=std::env::var_os("FPV_TEST_BUNDLED_TOOLS") { tools.push(Some(PathBuf::from(path))); }
+    for (tool_index,tool) in tools.into_iter().enumerate() {
+        library.tools=tool;
+        for (index,mode) in [ExportMode::Lossless,ExportMode::Reencode,ExportMode::Parts].into_iter().enumerate() {
+            for extension in ["mp4","avi"] {
+                for (flight_index,flight) in session.flights.iter().enumerate() {
+                    let paths=library.export(&flight.id,&fixture._root.path().join(format!("metadata-{tool_index}-{flight_index}-{index}.{extension}")),mode).unwrap();
+                    for path in paths {
+                        let value=tags(&path);
+                        assert_eq!(value["title"],name,"{}: {value}",path.display());
+                        assert_eq!(value["date"],"2026-11-04","{}: {value}",path.display());
+                    }
+                }
+            }
+        }
+    }
+    let destination=library.create_session(&SessionEdit{name:"Destination".into(),date:Some("2026-11-05".into()),..Default::default()}).unwrap();
+    let copied=library.transfer_flights(&[session.flights[0].id.clone()],&destination,true).unwrap();
+    let bulk=library.export_flights(&copied,&fixture._root.path().join("batch"),ExportMode::Lossless,|_,_,_|{}).unwrap();
+    assert!(bulk.failed.is_empty());assert_eq!(bulk.written.len(),1);
+    assert_eq!(tags(&bulk.written[0])["title"],"Destination");
+    assert_eq!(tags(&bulk.written[0])["date"],"2026-11-05");
+    library.update_session(&session.id,&SessionEdit{name:"Undated".into(),..Default::default()}).unwrap();
+    let path=fixture._root.path().join("undated.mp4");
+    library.export(&session.flights[1].id,&path,ExportMode::Lossless).unwrap();
+    let value=tags(&path);
+    assert_eq!(value["title"],"Undated");assert!(value["date"].is_null());
+}

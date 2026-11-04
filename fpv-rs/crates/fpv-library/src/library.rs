@@ -5,7 +5,7 @@ use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use fpv_core::{Clip, DetectionProfile, DetectionRun, FigureTag, Flight, FlightTimeline, MediaInfo, REDUCED_ALGORITHM,
                Session, SourceFile, uuid_string};
 use fpv_detect::{DetectorSettings, FileDetector};
-use fpv_export::{ClipExporter, ExportError};
+use fpv_export::{ClipExporter, ExportError, ExportMetadata};
 use fpv_import::{FolderPattern, ImportEvent, LibraryImporter};
 use fpv_media::{FfmpegRunner, FrameReader, MediaProbe, ThumbnailGenerator};
 use fpv_pipeline::{SegmentationEvent, SegmentationReport, SegmentationService};
@@ -1883,7 +1883,12 @@ impl Library {
 
     /// Writes a flight out. Returns the files written.
     pub fn export(&self, flight: &str, destination: &Path, mode: ExportMode) -> Result<Vec<PathBuf>> {
-        let (_, _, timeline) = self.flight(flight)?;
+        let (flight, _, timeline) = self.flight(flight)?;
+        let session = self.session(&uuid_string(flight.session_id))?;
+        let metadata = ExportMetadata {
+            session_name: session.name,
+            flying_day: session.date.map(|date| date.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string()),
+        };
         // Text-entry destinations in the native UI have no OS overwrite
         // prompt. Check every part before writing any of them.
         let destinations = if mode == ExportMode::Parts {
@@ -1896,7 +1901,7 @@ impl Library {
             return Err(LibraryError::Invalid(format!("destination already exists: {}", path.display())));
         }
         let ffmpeg = self.ffmpeg();
-        let exporter = ClipExporter::new(&ffmpeg);
+        let exporter = ClipExporter::new(&ffmpeg).with_metadata(metadata);
         Ok(match mode {
             ExportMode::Lossless => vec![exporter.export_flight_with_mute(
                 &timeline.parts,

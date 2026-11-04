@@ -146,7 +146,11 @@ saving discards the draft. Editing boundaries does not change source files.
 Choose **Export** from a flight's menu or select several flights for batch
 export. Exports continue in the bottom **Tasks** panel after the form closes.
 Existing destination files are never overwritten; failed exports report their
-errors in Tasks.
+errors in Tasks. Exported MP4/AVI files carry the current session name in `title`
+and the selected flying day in `date` (`YYYY-MM-DD`). MP4 also carries `session`
+and `session_date`. The flying day is distinct from a source camera's capture
+time; an undated session does not invent a date. Moving/copying a flight uses
+the destination session's current details.
 
 Analog MJPEG footage can be cut losslessly at exact frames. Action-camera
 Complete H.264/HEVC recordings can be stream-copied. Precise cuts inside these
