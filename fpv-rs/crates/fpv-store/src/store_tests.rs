@@ -600,3 +600,14 @@ fn session_details_and_labels_roll_back_together() {
     assert!(store.save_session_details(&session, &["tag".into()]).is_err());
     assert!(store.sessions().unwrap().is_empty());
 }
+
+#[test]
+fn transfer_rolls_back_if_a_clip_cannot_be_mapped() {
+    let store = LibraryStore::in_memory().unwrap();
+    let (_,source) = session_with_one_file(&store,"shared.avi",1);
+    let (flight,clips) = one_clip(&store,&source,0,90);
+    let destination=Session::new("Other",None);store.save_session(&destination).unwrap();
+    assert!(store.transfer_flights(&[flight.id],destination.id,false,&[],&[],&[]).is_err());
+    assert_eq!(store.flight(flight.id).unwrap().unwrap(),(flight,vec![clips]));
+    assert!(store.flights(destination.id).unwrap().is_empty());
+}

@@ -26,6 +26,7 @@ enum Kind {
     Relocate,
     DeleteFlight,
     DeleteFlights,
+    TransferFlights,
     Title,
     Editor,
     Info,
@@ -269,6 +270,20 @@ impl Dialog {
             ..Self::of_flight(Kind::Export, "Export", flight)
         }
     }
+    pub fn transfer(flights: Vec<String>, copy: bool) -> Self {
+        Self {
+            flights,
+            flag: copy,
+            ..Self::new(
+                Kind::TransferFlights,
+                if copy {
+                    "Copy selected flights"
+                } else {
+                    "Move selected flights"
+                },
+            )
+        }
+    }
     pub fn bulk(flights: Vec<String>) -> Self {
         Self {
             flights,
@@ -350,6 +365,14 @@ impl App {
                     })
                     .map_or(Scope::None, |session| Scope::Session(session.to_owned()))
             }
+            Kind::TransferFlights => Scope::Sessions(
+                dialog
+                    .flights
+                    .iter()
+                    .filter_map(|id| self.session_of_flight(id).map(str::to_owned))
+                    .chain((!dialog.id.is_empty()).then(|| dialog.id.clone()))
+                    .collect(),
+            ),
             Kind::DeleteFlights => Scope::Sessions(
                 dialog
                     .flights
@@ -754,6 +777,57 @@ impl App {
                 ui.separator();
                 ui.small("FPV Rush · MIT OR Apache-2.0");
                 ui.small("This software uses FFmpeg. Bundled tools, license, corresponding source and build instructions are in resources/licenses/ffmpeg.");
+            }
+            Kind::TransferFlights => {
+                ui.label(format!("{} selected flights", dialog.flights.len()));
+                let candidates: Vec<_> = self
+                    .sessions
+                    .iter()
+                    .filter(|s| !s.flights.iter().any(|f| dialog.flights.contains(&f.id)))
+                    .collect();
+                let selected = candidates
+                    .iter()
+                    .find(|s| s.id == dialog.id)
+                    .map_or("Choose a session".into(), |s| {
+                        format!("{} · {}", s.name, &s.id[..s.id.len().min(8)])
+                    });
+                egui::ComboBox::from_id_salt("transfer-destination")
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        for session in &candidates {
+                            ui.selectable_value(
+                                &mut dialog.id,
+                                session.id.clone(),
+                                format!(
+                                    "{} · {}",
+                                    session.name,
+                                    &session.id[..session.id.len().min(8)]
+                                ),
+                            );
+                        }
+                    });
+                if candidates.is_empty() {
+                    ui.small("Create another session with + in the sidebar first.");
+                }
+                ui.small("Clip details and figure annotations are independent in the destination. Original video bytes are preserved; disks without shared-file support may need extra space.");
+                let label = if dialog.flag {
+                    "Copy flights"
+                } else {
+                    "Move flights"
+                };
+                if ui
+                    .add_enabled(!dialog.id.is_empty(), egui::Button::new(label))
+                    .clicked()
+                {
+                    let ids = dialog.flights.clone();
+                    let destination = dialog.id.clone();
+                    let copy = dialog.flag;
+                    let scope = self.dialog_scope(dialog);
+                    dialog.saving = Some(self.submit_in(scope, label, false, move |library, _| {
+                        library.transfer_flights(&ids, &destination, copy)?;
+                        Ok(Reply::FlightsTransferred(destination))
+                    }));
+                }
             }
             Kind::Session | Kind::NewSession => {
                 field(ui, "Name", &mut dialog.name);

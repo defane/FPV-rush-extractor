@@ -1754,3 +1754,72 @@ fn creates_empty_sessions_with_validated_details_and_distinct_identity() {
         assert_eq!(day.to_string(), "2026-11-04");
     }
 }
+
+#[test]
+fn moves_and_copies_selected_flights_with_independent_recordings_and_annotations() {
+    let (fixture,session) = imported();
+    let library = &fixture.library;
+    let destination = library.create_session(&SessionEdit { name:"Destination".into(), ..Default::default() }).unwrap();
+    let original = &session.flights[0];
+    library.set_playback_mute(&original.id,true).unwrap();
+    let copied = library.transfer_flights(std::slice::from_ref(&original.id),&destination,true).unwrap();
+    assert_ne!(copied[0],original.id);
+    let sources = library.store.source_files(parse(&destination).unwrap()).unwrap();
+    assert_eq!(sources.len(),original.clips.len());
+    assert_eq!(library.store.playback_mute(parse(&copied[0]).unwrap()).unwrap(),Some(true));
+    let original_parts = library.native_playback(&original.id).unwrap();
+    let copied_parts = library.native_playback(&copied[0]).unwrap();
+    assert_eq!(copied_parts.len(),original_parts.len());
+    for (a,b) in original_parts.iter().zip(&copied_parts) {
+        assert_ne!(a.segment.path,b.segment.path);
+        assert_eq!(std::fs::read(&a.segment.path).unwrap(),std::fs::read(&b.segment.path).unwrap());
+        assert_eq!((a.segment.start,a.segment.end),(b.segment.start,b.segment.end));
+    }
+    let invalid = library.transfer_flights(&[original.id.clone(),"invalid".into()],&destination,false);
+    assert!(invalid.is_err());
+    assert!(library.store.flight(parse(&original.id).unwrap()).unwrap().is_some());
+    let moved = library.transfer_flights(std::slice::from_ref(&original.id),&destination,false).unwrap();
+    assert_eq!(moved[0],original.id);
+    assert_eq!(library.store.flight(parse(&original.id).unwrap()).unwrap().unwrap().0.session_id,parse(&destination).unwrap());
+    library.delete_session(&session.id,false).unwrap();
+    for part in library.native_playback(&copied[0]).unwrap() { assert!(part.segment.path.is_file()); }
+    for part in library.native_playback(&moved[0]).unwrap() { assert!(part.segment.path.is_file()); }
+    assert!(library.transfer_flights(&copied,&destination,false).is_err());
+}
+
+#[test]
+fn transferring_one_shared_source_clip_keeps_other_flights_and_copies_tags_independently() {
+    use fpv_core::{Clip,Flight,FigureTag,DetectionRun,FrameRate};
+    let root = tempfile::tempdir().unwrap();
+    let library = open(root.path());
+    let original = Session::new("Original",None);
+    library.store.save_session(&original).unwrap();
+    let destination = library.create_session(&SessionEdit{name:"Other".into(),..Default::default()}).unwrap();
+    let folder = library.root.join("original"); std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("shared.avi"); std::fs::write(&path,b"immutable video").unwrap();
+    let mut source = SourceFile::new(original.id,"card/shared.avi",path.to_string_lossy(),Some(1),MediaInfo::new(640,480,FrameRate::new(30,1),10.0,"mjpeg"));
+    source.muted = true;
+    library.store.save_source_files(std::slice::from_ref(&source)).unwrap();
+    let mut first = Flight::new(original.id,1);first.title=Some("Liked".into());first.rating=Some(1);
+    let second = Flight::new(original.id,2);
+    let a = Clip::new(first.id,source.id,0,90);let b = Clip::new(second.id,source.id,90,180);
+    library.store.replace_clips(source.id,&[a.clone(),b.clone()],&[first.clone(),second.clone()],&DetectionRun::new(source.id,"test",Default::default())).unwrap();
+    let mut tag = FigureTag::new(source.id,15,30,"loop");
+    tag.created_at = chrono::DateTime::from_timestamp(tag.created_at.timestamp(),0).unwrap();
+    library.store.save_tag(&tag).unwrap();
+    library.store.add_flight_label(first.id,"race").unwrap();
+    let copied = library.transfer_flights(&[uuid_string(first.id)],&destination,true).unwrap();
+    let (copy,clips) = library.store.flight(parse(&copied[0]).unwrap()).unwrap().unwrap();
+    assert_eq!((copy.title,copy.rating),(first.title.clone(),first.rating));
+    assert_ne!(clips[0].id,a.id);assert_ne!(clips[0].source_file_id,source.id);
+    assert!(library.store.source_file(clips[0].source_file_id).unwrap().unwrap().muted);
+    let copied_tags=library.store.tags_of_source_file(clips[0].source_file_id).unwrap();
+    assert_eq!(copied_tags.len(),1);assert_ne!(copied_tags[0].id,tag.id);
+    library.store.delete_tag(copied_tags[0].id).unwrap();
+    assert_eq!(library.store.tags_of_source_file(source.id).unwrap(),[tag]);
+    library.transfer_flights(&[uuid_string(first.id)],&destination,false).unwrap();
+    assert_eq!(library.store.flight(second.id).unwrap().unwrap().1,[b]);
+    library.delete_session(&destination,false).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(),b"immutable video");
+    assert!(library.store.flight(second.id).unwrap().is_some());
+}

@@ -16,6 +16,7 @@ pub type Work =
 pub enum Reply {
     Done(String),
     SessionCreated(String),
+    FlightsTransferred(String),
     Playback {
         flight: String,
         at: f64,

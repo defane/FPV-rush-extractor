@@ -4015,3 +4015,22 @@ fn session_plus_opens_a_today_dated_form_without_media_tools_and_cancels_cleanly
     assert_eq!(app.browse.view, View::Sessions);
     assert!(app.sessions[0].flights.is_empty());
 }
+
+#[test]
+fn selected_flights_offer_move_and_copy_without_media_tools() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, _) = app_with_worker(&ctx);
+    let first = flight();
+    app.sessions = vec![session_of(vec![first.clone()])];
+    app.browse.view = View::Flights;
+    app.selecting = true;
+    app.selected.insert(first.id.clone());
+    app.ffmpeg_ok = false;
+    for action in ["Move 1…", "Copy 1…"] {
+        click_text(&ctx, &mut app, action, App::browser);
+        assert!(app.dialog.is_some());
+        click_text(&ctx, &mut app, "Close", App::dialog_window);
+        assert!(jobs.try_recv().is_err());
+        assert!(app.selected.contains(&first.id));
+    }
+}

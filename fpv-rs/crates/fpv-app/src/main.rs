@@ -506,7 +506,7 @@ impl App {
                             }
                         }
                         Ok(Reply::Done(_)) => {}
-                        Ok(Reply::SessionCreated(id)) => {
+                        Ok(Reply::SessionCreated(id) | Reply::FlightsTransferred(id)) => {
                             self.browse.view = browse::View::Sessions;
                             self.browse.session = Some(id);
                             self.browse.page = 0;

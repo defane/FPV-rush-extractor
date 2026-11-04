@@ -98,6 +98,13 @@ Create an empty session with **+** beside **SESSIONS**, then choose its name,
 flying day and optional details. Sessions can share a name without replacing
 one another.
 
+Select flights, then choose **Move** or **Copy** and a destination session.
+Move transfers the selected flights; Copy creates independently editable flights.
+Their clip details, labels, playback mute and figure annotations are preserved.
+Figure annotations are copied to independent recording identities rather than
+shared between sessions. Original video bytes stay intact. Copies share disk
+storage when supported; other filesystems may require a full file copy.
+
 Use session and flight tags to organize your library. Figure tags identify a
 moment or a range inside a recording and let you jump back to a manoeuvre.
 

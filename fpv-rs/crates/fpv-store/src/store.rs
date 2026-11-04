@@ -170,6 +170,61 @@ impl LibraryStore {
         Ok(())
     }
 
+    /// Transfer a validated selection with independent source identities. The
+    /// caller prepares immutable recording aliases before this transaction.
+    pub fn transfer_flights(&self, ids: &[Uuid], destination: Uuid, copy: bool,
+        sources: &[(Uuid, SourceFile)], tags: &[FigureTag], runs: &[DetectionRun]) -> Result<Vec<Uuid>> {
+        let mut db = self.db();
+        let tx = db.transaction()?;
+        let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM session WHERE id=?1)", [Id(destination)], |r| r.get(0))?;
+        not_found_unless(usize::from(exists), "session", destination)?;
+        let mut originals = Vec::new();
+        for id in ids {
+            let original = tx.query_row("SELECT sessionId,orderInSession,title,rating FROM flight WHERE id=?1", [Id(*id)], |r| Ok(Flight {
+                id:*id,session_id:r.get::<_,Id>(0)?.0,order_in_session:r.get(1)?,title:r.get(2)?,rating:r.get(3)?,
+            })).optional()?.ok_or(StoreError::NotFound{table:"flight",id:id.to_string()})?;
+            originals.push(original);
+        }
+        let mapping: HashMap<_,_> = sources.iter().map(|(old,new)| (*old,new.id)).collect();
+        for (_,source) in sources { upsert_source_file(&tx,source)?; }
+        for tag in tags { upsert_tag(&tx,tag)?; }
+        for run in runs { upsert_run(&tx,run)?; }
+        let mut order: i64 = tx.query_row("SELECT COALESCE(MAX(orderInSession),0) FROM flight WHERE sessionId=?1",[Id(destination)],|r|r.get(0))?;
+        let mut result = Vec::new();
+        for mut flight in originals {
+            let original = flight.id;
+            let clips: Vec<Clip> = tx.prepare(&format!("SELECT {CLIP_COLUMNS} FROM clip WHERE flightId=?1"))?
+                .query_map([Id(original)],clip)?.collect::<rusqlite::Result<_>>()?;
+            order += 1;
+            flight.session_id = destination;
+            flight.order_in_session = order;
+            if copy { flight.id = Uuid::new_v4(); }
+            upsert_flight(&tx,&flight)?;
+            if copy {
+                tx.execute("INSERT INTO flightLabel(flightId,label) SELECT ?1,label FROM flightLabel WHERE flightId=?2",params![Id(flight.id),Id(original)])?;
+                tx.execute("INSERT INTO flightPlayback(flightId,muted) SELECT ?1,muted FROM flightPlayback WHERE flightId=?2",params![Id(flight.id),Id(original)])?;
+            }
+            for mut clip in clips {
+                if copy { clip.id = Uuid::new_v4(); }
+                clip.flight_id = flight.id;
+                clip.source_file_id = *mapping.get(&clip.source_file_id)
+                    .ok_or(StoreError::NotFound{table:"transfer source",id:clip.source_file_id.to_string()})?;
+                upsert_clip(&tx,&clip)?;
+            }
+            result.push(flight.id);
+        }
+        if !copy {
+            for old in mapping.keys() {
+                // Keep recordings still used by an unselected flight. Remember
+                // unused original paths so folder loading cannot resurrect them.
+                tx.execute("INSERT OR IGNORE INTO deletedRecording(path) SELECT importedPath FROM sourceFile WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM clip WHERE sourceFileId=?1)",[Id(*old)])?;
+                tx.execute("DELETE FROM sourceFile WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM clip WHERE sourceFileId=?1)",[Id(*old)])?;
+            }
+        }
+        tx.commit()?;
+        Ok(result)
+    }
+
     /// Records where a recording now lives, after it was moved.
     pub fn set_imported_path(&self, file_id: Uuid, path: &str) -> Result<()> {
         let changed = self.db().execute("UPDATE sourceFile SET importedPath = ?2 WHERE id = ?1",

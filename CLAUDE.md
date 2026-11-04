@@ -208,6 +208,17 @@ Test (2) copy of PICT0031+0032: 829 MB → 508 MB, 7 flights of identical durati
 the same times. Doing it on real footage first exposed the rounding bug in cut boundaries
 (§6, "Cut boundaries are truncated").
 
+**Session transfers (#33):** library `transfer_flights` prepares new immutable
+recording paths (hard links, checked copies when unsupported) and independent
+source IDs in the destination, then commits flights/clips/tags/runs together.
+Copy creates new flight/clip IDs and clones labels/playback mute; Move preserves
+flight/clip IDs. Source-level figure tags become independent copies. Originals
+still referenced by unselected flights remain indexed; unused original rows are
+removed and their paths recorded in `deletedRecording` without deleting bytes.
+No source identity is shared across sessions, so existing segmentation, reduction
+and deletion remain isolated. Keep recordings immutable: never truncate a linked
+recording in place.
+
 ### 3.3 Data model (sketch)
 
 ```

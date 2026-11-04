@@ -1151,6 +1151,76 @@ impl Library {
     /// notes and tags. Text is trimmed, and an emptied place or note is none.
     /// A tag given twice, in any case, is kept once as first written. The
     /// day only dates the session: folders already on disk keep their names.
+    /// Move/copy selected flights without changing source bytes. Each destination
+    /// source has its own path/identity, so reduction and deletion stay isolated.
+    pub fn transfer_flights(&self, ids: &[String], destination: &str, copy: bool) -> Result<Vec<String>> {
+        let destination = self.session(destination)?;
+        if ids.is_empty() { return Err(LibraryError::Invalid("select at least one flight".into())); }
+        let mut selected = Vec::new();
+        let mut originals = HashMap::new();
+        for id in ids {
+            let id = parse(id)?;
+            if selected.contains(&id) { continue; }
+            let (flight,clips) = self.store.flight(id)?.ok_or_else(||LibraryError::NotFound(format!("flight {id}")))?;
+            if flight.session_id == destination.id { return Err(LibraryError::Invalid("choose another session".into())); }
+            for clip in clips {
+                let source = self.store.source_file(clip.source_file_id)?.ok_or_else(||LibraryError::NotFound("recording".into()))?;
+                if !Path::new(&source.imported_path).is_file() {
+                    return Err(LibraryError::Invalid(format!("recording is unavailable: {}",source.imported_path)));
+                }
+                originals.insert(source.id, source);
+            }
+            selected.push(id);
+        }
+        let folder = self.root.join(format!("{} — {}",fpv_import::folder_name(&destination.name),destination.id));
+        std::fs::create_dir_all(&folder)?;
+        let mut created = Vec::new();
+        let operation = (|| {
+            let mut sources = Vec::new();
+            let mut tags = Vec::new();
+            let mut runs = Vec::new();
+            for (old_id, mut source) in originals {
+                let old_path = PathBuf::from(&source.imported_path);
+                source.id = Uuid::new_v4();
+                source.session_id = destination.id;
+                let path = folder.join(format!("{}-{}",source.id,file_name(&source.imported_path)));
+                // Reserve a unique alias. A hard link shares immutable bytes;
+                // cross-filesystem/unsupported links fall back to a checked copy.
+                match std::fs::hard_link(&old_path,&path) {
+                    Ok(()) => created.push(path.clone()),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Err(error.into()),
+                    Err(_) => {
+                        let mut input = std::fs::File::open(&old_path)?;
+                        let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+                        created.push(path.clone());
+                        let expected = input.metadata()?.len();
+                        let copied = std::io::copy(&mut input,&mut output)?;
+                        if copied != expected || input.metadata()?.len() != expected {
+                            return Err(LibraryError::Invalid("recording changed while copying".into()));
+                        }
+                        output.set_modified(input.metadata()?.modified()?)?;
+                        output.sync_all()?;
+                    }
+                }
+                source.imported_path = path.to_string_lossy().into_owned();
+                for mut tag in self.store.tags_of_source_file(old_id)? {
+                    tag.id = Uuid::new_v4(); tag.source_file_id = source.id; tags.push(tag);
+                }
+                for mut run in self.store.detection_runs(old_id)? {
+                    run.id = Uuid::new_v4(); run.source_file_id = source.id; runs.push(run);
+                }
+                sources.push((old_id,source));
+            }
+            Ok(self.store.transfer_flights(&selected,destination.id,copy,&sources,&tags,&runs)?
+                .into_iter().map(uuid_string).collect())
+        })();
+        if operation.is_err() {
+            for path in created { let _ = std::fs::remove_file(path); }
+            let _ = std::fs::remove_dir(folder);
+        }
+        operation
+    }
+
     pub fn create_session(&self, edit: &SessionEdit) -> Result<String> {
         let session = Session::new("", None);
         let id = session.id;

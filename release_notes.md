@@ -1,5 +1,7 @@
 # Unreleased
 
+- Move or copy selected flights into another session, preserving annotations and audio policies with independent recording references and transactional failure recovery (#33).
+
 - Create empty sessions with the sidebar + button, today’s date and optional details; select the new session immediately and save its details atomically (#32).
 
 - Add experimental Snow Split to import/session detection profiles: combine local spatial and temporal noise evidence, keep black/menu/short takes, and record versioned parameters. Include synthetic regressions and a documented Linux ARM comparison; broader FPV validation remains open (#35).

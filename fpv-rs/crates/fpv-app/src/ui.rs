@@ -1246,6 +1246,14 @@ impl App {
                     egui::Button::new(format!("Export {}…", self.selected.len()))).clicked() {
                     self.dialog = Some(Dialog::bulk(self.selected.iter().cloned().collect()));
                 }
+                for (label,copy) in [("Move",false),("Copy",true)] {
+                    if ui.add_enabled(!self.selected.is_empty() && !remade,
+                        egui::Button::new(format!("{label} {}…",self.selected.len()))).clicked() {
+                        let mut ids: Vec<_> = self.selected.iter().cloned().collect();
+                        ids.sort();
+                        self.dialog = Some(Dialog::transfer(ids,copy));
+                    }
+                }
                 if ui.add_enabled(!self.selected.is_empty() && !remade,
                     egui::Button::new(crate::danger_text(format!("Delete {}…", self.selected.len())))).clicked() {
                     let mut ids: Vec<_> = self.selected.iter().cloned().collect();
