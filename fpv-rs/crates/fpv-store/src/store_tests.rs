@@ -329,6 +329,8 @@ fn keeps_a_sessions_detection_profile_and_defaults_old_ones_to_standard() {
     store.save_session(&alps).unwrap();
     let read = store.sessions().unwrap().into_iter().find(|s| s.id == alps.id).unwrap();
     assert_eq!(read.detection_profile, DetectionProfile::Textured);
+    store.save_session(&Session { detection_profile: DetectionProfile::SnowSplit, ..alps.clone() }).unwrap();
+    assert_eq!(store.sessions().unwrap().into_iter().find(|s| s.id == alps.id).unwrap().detection_profile, DetectionProfile::SnowSplit);
 }
 
 #[test]
@@ -545,4 +547,67 @@ fn upgrading_v7_keeps_existing_recordings_audible() {
     let file = store.source_file(id).unwrap().unwrap();
     assert!(!file.muted);
     assert_eq!(file.media.audio_codec.as_deref(), Some("pcm_s16le"));
+}
+
+#[test]
+fn playback_mute_migrates_from_v8_is_per_flight_and_survives_reopening() {
+    let root = std::env::temp_dir().join(format!("fpv-mute-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("library.sqlite");
+    let store = LibraryStore::with_connection(Connection::open(&path).unwrap(), Some("v8")).unwrap();
+    let (session, source) = session_with_one_file(&store, "PICT0001.AVI", 1);
+    let (first, _) = one_clip(&store, &source, 0, 100);
+    let second_source = file(&session, "PICT0002.AVI", 2);
+    store.save_source_files(std::slice::from_ref(&second_source)).unwrap();
+    let (second, _) = one_clip(&store, &second_source, 0, 100);
+    drop(store);
+    let store = LibraryStore::open(&path).unwrap();
+    assert_eq!(store.playback_mute(first.id).unwrap(), None);
+    store.set_playback_mute(first.id, true).unwrap();
+    store.set_playback_mute(second.id, false).unwrap();
+    drop(store);
+    let store = LibraryStore::open(&path).unwrap();
+    assert_eq!(store.playback_mute(first.id).unwrap(), Some(true));
+    assert_eq!(store.playback_mute(second.id).unwrap(), Some(false));
+    store.set_playback_mute(first.id, false).unwrap();
+    assert_eq!(store.playback_mute(first.id).unwrap(), Some(false));
+    assert_eq!(store.source_file(source.id).unwrap().unwrap(), source, "export/import policy unchanged");
+    store.delete_flight(first.id, &[]).unwrap();
+    assert_eq!(store.playback_mute(first.id).unwrap(), None, "deleted flights leave no preference");
+    assert!(store.set_playback_mute(Uuid::new_v4(), true).is_err());
+    assert_eq!(store.playback_mute(second.id).unwrap(), Some(false));
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn batch_deletion_rolls_back_when_any_selected_flight_is_missing() {
+    let store = LibraryStore::in_memory().unwrap();
+    let (session, file) = session_with_one_file(&store, "PICT0032.AVI", 32);
+    let (flight, _) = one_clip(&store, &file, 0, 200);
+    assert!(store.delete_flights(&[flight.id, Uuid::new_v4()], &[file.id]).is_err());
+    assert_eq!(store.flights(session.id).unwrap().len(), 1);
+    assert!(store.source_file(file.id).unwrap().is_some());
+    assert!(store.deleted_paths().unwrap().is_empty());
+}
+
+
+#[test]
+fn session_details_and_labels_roll_back_together() {
+    let store = LibraryStore::in_memory().unwrap();
+    store.db().execute_batch("CREATE TRIGGER reject_session_label BEFORE INSERT ON sessionLabel BEGIN SELECT RAISE(ABORT, 'test failure'); END;").unwrap();
+    let session = Session::new("New", None);
+    assert!(store.save_session_details(&session, &["tag".into()]).is_err());
+    assert!(store.sessions().unwrap().is_empty());
+}
+
+#[test]
+fn transfer_rolls_back_if_a_clip_cannot_be_mapped() {
+    let store = LibraryStore::in_memory().unwrap();
+    let (_,source) = session_with_one_file(&store,"shared.avi",1);
+    let (flight,clips) = one_clip(&store,&source,0,90);
+    let destination=Session::new("Other",None);store.save_session(&destination).unwrap();
+    assert!(store.transfer_flights(&[flight.id],destination.id,false,&[],&[],&[]).is_err());
+    assert_eq!(store.flight(flight.id).unwrap().unwrap(),(flight,vec![clips]));
+    assert!(store.flights(destination.id).unwrap().is_empty());
 }

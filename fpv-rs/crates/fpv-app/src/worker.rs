@@ -15,10 +15,13 @@ pub type Work =
 #[derive(Debug)]
 pub enum Reply {
     Done(String),
+    SessionCreated(String),
+    FlightsTransferred(String),
     Playback {
         flight: String,
         at: f64,
         parts: Vec<NativeSegment>,
+        playback_mute: Option<bool>,
     },
     BoundarySource {
         clip: String,
@@ -28,7 +31,13 @@ pub enum Reply {
         key: String,
         thumbnail: Thumbnail,
     },
+    BoundaryStrip {
+        clip: String,
+        index: usize,
+        thumbnail: Thumbnail,
+    },
     Folders(Vec<FolderView>),
+    FlightInfo(Vec<fpv_library::RecordingInfo>),
     Reduce(ReducePreview),
     Relocation(RelocationPreview),
     Deletion(FlightDeletion),
@@ -42,6 +51,7 @@ pub enum Reply {
     /// A lossless export met recordings at different rates: the library's
     /// reason, for the dialog to ask how instead.
     Mismatch(String),
+    NeedsReencode(String),
 }
 
 pub struct Job {
@@ -78,6 +88,19 @@ pub struct Progress {
 }
 
 impl Progress {
+    #[cfg(test)]
+    pub(crate) fn for_test(id: u64, context: egui::Context) -> (Self, Receiver<Event>) {
+        let (sender, events) = mpsc::channel();
+        (
+            Self {
+                id,
+                sender,
+                context,
+            },
+            events,
+        )
+    }
+
     pub fn step(&self, step: Step) {
         let _ = self.sender.send(Event::Progress { id: self.id, step });
         self.context.request_repaint();

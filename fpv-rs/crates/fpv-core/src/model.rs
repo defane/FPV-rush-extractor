@@ -51,6 +51,8 @@ pub enum DetectionProfile {
     /// Footage whose clean picture has a low vertical correlation — fine,
     /// uniform terrain filling the frame, or a softer camera chain.
     Textured,
+    /// Experimental positive-noise-only segmentation.
+    SnowSplit,
 }
 
 /// One recording as it came off the card, copied verbatim and never modified.
@@ -160,7 +162,7 @@ macro_rules! raw_values {
     };
 }
 raw_values!(ClipKind { Flight => "flight", Unknown => "unknown", Discarded => "discarded" });
-raw_values!(DetectionProfile { Standard => "standard", Textured => "textured" });
+raw_values!(DetectionProfile { Standard => "standard", Textured => "textured", SnowSplit => "snowSplit" });
 raw_values!(ClipEntry {
     Poweron => "poweron", Midflight => "midflight", FeedChange => "feedChange",
     Continuation => "continuation", Unknown => "unknown",
@@ -285,7 +287,7 @@ mod tests {
         assert_eq!(session.detection_profile, DetectionProfile::Standard);
         assert_eq!(DetectionProfile::default(), DetectionProfile::Standard);
         // The stored names, which the database and the UI both speak.
-        for profile in [DetectionProfile::Standard, DetectionProfile::Textured] {
+        for profile in [DetectionProfile::Standard, DetectionProfile::Textured, DetectionProfile::SnowSplit] {
             assert_eq!(DetectionProfile::from_raw(profile.as_str()), Some(profile));
         }
         assert_eq!(DetectionProfile::Textured.as_str(), "textured");

@@ -38,6 +38,49 @@ fn metadata_icon(ui: &mut egui::Ui, kind: MetadataIcon) {
     });
 }
 
+pub(crate) fn import_task_status(ui: &mut egui::Ui, task: &crate::Task) {
+    ui.horizontal_wrapped(|ui| {
+        if task.running {
+            ui.spinner();
+        }
+        ui.strong(if task.running {
+            if task.line.starts_with("Detecting flights ·") {
+                "Detecting flights"
+            } else {
+                "Importing videos"
+            }
+        } else if task.failed {
+            "Import failed"
+        } else {
+            "Import finished"
+        });
+        if task.running && task.total == 0 {
+            ui.label("Scanning videos…");
+        }
+        if task.failed {
+            ui.colored_label(Color32::LIGHT_RED, &task.line);
+        } else {
+            ui.label(&task.line);
+        }
+    });
+    if task.running && task.total > 0 {
+        ui.add(
+            egui::ProgressBar::new((task.done as f32 / task.total as f32).clamp(0.0, 1.0)).text(
+                format!(
+                    "{}/{} videos {}",
+                    task.done,
+                    task.total,
+                    if task.line.starts_with("Detecting flights ·") {
+                        "analyzed"
+                    } else {
+                        "processed"
+                    }
+                ),
+            ),
+        );
+    }
+}
+
 /// A view tab: a block of the column's width and a fixed height, its name
 /// centred on one line and how many centred below — drawn here, since egui's
 /// button places a centred two-line text off its middle.
@@ -744,7 +787,16 @@ impl App {
                 });
                 ui.separator();
                 if self.browse.view == View::Sessions {
-                    ui.small(RichText::new("SESSIONS").strong().color(ACCENT));
+                    ui.horizontal(|ui| {
+                        ui.small(RichText::new("SESSIONS").strong().color(ACCENT));
+                        if ui
+                            .add_enabled(!self.busy_with(&Scope::Library), egui::Button::new("+"))
+                            .on_hover_text("New session")
+                            .clicked()
+                        {
+                            self.dialog = Some(Dialog::new_session());
+                        }
+                    });
                     let ids: Vec<&str> = self.sessions.iter().map(|s| s.id.as_str()).collect();
                     browse::follow(
                         &ids,
@@ -803,7 +855,14 @@ impl App {
                                                 }
                                             }
                                             for camera in &sources.cameras {
-                                                metadata_icon(ui, MetadataIcon::Camera);
+                                                metadata_icon(
+                                                    ui,
+                                                    if camera == "Recording" {
+                                                        MetadataIcon::Film
+                                                    } else {
+                                                        MetadataIcon::Camera
+                                                    },
+                                                );
                                                 ui.small(RichText::new(camera).weak());
                                             }
                                             if !away.is_empty() {
@@ -979,7 +1038,7 @@ impl App {
                         session.segmentable && self.ffmpeg_ok,
                         egui::Button::new(browse::segment_label(session)),
                     )
-                    .on_hover_text("Action-cam takes are left as they are")
+                    .on_hover_text("Detect usable clips in every unreduced recording")
                     .clicked()
                 {
                     self.dialog = Some(Dialog::segment(session));
@@ -1193,6 +1252,23 @@ impl App {
                 if ui.add_enabled(!self.selected.is_empty() && !remade && self.ffmpeg_ok,
                     egui::Button::new(format!("Export {}…", self.selected.len()))).clicked() {
                     self.dialog = Some(Dialog::bulk(self.selected.iter().cloned().collect()));
+                }
+                for (label,copy) in [("Move",false),("Copy",true)] {
+                    if ui.add_enabled(!self.selected.is_empty() && !remade,
+                        egui::Button::new(format!("{label} {}…",self.selected.len()))).clicked() {
+                        let mut ids: Vec<_> = self.selected.iter().cloned().collect();
+                        ids.sort();
+                        self.dialog = Some(Dialog::transfer(ids,copy));
+                    }
+                }
+                if ui.add_enabled(!self.selected.is_empty() && !remade,
+                    egui::Button::new(crate::danger_text(format!("Delete {}…", self.selected.len())))).clicked() {
+                    let mut ids: Vec<_> = self.selected.iter().cloned().collect();
+                    ids.sort();
+                    self.dialog = Some(Dialog::delete_flights(ids.clone()));
+                    self.dialog_request = Some(self.submit("Plan selected deletion", true, move |library, _| {
+                        Ok(Reply::Deletion(library.flights_deletion(&ids)?))
+                    }));
                 }
             }); }
             let range = page_range(items.len(), &mut self.browse.page, self.browse.page_size);
@@ -1464,7 +1540,9 @@ impl App {
                 ui.horizontal_wrapped(|ui| {
                     metadata_icon(
                         ui,
-                        if flight.action_cam {
+                        if flight.source == "Recording" {
+                            MetadataIcon::Film
+                        } else if flight.action_cam {
                             MetadataIcon::Camera
                         } else {
                             MetadataIcon::Dvr
@@ -1576,6 +1654,16 @@ impl App {
             self.dialog = Some(Dialog::free_flight(flight));
             ui.close();
         }
+        if ui.button("Info").clicked() {
+            self.dialog = Some(Dialog::info(flight));
+            let id = flight.id.clone();
+            self.dialog_request = Some(self.submit(
+                "Recording information",
+                true,
+                move |library, _| Ok(Reply::FlightInfo(library.flight_info(&id)?)),
+            ));
+            ui.close();
+        }
         if ui.button("Edit title…").clicked() {
             self.dialog = Some(Dialog::title(flight));
             ui.close();
@@ -1620,6 +1708,7 @@ impl App {
                     Some(ctx.load_texture("video", image, egui::TextureOptions::LINEAR));
             }
         }
+        let previous_mute = viewer.playback_muted || viewer.volume <= 0.001;
         let mut open = true;
         let fullscreen = viewer.fullscreen;
         let expanded = fullscreen || viewer.window.maximized;
@@ -1707,6 +1796,14 @@ impl App {
             viewer.window.normal_rect = Some(shown.response.rect);
         }
         viewer.window.was_expanded = expanded;
+        let muted = viewer.playback_muted || viewer.volume <= 0.001;
+        if !viewer.muted && muted != previous_mute {
+            let id = viewer.flight.id.clone();
+            self.submit("Remember playback mute", true, move |library, _| {
+                library.set_playback_mute(&id, muted)?;
+                Ok(Reply::Done("Playback mute saved".into()))
+            });
+        }
         if viewer.fullscreen && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
             viewer.fullscreen = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
@@ -2108,6 +2205,15 @@ impl App {
                     }
                 });
             });
+            if let Some(task) = self
+                .tasks
+                .iter()
+                .rev()
+                .find(|t| t.label == "Import recordings")
+            {
+                ui.separator();
+                import_task_status(ui, task);
+            }
             if self.show_notices {
                 ui.separator();
                 ui.horizontal(|ui| {

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use fpv_media::{FfmpegError, FrameReader};
+use fpv_media::{FfmpegError, FrameReader, FfmpegRunner, MediaProbe};
 
 use crate::{ClipDetector, DetectedClip, DetectorSettings, FrameAnalyzer, FrameMetrics};
 
@@ -52,17 +52,32 @@ impl FileDetector {
     /// `progress` gets the seconds analysed so far and returns `false` to stop.
     pub fn detect_with_progress(&self, path: &Path, mut progress: impl FnMut(f64) -> bool)
         -> Result<DetectionResult, DetectError> {
-        let analyzer = FrameAnalyzer::default();
+        let analyzer = if self.settings.snow_split {
+            let runner = FfmpegRunner::new(self.reader.executable_directory.clone());
+            let media = MediaProbe::new(&runner).probe(path)?;
+            // Upsampling adds spatial correlation and can erase fine static.
+            // Preserve the legacy 640x480 path for all existing profiles.
+            FrameAnalyzer::new(
+                ((media.width.clamp(40,640) as usize / 40) * 40).max(40),
+                ((media.height.clamp(30,480) as usize / 30) * 30).max(30),
+            )
+        } else { FrameAnalyzer::default() };
         let rate = self.settings.sample_rate;
         let mut times = Vec::new();
         let mut metrics = Vec::new();
         let mut small_frames = Vec::new();
+        let mut snow_sampler = crate::snow_split::SnowSplitSampler::default();
 
         self.reader.read(path, rate, analyzer.width, analyzer.height, |index, pixels| {
             let time = index as f64 / rate;
             times.push(time);
-            metrics.push(analyzer.metrics(pixels));
-            small_frames.push(analyzer.downsample(pixels));
+            let small = analyzer.downsample(pixels);
+            let mut frame = analyzer.metrics(pixels);
+            if self.settings.snow_split {
+                frame.snow_split = Some(snow_sampler.analyze(&analyzer,pixels,&small,metrics.last_mut()));
+            }
+            metrics.push(frame);
+            small_frames.push(small);
             if progress(time) { Ok(()) } else { Err(DetectError::Cancelled) }
         })?;
 

@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fpv_core::{Clip, SourceFile, uuid_string};
 
-use crate::{FfmpegError, FfmpegInvoking, FfmpegTool};
+use crate::{FfmpegError, FfmpegInvoking, FfmpegTool, seconds_argument};
 
 /// Pulls a still out of a recording.
 pub struct ThumbnailGenerator<'a> {
@@ -126,14 +126,14 @@ impl<'a> ThumbnailGenerator<'a> {
                 .extend(["-skip_frame", "nokey", "-noaccurate_seek", "-copyts"].map(String::from));
         }
         if !output_seek {
-            arguments.extend(["-ss".into(), format!("{:.3}", seconds.max(0.0))]);
+            arguments.extend(["-ss".into(), seconds_argument(seconds)]);
         }
         arguments.extend(["-i".into(), source.to_string_lossy().into_owned()]);
         if output_seek {
             // Some AVI indexes seek into an H.264 GOP without its parameter
             // sets. Output-side seeking decodes from the stream start and is
             // slower, but produces a real frame for long-GOP AVI sources.
-            arguments.extend(["-ss".into(), format!("{:.3}", seconds.max(0.0))]);
+            arguments.extend(["-ss".into(), seconds_argument(seconds)]);
         }
         arguments.extend([
             "-frames:v".into(),

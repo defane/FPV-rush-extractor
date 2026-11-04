@@ -1,5 +1,49 @@
 # Unreleased
 
+- Handle FFprobe 9’s merged MP4 creation-time values in capture-date export verification and reimport, preserving subsecond corrections and rejecting conflicting timestamps (#37).
+
+- Edit session days and recording capture timestamps from Info with calendar and UTC time controls, explicit scope/Save, unknown-date support and persistent library-only corrections; refresh Info after saving and apply capture corrections to MP4 exports (#37).
+
+- Recognize Eachine EV300D headset recordings from original filenames or camera metadata, correct existing library labels and keep codec/export capabilities independent; use neutral labels for unidentified recordings (#36).
+
+- Detect strongly noise-like frozen frames in Snow Split with stricter spatial coverage and versioned parameters; retain experimental status pending broader independent FPV evaluation (#35).
+
+- Write current session names and flying dates into final MP4/AVI exports, including batch, concatenated, re-encoded and separate-part exports; enable the bundled H.264 concat bitstream filter required by multipart exports (#34).
+
+- Move or copy selected flights into another session, preserving annotations and audio policies with independent recording references and transactional failure recovery (#33).
+
+- Create empty sessions with the sidebar + button, today’s date and optional details; select the new session immediately and save its details atomically (#32).
+
+- Add experimental Snow Split to import/session detection profiles: combine local spatial and temporal noise evidence, keep black/menu/short takes, and record versioned parameters. Include synthetic regressions and a documented Linux ARM comparison; broader FPV validation remains open (#35).
+
+- Choose Standard or Textured terrain directly during import when segmentation is enabled; reuse an existing session’s saved profile and remember the selected profile for later segmentation.
+
+- Segment newly imported videos automatically by default, with an opt-out checkbox and visible analysis progress; keep existing reviewed flights unchanged and exclude the EACHINE sample’s trailing snow (#31).
+
+- Show live video import counts, skipped/failed totals and processed progress in the import dialog and collapsed bottom panel (#29).
+
+- Delete selected flights together with one confirmation, shared-source protection and explicit Trash failure reporting (#30).
+
+- Verify player resizing with actual corner-drag and Maximize/Restore regressions for landscape, 4:3 and portrait video; guard against the historical 480-point size cap (official #26).
+
+- Enable signal segmentation for every imported video codec, including H.264/HEVC; retain source labels independently, preserve clean EOF frames, warn before replacing all affected flights, and offer explicit re-encoding for precise long-GOP cuts (#28).
+
+- Keep export image-integrity checks compatible with modern FFmpeg and the older Linux tools used by CI.
+
+- Fix EV300D H.264/ADPCM AVI exports to MP4: preserve video packets and convert only incompatible audio to AAC, avoiding the reproduced zero-byte muxer failure (official #21).
+
+- Add a full-original-video filmstrip to Edit boundaries, independent hover/scrub preview, selected-range shading and draggable start/end handles; load images incrementally (official #24).
+
+- Support validated export publication on filesystems without hard links, including exFAT, while preserving no-overwrite and failed-copy cleanup (official #21).
+
+- Remember each flight's playback mute across navigation and restarts, independently of import/export audio policies (official #25).
+
+- Add thumbnail Info with copyable original/library paths, stored media metadata, availability and source-relative start/exclusive-end times for every recording (official #23).
+
+- Close submitted export panels immediately, keep progress/errors in Tasks and reopen frame-rate recovery without interrupting another dialog (official #22).
+
+- Validate exported video packets before publishing files; failed exports leave no empty or header-only destination and never replace an existing file (official #21).
+
 - Moved notifications into the collapsible bottom task panel (#1).
 - Decode long-GOP poster frames from the beginning when AVI indexes cannot seek into H.264 streams (#2).
 - Seek through long-GOP footage by decoding from the input start, and keep the seek slider interactive (#3).

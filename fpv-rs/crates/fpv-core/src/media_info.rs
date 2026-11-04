@@ -41,16 +41,14 @@ impl MediaInfo {
         self.video_codec == "mjpeg"
     }
 
-    /// Whether the detector should cut this recording into flights.
-    ///
-    /// The analog DVR records one long take with snow between flights, which is
-    /// what segmentation exists for. An action cam (GoPro, DJI, Insta360…) is
-    /// started and stopped by hand, so one file is already one take: it becomes
-    /// a whole-file flight at import and the detector never sees it — run on a
-    /// clean H.264 picture it would find "snow" in nothing and cut nonsense.
-    /// MJPEG is the analog signature: every Fat Shark DVR writes it, and no
-    /// action cam does.
+    /// Every imported recording can contain unusable video, regardless of codec.
+    /// Eligibility is independent of source labels and lossless-cut capability.
     pub fn needs_segmentation(&self) -> bool {
+        true
+    }
+
+    /// Legacy source-label hint, never a gate for running signal detection.
+    pub fn is_analog_dvr(&self) -> bool {
         self.video_codec == "mjpeg"
     }
 
@@ -79,14 +77,22 @@ mod tests {
     }
 
     #[test]
-    fn segments_the_analog_dvr_and_never_an_action_cam_take() {
+    fn all_imported_video_codecs_are_eligible_for_signal_segmentation() {
+        for codec in ["mjpeg", "h264", "hevc", "mpeg4", "prores"] {
+            let recording = MediaInfo::new(720, 576, FrameRate::new(30, 1), 600.0, codec);
+            assert!(recording.needs_segmentation(), "{codec} must reach the detector");
+        }
+    }
+
+    #[test]
+    fn segmentation_eligibility_is_independent_of_lossless_cut_capability() {
         let dvr = MediaInfo::new(640, 480, FrameRate::new(1_000_000, 40_061), 372.7, "mjpeg");
         assert!(dvr.needs_segmentation() && dvr.is_all_intra());
-        // On a clean digital picture the detector would find "snow" in
-        // nothing, and re-segmenting would wipe the take.
+        // H.264/HEVC can contain recorded snow too, but precise cuts need
+        // different export handling than the all-intra DVR codec.
         for codec in ["h264", "hevc"] {
             let take = MediaInfo::new(3840, 2160, FrameRate::new(60_000, 1001), 30.0, codec);
-            assert!(!take.needs_segmentation(), "{codec}");
+            assert!(take.needs_segmentation(), "{codec}");
             // Long-GOP: cut only from frame 0, never mid-stream.
             assert!(!take.is_all_intra(), "{codec}");
         }

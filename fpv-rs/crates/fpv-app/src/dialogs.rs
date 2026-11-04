@@ -4,13 +4,13 @@ use crate::{
     ACCENT, App, Reply, Scope,
     browse::{flight_name, labels},
 };
-use chrono::{Datelike, Months, NaiveDate};
+use chrono::{Datelike, Months, NaiveDate, Timelike};
 use eframe::egui;
 use fpv_library::{
     CacheKind, CacheUsage, Config, ExportMode, FlightDeletion, FlightView, FolderView,
     ImportProgress, ReducePreview, RelocationPreview, SegmentProgress, SessionEdit, SessionView,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -18,18 +18,57 @@ enum Kind {
     Import,
     Settings,
     Session,
+    NewSession,
     Profile,
     Segment,
     RemoveSession,
     Reduce,
     Relocate,
     DeleteFlight,
+    DeleteFlights,
+    TransferFlights,
     Title,
     Editor,
+    Info,
     Export,
     Bulk,
     Load,
     FreeSpace,
+}
+
+struct InfoDateDraft {
+    known: bool,
+    date: Option<NaiveDate>,
+    month: NaiveDate,
+    open: bool,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    nanos: u32,
+}
+impl InfoDateDraft {
+    fn new(value: Option<chrono::DateTime<chrono::Utc>>) -> Self {
+        let date = value.map_or_else(|| chrono::Utc::now().date_naive(), |v| v.date_naive());
+        Self {
+            known: value.is_some(),
+            date: Some(date),
+            month: date.with_day(1).unwrap(),
+            open: false,
+            hour: value.map_or(0, |v| v.hour()),
+            minute: value.map_or(0, |v| v.minute()),
+            second: value.map_or(0, |v| v.second()),
+            nanos: value.map_or(0, |v| v.nanosecond()),
+        }
+    }
+    fn value(&self) -> Result<Option<String>, String> {
+        if !self.known {
+            return Ok(None);
+        }
+        self.date
+            .and_then(|d| d.and_hms_nano_opt(self.hour, self.minute, self.second, self.nanos))
+            .map(|v| Some(v.and_utc().to_rfc3339()))
+            .ok_or_else(|| "Choose a valid capture date and time".into())
+    }
 }
 
 pub(crate) struct Dialog {
@@ -49,8 +88,11 @@ pub(crate) struct Dialog {
     mode: ExportMode,
     acknowledged: bool,
     flight: Option<FlightView>,
+    info: Option<Vec<fpv_library::RecordingInfo>>,
+    info_dates: HashMap<String, InfoDateDraft>,
     /// The reason a lossless export was refused, while the dialog asks how.
     mismatch: Option<String>,
+    cut_requires_reencode: bool,
     /// The file name an export proposes: "<session> — <title>.avi".
     file_name: String,
     flights: Vec<String>,
@@ -67,6 +109,8 @@ pub(crate) struct Dialog {
     restore: HashSet<String>,
     budgets: [f64; 2],
     mute_videos: bool,
+    segment_after_import: bool,
+    import_profile_session: Option<String>,
     do_not_show_splash: bool,
     editor_clip: usize,
     editor_loading: Option<String>,
@@ -76,6 +120,9 @@ pub(crate) struct Dialog {
     editor_saved: Vec<(i64, i64)>,
     editor_source: Option<(String, fpv_library::NativeSegment)>,
     editor_preview: Option<crate::boundary::SourcePreview>,
+    editor_strip: Vec<Option<String>>,
+    editor_strip_next: usize,
+    editor_strip_job: Option<u64>,
 }
 
 impl Dialog {
@@ -97,7 +144,10 @@ impl Dialog {
             mode: ExportMode::Lossless,
             acknowledged: false,
             flight: None,
+            info: None,
+            info_dates: HashMap::new(),
             mismatch: None,
+            cut_requires_reencode: false,
             file_name: String::new(),
             flights: vec![],
             folders: None,
@@ -112,6 +162,8 @@ impl Dialog {
             budgets: [10.0, 2.0],
             emptying: None,
             mute_videos: false,
+            segment_after_import: false,
+            import_profile_session: None,
             do_not_show_splash: false,
             editor_clip: 0,
             editor_loading: None,
@@ -119,6 +171,9 @@ impl Dialog {
             editor_saved: vec![],
             editor_source: None,
             editor_preview: None,
+            editor_strip: vec![None; crate::strips::STRIP],
+            editor_strip_next: 0,
+            editor_strip_job: None,
         }
     }
     pub fn import(folder: Option<PathBuf>, name: String) -> Self {
@@ -130,6 +185,7 @@ impl Dialog {
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             name,
+            segment_after_import: true,
             ..Self::new(Kind::Import, "Import recordings")
         }
     }
@@ -141,6 +197,14 @@ impl Dialog {
             mute_videos: config.mute_videos,
             do_not_show_splash: config.do_not_show_splash,
             ..Self::new(Kind::Settings, "Settings")
+        }
+    }
+    pub fn new_session() -> Self {
+        let today = chrono::Local::now().date_naive();
+        Self {
+            date: Some(today),
+            calendar_month: today.with_day(1).unwrap(),
+            ..Self::new(Kind::NewSession, "New session")
         }
     }
     pub fn session(session: &SessionView) -> Self {
@@ -212,6 +276,15 @@ impl Dialog {
     pub fn delete_flight(flight: &FlightView) -> Self {
         Self::of_flight(Kind::DeleteFlight, "Delete flight", flight)
     }
+    pub fn delete_flights(flights: Vec<String>) -> Self {
+        Self {
+            flights,
+            ..Self::new(Kind::DeleteFlights, "Delete selected flights")
+        }
+    }
+    pub fn info(flight: &FlightView) -> Self {
+        Self::of_flight(Kind::Info, "Info", flight)
+    }
     pub fn title(flight: &FlightView) -> Self {
         Self::of_flight(Kind::Title, "Edit title", flight)
     }
@@ -234,6 +307,20 @@ impl Dialog {
             ..Self::of_flight(Kind::Export, "Export", flight)
         }
     }
+    pub fn transfer(flights: Vec<String>, copy: bool) -> Self {
+        Self {
+            flights,
+            flag: copy,
+            ..Self::new(
+                Kind::TransferFlights,
+                if copy {
+                    "Copy selected flights"
+                } else {
+                    "Move selected flights"
+                },
+            )
+        }
+    }
     pub fn bulk(flights: Vec<String>) -> Self {
         Self {
             flights,
@@ -248,6 +335,36 @@ impl Dialog {
     pub fn reply(&mut self, reply: Reply) {
         match reply {
             Reply::BoundarySource { clip, source } => self.editor_source = Some((clip, source)),
+            Reply::BoundaryStrip {
+                clip,
+                index,
+                thumbnail,
+            } if self.editor_loading.as_deref() == Some(&clip)
+                && index < self.editor_strip.len() =>
+            {
+                self.editor_strip[index] = Some(thumbnail.path.to_string_lossy().into_owned());
+                self.editor_strip_next = index + 1;
+                self.editor_strip_job = None;
+            }
+            Reply::FlightInfo(parts) => {
+                if let Some(first) = parts.first() {
+                    self.date = first
+                        .session
+                        .date
+                        .map(|v| v.with_timezone(&chrono::Local).date_naive());
+                    self.calendar_month = self
+                        .date
+                        .unwrap_or_else(|| chrono::Local::now().date_naive())
+                        .with_day(1)
+                        .unwrap();
+                }
+                for part in &parts {
+                    self.info_dates
+                        .entry(part.source.id.to_string())
+                        .or_insert_with(|| InfoDateDraft::new(part.source.media.creation_date));
+                }
+                self.info = Some(parts);
+            }
             Reply::Folders(folders) => self.folders = Some(folders),
             Reply::Reduce(preview) => self.reduction = Some(preview),
             Reply::Relocation(preview) => self.relocation = Some(preview),
@@ -260,14 +377,21 @@ impl Dialog {
                 }
                 self.path = path.to_string_lossy().into_owned();
             }
-            Reply::Mismatch(reason) => self.mismatch = Some(reason),
+            Reply::Mismatch(reason) => {
+                self.mismatch = Some(reason);
+                self.cut_requires_reencode = false;
+            }
+            Reply::NeedsReencode(reason) => {
+                self.mismatch = Some(reason);
+                self.cut_requires_reencode = true;
+            }
             _ => {}
         }
     }
     pub fn finished(&mut self, id: u64, success: bool) -> bool {
         if self.saving == Some(id) {
             self.saving = None;
-            success
+            success && self.kind != Kind::Info
         } else {
             false
         }
@@ -279,7 +403,7 @@ impl App {
     /// ones, a task remaking its session for the others.
     fn dialog_scope(&self, dialog: &Dialog) -> Scope {
         match dialog.kind {
-            Kind::Import | Kind::Load | Kind::Settings => Scope::Library,
+            Kind::Import | Kind::Load | Kind::Settings | Kind::NewSession => Scope::Library,
             Kind::Session
             | Kind::Profile
             | Kind::Segment
@@ -296,11 +420,34 @@ impl App {
                     })
                     .map_or(Scope::None, |session| Scope::Session(session.to_owned()))
             }
-            Kind::Bulk => Scope::None,
+            Kind::TransferFlights => Scope::Sessions(
+                dialog
+                    .flights
+                    .iter()
+                    .filter_map(|id| self.session_of_flight(id).map(str::to_owned))
+                    .chain((!dialog.id.is_empty()).then(|| dialog.id.clone()))
+                    .collect(),
+            ),
+            Kind::DeleteFlights => Scope::Sessions(
+                dialog
+                    .flights
+                    .iter()
+                    .filter_map(|id| self.session_of_flight(id).map(str::to_owned))
+                    .collect(),
+            ),
+            Kind::Bulk | Kind::Info => Scope::None,
         }
     }
 
     pub(crate) fn dialog_window(&mut self, ctx: &egui::Context) {
+        if self.dialog.is_none()
+            && let Some(id) = self
+                .export_dialogs
+                .iter()
+                .find_map(|(&id, dialog)| dialog.saving.is_none().then_some(id))
+        {
+            self.dialog = self.export_dialogs.remove(&id);
+        }
         let Some(mut dialog) = self.dialog.take() else {
             return;
         };
@@ -315,6 +462,8 @@ impl App {
         modal.show(ctx, |ui| {
             ui.set_width(if dialog.kind == Kind::Editor {
                 (ctx.content_rect().width() - 64.0).clamp(240.0, 1000.0)
+            } else if dialog.kind == Kind::Info {
+                (ctx.content_rect().width() - 64.0).clamp(160.0, 520.0)
             } else {
                 520.0
             });
@@ -336,17 +485,45 @@ impl App {
                         ui.add_enabled_ui(enabled, |ui| self.dialog_form(ui, &mut dialog));
                     });
             }
-            if dialog.saving.is_some() {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Working… progress is shown in Tasks.");
-                });
+            if let Some(id) = dialog.saving {
+                if dialog.kind == Kind::Import {
+                    if let Some(task) = self.tasks.iter().find(|t| t.id == id) {
+                        crate::ui::import_task_status(ui, task);
+                    }
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Working… progress is shown in Tasks.");
+                    });
+                }
             }
-            if ui.button("Close").clicked() {
-                close = true;
-            }
+            ui.horizontal(|ui| {
+                if dialog.kind == Kind::Editor
+                    && let Some(clip) = dialog
+                        .flight
+                        .as_ref()
+                        .and_then(|flight| flight.clips.get(dialog.editor_clip))
+                    && ui
+                        .add_enabled(enabled, egui::Button::new("Save this clip"))
+                        .clicked()
+                {
+                    let (id, start, end) = (clip.id.clone(), clip.start_frame, clip.end_frame);
+                    dialog.saving =
+                        Some(self.submit("Save clip boundary", false, move |library, _| {
+                            library.update_clip(&id, start, end)?;
+                            Ok(Reply::Done("Boundaries saved".into()))
+                        }));
+                }
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
         });
-        if !close {
+        if matches!(dialog.kind, Kind::Export | Kind::Bulk)
+            && let Some(id) = dialog.saving
+        {
+            self.export_dialogs.insert(id, dialog);
+        } else if !close {
             self.dialog = Some(dialog);
         } else {
             self.dialog_request = None;
@@ -380,6 +557,15 @@ impl App {
                 }
                 ui.label("Session name");
                 ui.text_edit_singleline(&mut dialog.name);
+                if dialog.import_profile_session.as_deref() != Some(dialog.name.trim()) {
+                    dialog.profile = self
+                        .sessions
+                        .iter()
+                        .find(|s| s.name == dialog.name.trim())
+                        .map(|s| s.detection_profile.clone())
+                        .unwrap_or_else(|| "standard".into());
+                    dialog.import_profile_session = Some(dialog.name.trim().to_owned());
+                }
                 if self.sessions.iter().any(|s| s.name == dialog.name.trim()) {
                     ui.colored_label(
                         egui::Color32::from_rgb(230, 160, 60),
@@ -415,6 +601,43 @@ impl App {
                     }
                 });
                 ui.small("Each session gets its own folder inside, kept for later imports.");
+                ui.checkbox(&mut dialog.segment_after_import, "Segment videos after import")
+                    .on_hover_text("Detect usable clips in newly imported recordings; existing flights keep their edits.");
+                if dialog.segment_after_import {
+                    ui.horizontal(|ui| {
+                        ui.label("Detection profile");
+                        egui::ComboBox::from_id_salt("import-detection-profile")
+                            .selected_text(match dialog.profile.as_str() {
+                                "textured" => "Textured terrain",
+                                "snowSplit" => "Snow Split",
+                                _ => "Standard",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut dialog.profile,
+                                    "standard".into(),
+                                    "Standard",
+                                );
+                                ui.selectable_value(
+                                    &mut dialog.profile,
+                                    "textured".into(),
+                                    "Textured terrain",
+                                );
+                                ui.selectable_value(
+                                    &mut dialog.profile,
+                                    "snowSplit".into(),
+                                    "Snow Split",
+                                );
+                            });
+                    });
+                    ui.small(if dialog.profile == "snowSplit" {
+                        "Experimental: cut only on confirmed analog snow. Keep black screens, menus and short clips."
+                    } else if dialog.profile == "textured" {
+                        "For rocky or highly detailed terrain that Standard may mistake for snow."
+                    } else {
+                        "Standard signal and snow detection."
+                    });
+                }
                 ui.checkbox(
                     &mut dialog.flag,
                     "Delete newly imported files from the card after verification",
@@ -433,13 +656,31 @@ impl App {
                         dialog.flag,
                         dialog.mute_videos,
                     );
+                    let segment = dialog.segment_after_import;
+                    let profile = dialog.profile.clone();
                     dialog.saving = Some(self.submit_in(Scope::Library, "Import recordings", false, move |library, progress| {
                         let mut counter = ImportProgress::default();
-                        let report = library.import_with_audio(&path, &name, date.as_deref(), delete, no_sound, |event| progress.step(counter.step(event)))?;
-                        if report.failed > 0 || !report.kept.is_empty() {
-                            return Err(fpv_library::LibraryError::Invalid(format!("Imported {}, skipped {}, failed {}. Kept on card: {}. See task logs.", report.imported, report.skipped, report.failed, report.kept.join("; "))));
+                        let mut imported = Vec::new();
+                        let report = library.import_with_audio(&path, &name, date.as_deref(), delete, no_sound, |event| {
+                            if let fpv_library::ImportEvent::Imported(ref file) = event { imported.push(file.id); }
+                            progress.step(counter.step(event));
+                        })?;
+                        let mut summary = import_summary(&report);
+                        let mut detection_failed = Vec::new();
+                        if segment && !imported.is_empty() {
+                            let mut counter = SegmentProgress::new(imported.len());
+                            let result = library.segment_imported_with_profile(&imported, &profile, |event| {
+                                let mut step = counter.step(event);
+                                step.line = format!("Detecting flights · {} imported · {}", report.imported, step.line);
+                                progress.step(step);
+                            })?;
+                            summary = format!("{} imported, {} skipped, {} flights detected, {} clips", report.imported, report.skipped, result.flights, result.clips);
+                            detection_failed = result.failed;
                         }
-                        Ok(Reply::Done(import_summary(&report)))
+                        if report.failed > 0 || !report.kept.is_empty() || !detection_failed.is_empty() {
+                            return Err(fpv_library::LibraryError::Invalid(format!("{summary}. Import failures: {}. Kept on card: {}. Detection failures: {:?}. See task logs.", report.failed, report.kept.join("; "), detection_failed)));
+                        }
+                        Ok(Reply::Done(summary))
                     }));
                 }
             }
@@ -592,7 +833,58 @@ impl App {
                 ui.small("FPV Rush · MIT OR Apache-2.0");
                 ui.small("This software uses FFmpeg. Bundled tools, license, corresponding source and build instructions are in resources/licenses/ffmpeg.");
             }
-            Kind::Session => {
+            Kind::TransferFlights => {
+                ui.label(format!("{} selected flights", dialog.flights.len()));
+                let candidates: Vec<_> = self
+                    .sessions
+                    .iter()
+                    .filter(|s| !s.flights.iter().any(|f| dialog.flights.contains(&f.id)))
+                    .collect();
+                let selected = candidates
+                    .iter()
+                    .find(|s| s.id == dialog.id)
+                    .map_or("Choose a session".into(), |s| {
+                        format!("{} · {}", s.name, &s.id[..s.id.len().min(8)])
+                    });
+                egui::ComboBox::from_id_salt("transfer-destination")
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        for session in &candidates {
+                            ui.selectable_value(
+                                &mut dialog.id,
+                                session.id.clone(),
+                                format!(
+                                    "{} · {}",
+                                    session.name,
+                                    &session.id[..session.id.len().min(8)]
+                                ),
+                            );
+                        }
+                    });
+                if candidates.is_empty() {
+                    ui.small("Create another session with + in the sidebar first.");
+                }
+                ui.small("Clip details and figure annotations are independent in the destination. Original video bytes are preserved; disks without shared-file support may need extra space.");
+                let label = if dialog.flag {
+                    "Copy flights"
+                } else {
+                    "Move flights"
+                };
+                if ui
+                    .add_enabled(!dialog.id.is_empty(), egui::Button::new(label))
+                    .clicked()
+                {
+                    let ids = dialog.flights.clone();
+                    let destination = dialog.id.clone();
+                    let copy = dialog.flag;
+                    let scope = self.dialog_scope(dialog);
+                    dialog.saving = Some(self.submit_in(scope, label, false, move |library, _| {
+                        library.transfer_flights(&ids, &destination, copy)?;
+                        Ok(Reply::FlightsTransferred(destination))
+                    }));
+                }
+            }
+            Kind::Session | Kind::NewSession => {
                 field(ui, "Name", &mut dialog.name);
                 date_picker(
                     ui,
@@ -615,10 +907,29 @@ impl App {
                         notes: dialog.notes.clone(),
                         labels: labels(&dialog.labels),
                     };
-                    dialog.saving = Some(self.submit("Edit session", false, move |library, _| {
-                        library.update_session(&id, &edit)?;
-                        Ok(Reply::Done("Session saved".into()))
-                    }));
+                    let creating = dialog.kind == Kind::NewSession;
+                    let scope = if creating {
+                        Scope::Library
+                    } else {
+                        Scope::Session(id.clone())
+                    };
+                    dialog.saving = Some(self.submit_in(
+                        scope,
+                        if creating {
+                            "Create session"
+                        } else {
+                            "Edit session"
+                        },
+                        false,
+                        move |library, _| {
+                            if creating {
+                                Ok(Reply::SessionCreated(library.create_session(&edit)?))
+                            } else {
+                                library.update_session(&id, &edit)?;
+                                Ok(Reply::Done("Session saved".into()))
+                            }
+                        },
+                    ));
                 }
             }
             Kind::Profile | Kind::Segment => {
@@ -630,6 +941,10 @@ impl App {
                     ui.radio_value(&mut dialog.profile, "textured".into(), "Textured terrain");
                     ui.indent("textured", |ui| {
                         ui.small("Rock faces, alpine slopes: a clean picture the standard profile reads as snow. Absorbs dropouts under 1 s.");
+                    });
+                    ui.radio_value(&mut dialog.profile, "snowSplit".into(), "Snow Split");
+                    ui.indent("snow-split", |ui| {
+                        ui.small("Experimental: cut only on confirmed analog snow. Keep black screens, menus and short clips.");
                     });
                     ui.small("A change applies at the next segmentation.");
                     if ui.button("Save").clicked() {
@@ -657,10 +972,10 @@ impl App {
                     for line in lost {
                         ui.label(format!("• {line}"));
                     }
-                    ui.weak("Figures stay: they belong to the recordings. Action-cam takes are not touched.");
+                    ui.weak("Figures stay: they belong to the recordings. Reduced clips are not touched.");
                     ui.checkbox(
                         &mut dialog.acknowledged,
-                        "I accept replacing the existing DVR segmentation",
+                        "I accept replacing the existing segmentation",
                     );
                 }
                 if ui
@@ -682,12 +997,7 @@ impl App {
                                 .snapshot()?
                                 .iter()
                                 .find(|s| s.id == id)
-                                .map(|s| {
-                                    s.files
-                                        .iter()
-                                        .filter(|f| !f.action_cam && !f.reduced)
-                                        .count()
-                                })
+                                .map(|s| s.files.iter().filter(|f| !f.reduced).count())
                                 .unwrap_or_default();
                             let mut counter = SegmentProgress::new(total);
                             let report =
@@ -840,8 +1150,14 @@ impl App {
                     ui.spinner();
                 }
             }
-            Kind::DeleteFlight => {
+            Kind::DeleteFlight | Kind::DeleteFlights => {
                 if let Some(preview) = &dialog.deletion {
+                    if dialog.kind == Kind::DeleteFlights {
+                        ui.label(format!(
+                            "{} selected flights will be deleted.",
+                            dialog.flights.len()
+                        ));
+                    }
                     let (lines, button) = deletion_text(preview);
                     for (warning, line) in lines {
                         if warning {
@@ -853,11 +1169,26 @@ impl App {
                     if ui.add(crate::danger(button)).clicked() {
                         self.viewer = None;
                         let id = dialog.id.clone();
-                        dialog.saving =
-                            Some(self.submit("Delete flight", false, move |library, _| {
-                                library.delete_flight(&id)?;
-                                Ok(Reply::Done("Flight deleted".into()))
-                            }));
+                        let ids = dialog.flights.clone();
+                        let bulk = dialog.kind == Kind::DeleteFlights;
+                        let scope = self.dialog_scope(dialog);
+                        dialog.saving = Some(self.submit_in(
+                            scope,
+                            "Delete flights",
+                            false,
+                            move |library, _| {
+                                if bulk {
+                                    library.delete_flights(&ids)?;
+                                } else {
+                                    library.delete_flight(&id)?;
+                                }
+                                Ok(Reply::Done(if bulk {
+                                    format!("{} flights deleted", ids.len())
+                                } else {
+                                    "Flight deleted".into()
+                                }))
+                            },
+                        ));
                     }
                 } else {
                     ui.spinner();
@@ -899,6 +1230,9 @@ impl App {
                             if dialog.editor_loading.as_deref() != Some(&clip.id) {
                                 dialog.editor_preview = None;
                                 dialog.editor_source = None;
+                                dialog.editor_strip.fill(None);
+                                dialog.editor_strip_next = 0;
+                                dialog.editor_strip_job = None;
                                 dialog.editor_loading = Some(clip.id.clone());
                                 let id = clip.file_id.clone();
                                 let clip_id = clip.id.clone();
@@ -925,27 +1259,179 @@ impl App {
                                     if ui.button("Retry preview").clicked() { dialog.editor_loading = None; }
                                 } else { ui.label("Preparing source preview…"); }
                             }
+                            if let Some(job) = dialog.editor_strip_job
+                                && self.tasks.iter().any(|task| task.id == job && !task.running && task.failed) {
+                                dialog.editor_strip_job = None;
+                                dialog.editor_strip_next += 1;
+                            }
+                            // One thumbnail request at a time: closing or changing source
+                            // cannot leave a queue of an entire filmstrip blocking work.
+                            if dialog.editor_preview.is_some() && dialog.editor_strip_job.is_none()
+                                && dialog.editor_strip_next < dialog.editor_strip.len() {
+                                let index = dialog.editor_strip_next;
+                                let count = dialog.editor_strip.len();
+                                let file = clip.file_id.clone();
+                                let id = clip.id.clone();
+                                let job = self.submit("Source filmstrip", true, move |library, _| {
+                                    Ok(Reply::BoundaryStrip { clip: id, index, thumbnail: library.source_strip_frame(&file, index, count)? })
+                                });
+                                dialog.editor_strip_job = Some(job);
+                                self.dialog_request = Some(job);
+                            }
+                            let textures: Vec<_> = dialog.editor_strip.iter().map(|path|
+                                path.as_deref().and_then(|path| self.images.get(ui.ctx(), path))).collect();
+                            let playhead = dialog.editor_preview.as_ref().map(|p| p.position_frame(clip.fps));
                             ui.separator();
-                            if let Some(frame) = crate::boundary::trim_timeline(ui, clip)
+                            if let Some(frame) = crate::boundary::trim_timeline(ui, clip, &textures, playhead)
                                 && let Some(preview) = &mut dialog.editor_preview {
                                 preview.seek_frame(frame);
                                 ui.ctx().request_repaint();
                             }
-                            ui.small("Drag the left edge for start and the right edge for end. End is exclusive.");
+                            ui.small("Entire source recording: hover or scrub to preview. Drag left/start and right/end handles to select the clip. End is exclusive.");
                             let saved = dialog.editor_saved.get(dialog.editor_clip).copied();
                             if let Some(frame) = crate::boundary::nudge_controls(ui, clip, &mut dialog.editor_edge, saved)
                                 && let Some(preview) = &mut dialog.editor_preview {
                                 preview.seek_frame(frame);
                                 ui.ctx().request_repaint();
                             }
-                            if ui.button("Save this clip").clicked() {
-                                let (id, start, end) = (clip.id.clone(), clip.start_frame, clip.end_frame);
-                                dialog.saving = Some(self.submit("Save clip boundary", false, move |library, _| {
-                                    library.update_clip(&id, start, end)?;
-                                    Ok(Reply::Done("Boundaries saved".into()))
-                                }));
-                            }
                         });
+                }
+            }
+            Kind::Info => {
+                if let Some(parts) = dialog.info.clone() {
+                    ui.checkbox(&mut dialog.flag, "Edit dates");
+                    if dialog.flag {
+                        ui.small("Save applies only the chosen field. Close discards unsaved changes. Capture times use UTC to avoid daylight-saving ambiguity.");
+                    }
+                    let mut save_day = false;
+                    let mut save_recording = None;
+                    if let Some(first) = parts.first() {
+                        ui.label(format!("Session: {}", first.session.name));
+                        if dialog.flag {
+                            date_picker(
+                                ui,
+                                "Session flying day (all flights)",
+                                &mut dialog.date,
+                                &mut dialog.calendar_month,
+                                &mut dialog.date_picker_open,
+                                true,
+                            );
+                            save_day = ui
+                                .add_enabled(
+                                    !self.session_busy(&fpv_core::uuid_string(first.session.id)),
+                                    egui::Button::new("Save session day"),
+                                )
+                                .clicked();
+                        } else {
+                            info_value(
+                                ui,
+                                "Session flying day",
+                                format_date(dialog.date).unwrap_or_else(|| "Unknown".into()),
+                            );
+                        }
+                    }
+                    ui.label("Times refer to each original recording. End is exclusive.");
+                    if parts.is_empty() {
+                        ui.label("No recordings for this flight.");
+                    }
+                    for (index, part) in parts.iter().enumerate() {
+                        ui.separator();
+                        ui.strong(format!("Recording {} of {}", index + 1, parts.len()));
+                        if dialog.flag {
+                            ui.small(format!("Capture time correction affects {} clips using this recording. Original files stay unchanged.",part.shared_clips));
+                            let id = part.source.id.to_string();
+                            let draft = dialog.info_dates.entry(id.clone()).or_insert_with(|| {
+                                InfoDateDraft::new(part.source.media.creation_date)
+                            });
+                            ui.push_id(&id, |ui| {
+                                ui.checkbox(&mut draft.known, "Capture time known");
+                                ui.add_enabled_ui(draft.known, |ui| {
+                                    date_picker(
+                                        ui,
+                                        "Capture date",
+                                        &mut draft.date,
+                                        &mut draft.month,
+                                        &mut draft.open,
+                                        false,
+                                    );
+                                    ui.label("Time (UTC)");
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label("Hour");
+                                        ui.add(egui::DragValue::new(&mut draft.hour).range(0..=23));
+                                        ui.label("Minute");
+                                        ui.add(
+                                            egui::DragValue::new(&mut draft.minute).range(0..=59),
+                                        );
+                                        ui.label("Second");
+                                        ui.add(
+                                            egui::DragValue::new(&mut draft.second).range(0..=59),
+                                        );
+                                    });
+                                });
+                                if !draft.known {
+                                    ui.small("Unknown: no capture timestamp will be stored.");
+                                }
+                                if ui
+                                    .add_enabled(
+                                        !self.session_busy(&fpv_core::uuid_string(part.session.id)),
+                                        egui::Button::new("Save recording date"),
+                                    )
+                                    .clicked()
+                                {
+                                    save_recording = Some((id.clone(), draft.value()));
+                                }
+                            });
+                        } else {
+                            info_value(
+                                ui,
+                                "Capture time (UTC)",
+                                part.source
+                                    .media
+                                    .creation_date
+                                    .map(|v| v.to_rfc3339())
+                                    .unwrap_or_else(|| "Unknown".into()),
+                            );
+                            recording_info(ui, part);
+                        }
+                    }
+                    let flight = dialog.id.clone();
+                    let session = parts.first().map(|p| fpv_core::uuid_string(p.session.id));
+                    let change = if save_day {
+                        session
+                            .clone()
+                            .map(|id| (true, id, Ok(format_date(dialog.date))))
+                    } else {
+                        save_recording.map(|(id, value)| (false, id, value))
+                    };
+                    if let Some((session_day, id, value)) = change {
+                        match value {
+                            Err(error) => self.notices.push(error),
+                            Ok(value) => {
+                                let job = self.submit_in(
+                                    Scope::Session(session.unwrap_or_default()),
+                                    "Save date",
+                                    false,
+                                    move |library, _| {
+                                        if session_day {
+                                            library.set_session_day(&id, value.as_deref())?;
+                                        } else {
+                                            library.set_recording_date(&id, value.as_deref())?;
+                                        }
+                                        Ok(Reply::FlightInfo(library.flight_info(&flight)?))
+                                    },
+                                );
+                                dialog.saving = Some(job);
+                                self.dialog_request = Some(job);
+                            }
+                        }
+                    }
+                } else if self.tasks.iter().any(|task| {
+                    Some(task.id) == self.dialog_request && !task.running && task.failed
+                }) {
+                    ui.label("Could not load recording information. See Tasks for details.");
+                } else {
+                    ui.spinner();
+                    ui.label("Loading recording information…");
                 }
             }
             Kind::Export | Kind::Bulk => {
@@ -980,33 +1466,38 @@ impl App {
                 if let Some(reason) = dialog.mismatch.clone() {
                     ui.colored_label(
                         egui::Color32::from_rgb(230, 160, 60),
-                        "Different frame rates",
+                        if dialog.cut_requires_reencode {
+                            "Precise cut needs re-encoding"
+                        } else {
+                            "Different frame rates"
+                        },
                     );
                     ui.label(reason);
+                    if dialog.cut_requires_reencode {
+                        ui.label("The video will be re-encoded to MPEG-4 for an exact cut. Originals stay unchanged.");
+                    }
                     let parts = dialog.flight.as_ref().map_or(2, |f| f.recordings);
-                    if ui
-                        .button(format!("Export {parts} parts separately"))
-                        .clicked()
+                    if !dialog.cut_requires_reencode
+                        && ui
+                            .button(format!("Export {parts} parts separately"))
+                            .clicked()
                     {
                         chosen = Some(ExportMode::Parts);
                     }
-                    // Re-encoding resamples MJPEG: the DVR's footage only.
-                    if dialog.flight.as_ref().is_some_and(|f| !f.action_cam)
-                        && ui.button("Re-encode into one file").clicked()
-                    {
+                    if ui.button("Re-encode into one file").clicked() {
                         chosen = Some(ExportMode::Reencode);
                     }
                 } else if dialog.kind == Kind::Bulk {
-                    ui.label("For recordings with different frame rates:");
+                    ui.label("For precise cuts or incompatible frame rates:");
                     ui.radio_value(
                         &mut dialog.mode,
                         ExportMode::Parts,
-                        "One lossless file per recording",
+                        "Lossless parts (when boundaries allow stream-copy)",
                     );
                     ui.radio_value(
                         &mut dialog.mode,
                         ExportMode::Reencode,
-                        "One file re-encoded at the dominant rate (DVR only)",
+                        "One file re-encoded at the dominant rate",
                     );
                 }
                 if dialog.mismatch.is_none()
@@ -1233,6 +1724,134 @@ impl App {
             }
         }
     }
+}
+
+fn info_time(seconds: f64) -> String {
+    let millis = (seconds.max(0.0) * 1000.0).round() as u64;
+    format!(
+        "{:02}:{:02}:{:02}.{:03}",
+        millis / 3_600_000,
+        millis / 60_000 % 60,
+        millis / 1000 % 60,
+        millis % 1000
+    )
+}
+
+fn info_value(ui: &mut egui::Ui, name: &str, value: impl Into<String>) {
+    let value = value.into();
+    ui.horizontal_wrapped(|ui| {
+        ui.strong(format!("{name}:"));
+        ui.add(egui::Label::new(value).selectable(true).wrap());
+    });
+}
+
+fn info_path(ui: &mut egui::Ui, name: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.strong(name);
+        if ui.small_button(format!("Copy {name}")).clicked() {
+            ui.ctx().copy_text(value.to_owned());
+        }
+    });
+    ui.add(egui::Label::new(value).selectable(true).wrap());
+}
+
+fn recording_info(ui: &mut egui::Ui, part: &fpv_library::RecordingInfo) {
+    let source = &part.source;
+    let media = &source.media;
+    let original = std::path::Path::new(&source.original_path);
+    info_value(
+        ui,
+        "Original file",
+        original
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Unknown".into()),
+    );
+    info_path(ui, "Original path", &source.original_path);
+    info_path(ui, "Library path", &source.imported_path);
+    info_value(
+        ui,
+        "Availability",
+        if part.cloud {
+            "Online only"
+        } else if part.available {
+            "Available locally"
+        } else {
+            "Source unavailable locally"
+        },
+    );
+    info_value(
+        ui,
+        "Container (file extension)",
+        original
+            .extension()
+            .map(|s| s.to_string_lossy().to_uppercase())
+            .unwrap_or_else(|| "Unknown".into()),
+    );
+    info_value(
+        ui,
+        "Video",
+        format!("{} · {} × {}", media.video_codec, media.width, media.height),
+    );
+    info_value(
+        ui,
+        "Frame rate",
+        format!(
+            "{:.6} fps ({}/{})",
+            media.frame_rate.value(),
+            media.frame_rate.numerator,
+            media.frame_rate.denominator
+        ),
+    );
+    info_value(ui, "Source duration", info_time(media.duration));
+    info_value(
+        ui,
+        "Audio",
+        media.audio_codec.as_deref().unwrap_or("No audio stream"),
+    );
+    info_value(
+        ui,
+        "Import audio policy",
+        if source.muted {
+            "No Sound"
+        } else {
+            "Keep source audio"
+        },
+    );
+    info_value(
+        ui,
+        "File size",
+        part.size_bytes
+            .map(crate::browse::size)
+            .unwrap_or_else(|| "Unavailable".into()),
+    );
+    info_value(
+        ui,
+        "Clip start",
+        format!(
+            "{} · frame {}",
+            info_time(media.frame_rate.seconds(part.clip.start_frame)),
+            part.clip.start_frame
+        ),
+    );
+    info_value(
+        ui,
+        "Clip end (exclusive)",
+        format!(
+            "{} · frame {}",
+            info_time(media.frame_rate.seconds(part.clip.end_frame)),
+            part.clip.end_frame
+        ),
+    );
+    info_value(
+        ui,
+        "Clip duration",
+        info_time(
+            media
+                .frame_rate
+                .seconds(part.clip.end_frame - part.clip.start_frame),
+        ),
+    );
 }
 
 fn field(ui: &mut egui::Ui, label: &str, text: &mut String) {
@@ -1483,6 +2102,9 @@ fn export_reply(
                 fpv_export::ExportError::MismatchedFrameRates(..),
             ),
         ) => Ok(Reply::Mismatch(error.to_string())),
+        Err(error @ fpv_library::LibraryError::Export(fpv_export::ExportError::NotAllIntra(_))) => {
+            Ok(Reply::NeedsReencode(error.to_string()))
+        }
         Err(error) => Err(error),
         Ok(files) => Ok(Reply::Done(format!(
             "Exported {}",
@@ -1727,6 +2349,38 @@ mod date_picker_tests {
         assert_eq!(
             december.checked_sub_months(Months::new(1)).unwrap(),
             NaiveDate::from_ymd_opt(2025, 11, 1).unwrap()
+        );
+    }
+}
+
+#[cfg(test)]
+mod source_strip_tests {
+    use super::*;
+
+    #[test]
+    fn source_filmstrip_replies_only_fill_the_current_source_and_advance_one_image() {
+        let mut dialog = Dialog::new(Kind::Editor, "Editor");
+        dialog.editor_loading = Some("current".into());
+        dialog.editor_strip_job = Some(7);
+        let reply = |clip: &str, index| Reply::BoundaryStrip {
+            clip: clip.into(),
+            index,
+            thumbnail: fpv_library::Thumbnail {
+                path: "preview.jpg".into(),
+                made: true,
+            },
+        };
+        dialog.reply(reply("old", 0));
+        assert!(dialog.editor_strip.iter().all(Option::is_none));
+        assert_eq!(dialog.editor_strip_job, Some(7));
+        dialog.reply(reply("current", 0));
+        assert_eq!(dialog.editor_strip[0].as_deref(), Some("preview.jpg"));
+        assert_eq!(dialog.editor_strip_next, 1);
+        assert!(dialog.editor_strip_job.is_none());
+        dialog.reply(reply("current", crate::strips::STRIP));
+        assert_eq!(
+            dialog.editor_strip_next, 1,
+            "invalid indices cannot advance the strip"
         );
     }
 }

@@ -18,7 +18,10 @@ impl RecordingFfmpeg {
 }
 
 impl FfmpegInvoking for RecordingFfmpeg {
-    fn run(&self, _: FfmpegTool, arguments: &[String]) -> Result<ProcessResult, FfmpegError> {
+    fn run(&self, tool: FfmpegTool, arguments: &[String]) -> Result<ProcessResult, FfmpegError> {
+        if tool == FfmpegTool::Ffprobe {
+            return Ok(ProcessResult { status: 0, stdout: b"1\n".to_vec(), stderr: String::new() });
+        }
         self.calls.lock().unwrap().push(arguments.to_vec());
         if let Some(index) = arguments.iter().rposition(|a| a == "-y") {
             std::fs::write(&arguments[index + 1], b"v").unwrap();
@@ -73,7 +76,7 @@ fn muted_copy_export_keeps_video_and_drops_audio() {
     let mut file = source("PICT0032.AVI", rate, "mjpeg");
     file.media.audio_codec = Some("pcm_s16le".into());
     let (clip, _) = part(&file, 100, 500);
-    let arguments = copy_arguments(&clip, &file, true).unwrap();
+    let arguments = copy_arguments(&clip, &file, true, Path::new("muted.avi")).unwrap();
     assert!(arguments.windows(2).any(|w| w == ["-c:v", "copy"]));
     assert!(arguments.iter().any(|arg| arg == "-an"));
     assert!(!arguments.iter().any(|arg| arg == "-c:a" || arg == "-c"));
@@ -108,8 +111,12 @@ fn copies_a_whole_action_cam_take_across_its_chapters() {
     let ffmpeg = RecordingFfmpeg::default();
     let out = tempfile::tempdir().unwrap();
     let rate = FrameRate::new(60000, 1001);
-    let parts = [part(&source("GH010042.MP4", rate, "h264"), 0, 28_000),
-                 part(&source("GH020042.MP4", rate, "h264"), 0, 9_000)];
+    let whole = |name, frames| {
+        let mut file = source(name, rate, "h264");
+        file.media.frame_count = Some(frames);
+        part(&file, 0, frames)
+    };
+    let parts = [whole("GH010042.MP4", 28_000), whole("GH020042.MP4", 9_000)];
     ClipExporter::new(&ffmpeg).export_flight(&parts, &out.path().join("take.mp4")).unwrap();
     let calls = ffmpeg.calls();
     assert_eq!(calls.len(), 3);
@@ -185,4 +192,71 @@ fn imported_recording_mute_is_honored_without_a_global_mute_setting() {
     let out = tempfile::tempdir().unwrap();
     ClipExporter::new(&ffmpeg).export_clip(&part(&file, 0, 25).0, &file, &out.path().join("muted.avi")).unwrap();
     assert!(ffmpeg.calls()[0].contains(&"-an".to_owned()));
+}
+
+#[test]
+fn successful_process_cannot_publish_empty_or_packetless_video() {
+    struct EmptyExport { bytes: &'static [u8] }
+    impl FfmpegInvoking for EmptyExport {
+        fn run(&self, tool: FfmpegTool, arguments: &[String]) -> Result<ProcessResult, FfmpegError> {
+            if tool == FfmpegTool::Ffmpeg {
+                std::fs::write(arguments.last().unwrap(), self.bytes).unwrap();
+            }
+            Ok(ProcessResult { status: 0, stdout: b"0\n".to_vec(), stderr: String::new() })
+        }
+    }
+    for bytes in [b"".as_slice(), b"container header".as_slice()] {
+        let out = tempfile::tempdir().unwrap();
+        let destination = out.path().join("flight.avi");
+        let file = source("PICT0030.AVI", FrameRate::new(25, 1), "mjpeg");
+        let result = ClipExporter::new(&EmptyExport { bytes }).export_clip(
+            &part(&file, 0, 25).0, &file, &destination);
+        assert!(result.is_err());
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0, "scratch removed");
+    }
+}
+
+#[test]
+fn publication_without_hard_links_never_overwrites_and_cleans_up_failed_copies() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("validated.avi");
+    let destination = root.path().join("export.avi");
+    std::fs::write(&source, b"validated video").unwrap();
+    copy_new(&source, &destination).unwrap();
+    assert_eq!(std::fs::read(&destination).unwrap(), b"validated video");
+    assert!(copy_new(&source, &destination).is_err());
+    assert_eq!(std::fs::read(&destination).unwrap(), b"validated video");
+    let failed = root.path().join("failed.avi");
+    assert!(copy_new(&root.path().join("missing"), &failed).is_err());
+    assert!(!failed.exists());
+}
+
+#[test]
+fn incompatible_mp4_audio_is_converted_without_reencoding_video_or_changing_avi_exports() {
+    let mut file = source("EV300D.AVI", FrameRate::new(30, 1), "h264");
+    file.media.frame_count = Some(90);
+    let (clip, _) = part(&file, 0, 90);
+    for codec in ["adpcm_ima_wav", "pcm_s16le", "flac"] {
+        file.media.audio_codec = Some(codec.into());
+        let args = copy_arguments(&clip, &file, false, Path::new("export.MP4")).unwrap();
+        assert!(args.windows(2).any(|pair| pair == ["-c:v", "copy"]));
+        assert!(args.windows(2).any(|pair| pair == ["-c:a", "aac"]));
+        let args = copy_arguments(&clip, &file, false, Path::new("export.avi")).unwrap();
+        assert!(args.windows(2).any(|pair| pair == ["-c", "copy"]));
+    }
+    file.media.audio_codec = Some("aac".into());
+    let args = copy_arguments(&clip, &file, false, Path::new("export.mp4")).unwrap();
+    assert!(args.windows(2).any(|pair| pair == ["-c", "copy"]));
+}
+
+#[test]
+fn mpeg4_export_uses_the_measured_rate_within_its_codec_clock_limits() {
+    let exact = FrameRate::new(30000, 1001);
+    assert_eq!(mpeg4_rate(exact), exact);
+    for rate in [FrameRate::new(1_000_000, 33459), FrameRate::new(120000, 1001)] {
+        let bounded = mpeg4_rate(rate);
+        assert!(bounded.numerator <= 65_535 && bounded.denominator <= 65_535);
+        assert!((bounded.value() / rate.value() - 1.0).abs() < 1e-6);
+    }
 }
