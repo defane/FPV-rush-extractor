@@ -40,6 +40,24 @@ impl<'a> MediaProbe<'a> {
         Self { ffmpeg }
     }
 
+    /// FFprobe 9 joins MP4 header/mdta creation times with semicolons. Accept
+    /// agreeing values, preserving fractions absent from the whole-second header;
+    /// conflicting or malformed values remain unknown rather than inventing a date.
+    pub fn parse_creation_time(value: &str) -> Option<DateTime<Utc>> {
+        let mut stamps = value.split(';');
+        let mut result = DateTime::parse_from_rfc3339(stamps.next()?.trim()).ok()?.to_utc();
+        for stamp in stamps {
+            let next = DateTime::parse_from_rfc3339(stamp.trim()).ok()?.to_utc();
+            if next.timestamp() != result.timestamp()
+                || (next.timestamp_subsec_nanos() != 0 && result.timestamp_subsec_nanos() != 0
+                    && next.timestamp_subsec_nanos() != result.timestamp_subsec_nanos()) {
+                return None;
+            }
+            result = result.max(next);
+        }
+        Some(result)
+    }
+
     pub fn probe(&self, path: &Path) -> Result<MediaInfo, FfmpegError> {
         let arguments: Vec<String> = ["-v", "error", "-print_format", "json",
                                       "-show_streams", "-show_format"]
@@ -78,11 +96,7 @@ impl<'a> MediaProbe<'a> {
             audio_codec: audio.and_then(|a| a.codec_name.clone()),
             creation_date: output.format.tags.as_ref()
                 .and_then(|tags| tags.get("creation_time"))
-                // FFmpeg 9 combines duplicate MP4 header/mdta timestamps
-                // into one semicolon-separated metadata value.
-                .and_then(|text| text.split(';')
-                    .find_map(|stamp| DateTime::parse_from_rfc3339(stamp.trim()).ok()))
-                .map(|date| date.with_timezone(&Utc)),
+                .and_then(|text| Self::parse_creation_time(text)),
             camera: output.format.tags.as_ref().and_then(camera_name),
         })
     }
@@ -296,5 +310,28 @@ mod tests {
             "width": 1920, "height": 1080, "r_frame_rate": "60/1" } ],
             "format": { "duration": "1.0", "tags": { "firmware": "H21.01.01.62.00" } } }"#;
         assert_eq!(probe(json).unwrap().camera.as_deref(), Some("GoPro HERO10"));
+    }
+}
+
+#[cfg(test)]
+mod creation_time_regressions {
+    use super::*;
+
+    #[test]
+    fn reads_ffprobe9_merged_header_and_mdta_capture_times_without_ignoring_conflicts() {
+        for (value, expected) in [
+            ("2026-11-05T07:30:45.000000Z;2026-11-05T07:30:45+00:00", Some("2026-11-05T07:30:45Z")),
+            ("2026-11-05T07:30:45.000000Z;2026-11-05T09:30:45.123+02:00", Some("2026-11-05T07:30:45.123Z")),
+            ("2026-11-05T07:30:45Z;2026-11-06T07:30:45Z", None),
+            ("2026-11-05T07:30:45.123Z;2026-11-05T07:30:45.456Z", None),
+            ("2026-11-05T07:30:45Z;invalid", None),
+        ] {
+            let json = serde_json::json!({
+                "streams": [{"codec_type":"video", "codec_name":"h264", "width":160, "height":120, "r_frame_rate":"30/1"}],
+                "format": {"duration":"1", "tags":{"creation_time":value}}
+            });
+            let media = MediaProbe::parse(&serde_json::to_vec(&json).unwrap()).unwrap();
+            assert_eq!(media.creation_date, expected.map(|s| chrono::DateTime::parse_from_rfc3339(s).unwrap().to_utc()), "{value}");
+        }
     }
 }

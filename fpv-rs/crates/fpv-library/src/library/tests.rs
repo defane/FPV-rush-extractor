@@ -1906,7 +1906,9 @@ fn recording_dates_are_library_only_validated_persistent_and_distinct_from_sessi
     library.export(&flight.id,&output,ExportMode::Lossless).unwrap();
     let probe=Command::new("ffprobe").args(["-v","error","-show_entries","format_tags","-of","json"]).arg(&output).output().unwrap();
     let tags:serde_json::Value=serde_json::from_slice(&probe.stdout).unwrap();
-    let exported_capture=chrono::DateTime::parse_from_rfc3339(tags["format"]["tags"]["creation_time"].as_str().unwrap()).unwrap().to_utc();
+    let capture_tag=tags["format"]["tags"]["creation_time"].as_str().unwrap();
+    let exported_capture=MediaProbe::parse_creation_time(capture_tag)
+        .unwrap_or_else(||panic!("invalid or conflicting exported capture times {capture_tag:?}"));
     assert_eq!(exported_capture,expected);
     assert_eq!(tags["format"]["tags"]["date"],"2026-11-06");
     library.set_recording_date(source_id,None).unwrap();

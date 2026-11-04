@@ -1,5 +1,7 @@
 # Unreleased
 
+- Handle FFprobe 9’s merged MP4 creation-time values in capture-date export verification and reimport, preserving subsecond corrections and rejecting conflicting timestamps (#37).
+
 - Edit session days and recording capture timestamps from Info with calendar and UTC time controls, explicit scope/Save, unknown-date support and persistent library-only corrections; refresh Info after saving and apply capture corrections to MP4 exports (#37).
 
 - Recognize Eachine EV300D headset recordings from original filenames or camera metadata, correct existing library labels and keep codec/export capabilities independent; use neutral labels for unidentified recordings (#36).
