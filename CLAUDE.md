@@ -212,6 +212,14 @@ Test (2) copy of PICT0031+0032: 829 MB → 508 MB, 7 flights of identical durati
 the same times. Doing it on real footage first exposed the rounding bug in cut boundaries
 (§6, "Cut boundaries are truncated").
 
+**Capture provenance (#36):** `fpv_import::source_origin` distinguishes headset
+DVR, action camera and unknown. EV300D numeric filenames or camera metadata identify
+Eachine headset recordings even with H.264. Views use original paths (including
+transferred sources) so existing entries update without rewriting files. Unknown
+H.264/AVI inputs use a neutral Recording label. Legacy MJPEG hints remain where
+no stronger camera evidence exists. Capture labels never change all-intra
+capability, segmentation eligibility or exact-cut/reduction constraints.
+
 **Export context (#34):** `ClipExporter::with_metadata` adds library session
 `title` and calendar `date` to final staged outputs, including parts. MP4/MOV
 also use `session`/`session_date` with `use_metadata_tags`; AVI uses standard

@@ -426,12 +426,20 @@ pub struct Sources {
 
 pub fn session_sources(session: &SessionView) -> Sources {
     let mut cameras: Vec<String> = vec![];
-    for file in session.files.iter().filter(|f| f.action_cam) {
+    for file in session
+        .files
+        .iter()
+        .filter(|f| f.action_cam || f.source == "Recording")
+    {
         if !cameras.iter().any(|c| same(c, &file.source)) {
             cameras.push(file.source.clone());
         }
     }
-    let dvr: Vec<_> = session.files.iter().filter(|f| !f.action_cam).collect();
+    let dvr: Vec<_> = session
+        .files
+        .iter()
+        .filter(|f| !f.action_cam && f.source != "Recording")
+        .collect();
     let cut = dvr.iter().filter(|f| f.reduced).count();
     Sources {
         dvr: (!dvr.is_empty()).then_some(match cut {

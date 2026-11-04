@@ -1864,3 +1864,20 @@ fn exports_current_session_name_and_flying_day_as_container_metadata() {
     let value=tags(&path);
     assert_eq!(value["title"],"Undated");assert!(value["date"].is_null());
 }
+
+#[test]
+fn indexed_eachine_headset_is_not_an_action_camera_and_keeps_codec_capabilities() {
+    use fpv_core::{FrameRate,Flight,Clip,DetectionRun};
+    let root=tempfile::tempdir().unwrap();let library=open(root.path());
+    let session=Session::new("Eachine",None);library.store.save_session(&session).unwrap();
+    let source=SourceFile::new(session.id,"/card/EV300D_0002.AVI","/library/renamed.avi",Some(2),MediaInfo::new(720,576,FrameRate::new(30,1),340.5,"h264"));
+    library.store.save_source_files(std::slice::from_ref(&source)).unwrap();
+    let flight=Flight::new(session.id,1);let clip=Clip::new(flight.id,source.id,0,100);
+    library.store.replace_clips(source.id,&[clip],&[flight],&DetectionRun::new(source.id,"test",Default::default())).unwrap();
+    let snapshot=library.snapshot().unwrap();
+    assert!(!snapshot[0].files[0].action_cam && !snapshot[0].flights[0].action_cam);
+    assert_eq!(snapshot[0].files[0].source,"Eachine EV300D DVR");
+    assert!(!snapshot[0].reducible);
+    assert!(snapshot[0].segmentable);
+    assert!(!source.media.is_all_intra());
+}

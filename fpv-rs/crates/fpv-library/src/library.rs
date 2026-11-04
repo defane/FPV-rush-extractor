@@ -1436,7 +1436,7 @@ impl Library {
             let name = file_name(&file.imported_path);
             // A file is the flight's own when nothing else is cut from it: an
             // action-cam take, or a reduced piece no other flight lies in.
-            if !reduced.contains(&file.id) && (file.media.is_analog_dvr()
+            if !reduced.contains(&file.id) && (views::origin(&file) == fpv_import::CaptureOrigin::HeadsetDvr
                 || clip.start_frame > 0 || clip.end_frame < views::last_frame(&file) + 1) {
                 plan.recordings.push(name);
             } else if others.iter().any(|c| c.source_file_id == file.id) {
@@ -1487,7 +1487,7 @@ impl Library {
             for clip in clips {
                 let file = self.store.source_file(clip.source_file_id)?
                     .ok_or_else(|| LibraryError::NotFound("Selected recording".into()))?;
-                let protected = !reduced.contains(&file.id) && (file.media.is_analog_dvr()
+                let protected = !reduced.contains(&file.id) && (views::origin(&file) == fpv_import::CaptureOrigin::HeadsetDvr
                     || clip.start_frame > 0 || clip.end_frame < views::last_frame(&file) + 1);
                 if let Some((_, keep)) = sources.iter_mut().find(|(f, _)| f.id == file.id) {
                     *keep |= protected;
@@ -1955,7 +1955,7 @@ impl Library {
                         .map(|s| s.name.as_str()).unwrap_or("Session");
                     let title = flight.title.clone()
                         .unwrap_or_else(|| format!("Flight {}", flight.order_in_session));
-                    let dvr = timeline.parts.iter().any(|(_, f)| f.media.is_analog_dvr());
+                    let dvr = timeline.parts.iter().any(|(_, f)| f.media.is_all_intra());
                     let (name, extension) = export_name(session, &title, dvr);
                     Some((name, extension))
                 }

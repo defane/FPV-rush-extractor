@@ -855,7 +855,14 @@ impl App {
                                                 }
                                             }
                                             for camera in &sources.cameras {
-                                                metadata_icon(ui, MetadataIcon::Camera);
+                                                metadata_icon(
+                                                    ui,
+                                                    if camera == "Recording" {
+                                                        MetadataIcon::Film
+                                                    } else {
+                                                        MetadataIcon::Camera
+                                                    },
+                                                );
                                                 ui.small(RichText::new(camera).weak());
                                             }
                                             if !away.is_empty() {
@@ -1533,7 +1540,9 @@ impl App {
                 ui.horizontal_wrapped(|ui| {
                     metadata_icon(
                         ui,
-                        if flight.action_cam {
+                        if flight.source == "Recording" {
+                            MetadataIcon::Film
+                        } else if flight.action_cam {
                             MetadataIcon::Camera
                         } else {
                             MetadataIcon::Dvr

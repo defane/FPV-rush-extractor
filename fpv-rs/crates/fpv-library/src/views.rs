@@ -134,7 +134,7 @@ pub(crate) fn file_view(file: &SourceFile) -> FileView {
         fps: file.media.frame_rate.value(),
         duration: file.media.duration,
         codec: file.media.video_codec.clone(),
-        action_cam: !file.media.is_analog_dvr(),
+        action_cam: origin(file) == fpv_import::CaptureOrigin::ActionCamera,
         source: source(file),
         format: format_label(&file.media),
         reduced: false,
@@ -170,8 +170,12 @@ pub(crate) fn format_label(media: &MediaInfo) -> String {
     format!("{size} · {codec} · {rate} fps")
 }
 
+pub(crate) fn origin(file: &SourceFile) -> fpv_import::CaptureOrigin {
+    fpv_import::source_origin(&fpv_import::DiscoveredFile::new(&file.original_path), &file.media)
+}
+
 fn source(file: &SourceFile) -> String {
-    fpv_import::source_name(&fpv_import::DiscoveredFile::new(&file.imported_path), &file.media)
+    fpv_import::source_name(&fpv_import::DiscoveredFile::new(&file.original_path), &file.media)
 }
 
 /// The folder of a recording that is not under `root`, or `None`.
@@ -205,7 +209,7 @@ pub(crate) fn flight_view(flight: &Flight, clips: &[Clip], files: &HashMap<Uuid,
         liked: flight.rating.is_some(),
         duration: timeline.duration(),
         recordings: parts.len(),
-        action_cam: parts.iter().any(|(_, f)| !f.media.is_analog_dvr()),
+        action_cam: parts.iter().any(|(_, f)| origin(f) == fpv_import::CaptureOrigin::ActionCamera),
         source: parts.first().map(|(_, f)| source(f)).unwrap_or_default(),
         format: {
             let mut labels: Vec<String> = Vec::new();

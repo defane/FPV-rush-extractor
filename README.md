@@ -133,7 +133,9 @@ recordings remain silent.
 Choose **… → Info** on a thumbnail to view the original file name, original and
 library paths, video/audio properties and clip start/end times. Paths can be
 copied. Flights spanning several files show each recording separately, with its
-own frame rate. End times and frame indexes are exclusive.
+own frame rate. End times and frame indexes are exclusive. Recognized Eachine
+EV300D recordings are labelled as headset DVR footage; recordings without
+reliable source evidence use a neutral Recording label.
 
 ## Adjust boundaries and export
 

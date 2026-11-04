@@ -10,6 +10,6 @@ mod ordering;
 
 pub use checksum::sha256;
 pub use grouping::{DEFAULT_GAP, by_sequence, by_timestamp};
-pub use folders::{FolderPattern, folder_name, session_of_folder, source_label, source_name};
+pub use folders::{FolderPattern, folder_name, session_of_folder, source_label, source_name, source_origin, CaptureOrigin};
 pub use importer::{WHOLE_FILE_ALGORITHM, ImportError, ImportEvent, ImportReport, LibraryImporter, copy_preserving_mtime};
 pub use ordering::{DiscoveredFile, GoProChapter, sorted};
