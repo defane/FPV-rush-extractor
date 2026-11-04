@@ -5,7 +5,7 @@
 use crate::{DetectedClip, FrameAnalyzer, FrameMetrics, FrameState};
 use fpv_core::{ClipEntry, ClipExit};
 
-pub const VERSION: &str = "snow-split-1";
+pub const VERSION: &str = "snow-split-2";
 const PATCHES: usize = FrameAnalyzer::BLOCK_ROWS * FrameAnalyzer::BLOCK_COLUMNS;
 const MIN_HIGH_PASS: f64 = 0.5;
 const MIN_VERTICAL_ENERGY: f64 = 16.0;
@@ -13,12 +13,15 @@ const MAX_FINE_CORRELATION: f64 = 0.85;
 const MAX_COARSE_CORRELATION: f64 = 0.5;
 const MAX_TEMPORAL_CORRELATION: f64 = 0.5;
 const MIN_COVERAGE: f64 = 0.5;
+const MIN_FROZEN_COVERAGE: f64 = 0.9;
+const MIN_FROZEN_CORRELATION: f64 = 0.98;
 
 /// Masks contain only patch votes, never image pixels. Unknown evidence is kept.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SnowSplitEvidence {
     spatial: u64,
     temporal: u64,
+    frozen: u64,
 }
 impl SnowSplitEvidence {
     pub fn spatial_coverage(self) -> f64 {
@@ -27,8 +30,11 @@ impl SnowSplitEvidence {
     pub fn confirmed_coverage(self) -> f64 {
         (self.spatial & self.temporal).count_ones() as f64 / PATCHES as f64
     }
+    pub fn frozen_coverage(self) -> f64 {
+        self.frozen.count_ones() as f64 / PATCHES as f64
+    }
     pub(crate) fn is_snow(self) -> bool {
-        self.confirmed_coverage() > MIN_COVERAGE
+        self.confirmed_coverage() > MIN_COVERAGE || self.frozen_coverage() >= MIN_FROZEN_COVERAGE
     }
 
     pub(crate) fn analyze(analyzer: &FrameAnalyzer, pixels: &[u8], small: &[f64]) -> Self {
@@ -153,18 +159,22 @@ impl SnowSplitSampler {
         let mut evidence = SnowSplitEvidence {
             spatial: current.spatial,
             temporal: 0,
+            frozen: 0,
         };
         let mut first_confirmed = 0;
+        let mut frozen = 0;
         if let Some(previous) = &self.previous {
             for i in 0..PATCHES {
                 let range = i * SAMPLES..(i + 1) * SAMPLES;
-                if FrameAnalyzer::correlation(
+                let correlation = FrameAnalyzer::correlation(
                     &current.bandpass[range.clone()],
                     &previous.bandpass[range],
                 )
-                .abs()
-                    < MAX_TEMPORAL_CORRELATION
-                {
+                .abs();
+                if correlation >= MIN_FROZEN_CORRELATION {
+                    frozen |= current.spatial & previous.spatial & (1 << i);
+                }
+                if correlation < MAX_TEMPORAL_CORRELATION {
                     evidence.temporal |= current.spatial & (1 << i);
                     first_confirmed |= previous.spatial & (1 << i);
                 }
@@ -174,8 +184,10 @@ impl SnowSplitSampler {
                 && let Some(first) = frame.snow_split.as_mut()
             {
                 first.temporal = first_confirmed;
+                first.frozen = frozen;
             }
         }
+        evidence.frozen = frozen;
         self.seen += 1;
         self.previous = Some(current);
         evidence
@@ -185,6 +197,8 @@ impl SnowSplitSampler {
 pub(crate) fn parameters() -> Vec<(String, f64)> {
     [
         ("snowSplit", 1.0),
+        ("snowSplitFrozenMinCoverage", MIN_FROZEN_COVERAGE),
+        ("snowSplitFrozenMinCorrelation", MIN_FROZEN_CORRELATION),
         ("snowSplitMaxScaleCount", 1.0),
         ("snowSplitSignatureSide", 8.0),
         ("snowSplitMaxAnalysisWidth", 640.0),
@@ -383,6 +397,16 @@ mod tests {
         assert_eq!(
             (clips[0].start, clips[0].end, clips[0].exit),
             (0.0, 5.0, ClipExit::Eof)
+        );
+    }
+    #[test]
+    fn frozen_spatially_random_snow_is_excluded() {
+        let frames = vec![noise(123, false); 12];
+        let (d, t, m) = analyze(&frames);
+        assert!(
+            d.detect(&t, &m).is_empty(),
+            "spatial coverage {}",
+            m[0].snow_split.unwrap().spatial_coverage()
         );
     }
     #[test]

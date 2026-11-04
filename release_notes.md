@@ -1,5 +1,7 @@
 # Unreleased
 
+- Detect strongly noise-like frozen frames in Snow Split with stricter spatial coverage and versioned parameters; retain experimental status pending broader independent FPV evaluation (#35).
+
 - Write current session names and flying dates into final MP4/AVI exports, including batch, concatenated, re-encoded and separate-part exports; enable the bundled H.264 concat bitstream filter required by multipart exports (#34).
 
 - Move or copy selected flights into another session, preserving annotations and audio policies with independent recording references and transactional failure recovery (#33).

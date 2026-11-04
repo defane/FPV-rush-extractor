@@ -85,7 +85,8 @@ footage too aggressively.
 **Snow Split** is an experimental alternative that removes only confirmed analog
 static. It keeps black screens, menus and short usable takes. It samples four
 times per second and requires three consecutive snow samples before excluding a
-run; brief interference and uncertain or frozen static can remain. Review its
+run. Strongly noise-like frozen frames are also detected; brief interference
+and uncertain static can remain. Review its
 results before exporting or reducing recordings. It is also available in the
 session's detection settings.
 

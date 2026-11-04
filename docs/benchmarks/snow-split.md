@@ -1,7 +1,28 @@
 # Snow Split: implementation and evaluation
 
-Evaluation date: 2026-11-03. Status: experimental, with outstanding validation
+Original evaluation: 2026-11-03; frozen-static follow-up: 2026-11-04. Status: experimental, with outstanding validation
 under #35. No source footage or review images are distributed with this report.
+
+## Frozen-static follow-up (`snow-split-2`)
+
+The original temporal test retained even a repeated image of full-frame random
+static. A failing regression now covers that case. Version 2 additionally requires
+at least 90% of patches to pass the existing spatial noise tests in both images,
+with absolute bandpass-signature correlation at least 0.98. The same three-sample
+run confirmation applies. Stationary pictures, menus, black frames, dim grain and
+regular textures still pass their preservation regressions.
+
+This stricter coverage is provisional: EV300D's largest spatial-noise coverage
+was 0.791667 over the whole recording and 0.625 in its annotated useful windows.
+The filmed-TV sample reached only 0.020833; this follow-up does not address that
+optically filtered, strongly banded input. It does not relax the spatial guard
+that previously caused destructive terrain false cuts.
+
+[Version 2 measurements](snow-split-2-results.tsv) repeat all five recordings
+with the rebuilt bundled Linux FFmpeg. The table below remains the historical
+version 1 comparison. Version 2's static-noise rule is not a semantic guarantee:
+a highly random-looking scene can resemble frozen snow. New independent FPV
+recordings and offline learned comparisons are still needed before closing #35.
 
 ## Method
 
@@ -45,7 +66,7 @@ exclude footage. Clean EOF uses the pipeline's actual source-frame count.
 Clip confidence currently reuses the legacy heuristic value (0.9); it is not a
 calibrated probability of signal or snow.
 
-The profile serializes as `snowSplit`; detection runs record `snow-split-1`,
+The profile serializes as `snowSplit`; current detection runs record `snow-split-2`,
 sampling/hysteresis settings and every Snow Split threshold/scale constant.
 Legacy parameter maps are unchanged. No migration, model weights or runtime
 dependency was added. Original recordings are unchanged.
@@ -198,7 +219,7 @@ using temporal randomness or large grain as sufficient evidence.
 
 - Calibration and development share only three private recordings. There is no
   independent held-out FPV positive corpus. Do not advertise cross-camera gains.
-- Frozen static repeats its residual signature and may be retained. Brief snow,
+- Frozen static needs the stricter version 2 evidence described above. Brief snow,
   limited-area snow and low-energy/strongly correlated static can remain. A
   single-sample recording cannot demonstrate temporal unpredictability.
 - Heavy interference with a recognizable picture has no agreed keep/cut policy;

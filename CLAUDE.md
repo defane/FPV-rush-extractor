@@ -36,7 +36,9 @@ uses a separate noise-evidence classifier and interval builder. Only jointly
 confirmed local spatial/temporal static excludes footage; Black/Menu, minimum
 clip duration and whole-clip coherence do not reject clips in this mode. Four
 samples/second and three consecutive snow votes confirm a run, backdated to its
-first sample. `snow-split-1` and its thresholds are stored in `DetectionRun`.
+first sample. `snow-split-2` and its thresholds are stored in `DetectionRun`.
+Frozen static requires spatial noise evidence in at least 90% of patches and
+residual correlation at least 0.98 between samples.
 Import and session settings expose the profile; Standard/Textured are unchanged.
 See `docs/snow-only-segmentation-plan.md` and `docs/benchmarks/snow-split.md` for
 the implementation, measurements and limitations. This is not a validated
