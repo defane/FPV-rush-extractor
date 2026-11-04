@@ -3347,6 +3347,11 @@ fn info_part() -> fpv_library::RecordingInfo {
     );
     let clip = fpv_core::Clip::new(source.session_id, source.id, 100, 250);
     fpv_library::RecordingInfo {
+        session: fpv_core::Session {
+            id: source.session_id,
+            ..fpv_core::Session::new("Test session", None)
+        },
+        shared_clips: 1,
         clip,
         source,
         available: false,
@@ -4033,4 +4038,100 @@ fn selected_flights_offer_move_and_copy_without_media_tools() {
         assert!(jobs.try_recv().is_err());
         assert!(app.selected.contains(&first.id));
     }
+}
+
+#[test]
+fn info_exposes_scoped_calendar_and_time_picker_controls() {
+    let ctx = egui::Context::default();
+    let mut app = app(&ctx);
+    let mut dialog = Dialog::info(&flight());
+    dialog.reply(Reply::FlightInfo(vec![info_part()]));
+    app.dialog = Some(dialog);
+    click_text(&ctx, &mut app, "Edit dates", App::dialog_window);
+    let texts = shown_texts(&ctx, &mut app, App::dialog_window);
+    for expected in [
+        "Session flying day (all flights)",
+        "Capture time known",
+        "Capture date",
+        "Hour",
+        "Minute",
+        "Second",
+        "Save recording date",
+    ] {
+        assert!(
+            texts.iter().any(|t| t == expected),
+            "missing {expected}: {texts:?}"
+        );
+    }
+}
+
+#[test]
+fn info_saves_recording_date_through_worker_and_keeps_the_panel_open() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, events) = app_with_worker(&ctx);
+    let root = tempfile::tempdir().unwrap();
+    let mut library = fpv_library::Library::open_with(
+        &root.path().join("config"),
+        &root.path().join("cache"),
+        fpv_library::Config {
+            media_root: root.path().join("videos"),
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    let mut part = info_part();
+    let capture = chrono::DateTime::parse_from_rfc3339("2026-11-04T12:34:56Z")
+        .unwrap()
+        .to_utc();
+    part.source.media.creation_date = Some(capture);
+    let model = fpv_core::Flight::new(part.session.id, 1);
+    part.clip.flight_id = model.id;
+    library.store.save_session(&part.session).unwrap();
+    library
+        .store
+        .save_source_files(std::slice::from_ref(&part.source))
+        .unwrap();
+    library
+        .store
+        .replace_clips(
+            part.source.id,
+            std::slice::from_ref(&part.clip),
+            std::slice::from_ref(&model),
+            &fpv_core::DetectionRun::new(part.source.id, "test", Default::default()),
+        )
+        .unwrap();
+    let view = FlightView {
+        id: fpv_core::uuid_string(model.id),
+        ..flight()
+    };
+    let mut dialog = Dialog::info(&view);
+    dialog.reply(Reply::FlightInfo(vec![part.clone()]));
+    app.dialog = Some(dialog);
+    click_text(&ctx, &mut app, "Edit dates", App::dialog_window);
+    click_text(&ctx, &mut app, "Save recording date", App::dialog_window);
+    let job = jobs.try_recv().expect("date save queued");
+    let (progress, _) = crate::worker::Progress::for_test(job.id, ctx.clone());
+    let result = (job.work)(&mut library, &progress).unwrap();
+    events
+        .send(crate::worker::Event::Finished {
+            id: job.id,
+            result: Ok(result),
+        })
+        .unwrap();
+    app.receive(&ctx);
+    assert!(app.dialog.is_some(), "saved Info stays open and refreshes");
+    assert_eq!(
+        library.flight_info(&view.id).unwrap()[0]
+            .source
+            .media
+            .creation_date,
+        Some(capture)
+    );
+    while jobs.try_recv().is_ok() {} // Ignore the normal post-save thumbnail refresh.
+    click_text(&ctx, &mut app, "Close", App::dialog_window);
+    assert!(
+        jobs.try_recv().is_err(),
+        "close submits no additional changes"
+    );
 }

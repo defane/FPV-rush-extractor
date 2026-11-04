@@ -1881,3 +1881,37 @@ fn indexed_eachine_headset_is_not_an_action_camera_and_keeps_codec_capabilities(
     assert!(snapshot[0].segmentable);
     assert!(!source.media.is_all_intra());
 }
+
+#[test]
+fn recording_dates_are_library_only_validated_persistent_and_distinct_from_session_day() {
+    let (fixture,session)=imported();let library=&fixture.library;
+    let flight=&session.flights[0];let source_id=&flight.clips[0].file_id;
+    let before=library.flight_info(&flight.id).unwrap();
+    let path=PathBuf::from(&before[0].source.imported_path);
+    let bytes=std::fs::read(&path).unwrap();let modified=std::fs::metadata(&path).unwrap().modified().unwrap();
+    library.set_recording_date(source_id,Some("2026-11-04T23:30:45-08:00")).unwrap();
+    let expected=chrono::DateTime::parse_from_rfc3339("2026-11-05T07:30:45Z").unwrap().to_utc();
+    let after=library.flight_info(&flight.id).unwrap();
+    assert_eq!(after[0].source.media.creation_date,Some(expected));
+    assert_eq!(after[0].session.date,before[0].session.date);
+    assert_eq!(after[0].clip,before[0].clip);
+    for bad in ["2026-02-30T00:00:00Z","2026-11-04T25:00:00Z","2026-11-04T12:00:00"] {
+        assert!(library.set_recording_date(source_id,Some(bad)).is_err());
+    }
+    library.set_session_day(&session.id,Some("2026-11-06")).unwrap();
+    assert_eq!(library.flight_info(&flight.id).unwrap()[0].source.media.creation_date,Some(expected));
+    let reopened=open(fixture._root.path());
+    assert_eq!(reopened.flight_info(&flight.id).unwrap()[0].source.media.creation_date,Some(expected));
+    let output=fixture._root.path().join("corrected-capture.mp4");
+    library.export(&flight.id,&output,ExportMode::Lossless).unwrap();
+    let probe=Command::new("ffprobe").args(["-v","error","-show_entries","format_tags","-of","json"]).arg(&output).output().unwrap();
+    let tags:serde_json::Value=serde_json::from_slice(&probe.stdout).unwrap();
+    let exported_capture=chrono::DateTime::parse_from_rfc3339(tags["format"]["tags"]["creation_time"].as_str().unwrap()).unwrap().to_utc();
+    assert_eq!(exported_capture,expected);
+    assert_eq!(tags["format"]["tags"]["date"],"2026-11-06");
+    library.set_recording_date(source_id,None).unwrap();
+    assert!(open(fixture._root.path()).flight_info(&flight.id).unwrap()[0].source.media.creation_date.is_none());
+    assert_eq!(std::fs::read(&path).unwrap(),bytes);
+    assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(),modified);
+    assert!(library.set_recording_date(&uuid_string(Uuid::new_v4()),None).is_err());
+}

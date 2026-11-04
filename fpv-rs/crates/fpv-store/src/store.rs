@@ -312,8 +312,13 @@ impl LibraryStore {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Records the camera a file named, or that it named none — so it is not
-    /// read again.
+    /// Corrects library metadata without opening the recording.
+    pub fn set_recording_date(&self, id: Uuid, date: Option<DateTime<Utc>>) -> Result<()> {
+        let changed=self.db().execute("UPDATE sourceFile SET creationDate=?2 WHERE id=?1",params![Id(id),date.map(Date)])?;
+        not_found_unless(changed,"source file",id)
+    }
+
+    /// Records the camera a file named, or that it named none — so it is not read again.
     pub fn set_camera(&self, file_id: Uuid, camera: Option<&str>) -> Result<()> {
         let changed = self.db().execute("UPDATE sourceFile SET camera = ?2 WHERE id = ?1",
                                         params![Id(file_id), camera.unwrap_or("")])?;

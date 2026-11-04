@@ -1,5 +1,7 @@
 # Unreleased
 
+- Edit session days and recording capture timestamps from Info with calendar and UTC time controls, explicit scope/Save, unknown-date support and persistent library-only corrections; refresh Info after saving and apply capture corrections to MP4 exports (#37).
+
 - Recognize Eachine EV300D headset recordings from original filenames or camera metadata, correct existing library labels and keep codec/export capabilities independent; use neutral labels for unidentified recordings (#36).
 
 - Detect strongly noise-like frozen frames in Snow Split with stricter spatial coverage and versioned parameters; retain experimental status pending broader independent FPV evaluation (#35).

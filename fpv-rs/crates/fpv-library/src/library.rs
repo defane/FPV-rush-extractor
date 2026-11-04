@@ -46,6 +46,8 @@ pub type Result<T> = std::result::Result<T, LibraryError>;
 /// content or downloads a cloud placeholder.
 #[derive(Debug, Clone)]
 pub struct RecordingInfo {
+    pub session: Session,
+    pub shared_clips: usize,
     pub clip: Clip,
     pub source: SourceFile,
     pub available: bool,
@@ -1221,6 +1223,20 @@ impl Library {
         operation
     }
 
+    /// Library corrections never rewrite video bytes or filesystem timestamps.
+    pub fn set_recording_date(&self, id: &str, value: Option<&str>) -> Result<()> {
+        let date=value.map(|s|chrono::DateTime::parse_from_rfc3339(s)
+            .map(|d|d.to_utc()).map_err(|_|LibraryError::Invalid("not a valid date/time with UTC offset".into())))
+            .transpose()?;
+        Ok(self.store.set_recording_date(parse(id)?,date)?)
+    }
+
+    pub fn set_session_day(&self, id: &str, value: Option<&str>) -> Result<()> {
+        let session=self.session(id)?;
+        let date=value.map(local_midnight).transpose()?;
+        Ok(self.store.save_session(&Session{date,..session})?)
+    }
+
     pub fn create_session(&self, edit: &SessionEdit) -> Result<String> {
         let session = Session::new("", None);
         let id = session.id;
@@ -1871,12 +1887,17 @@ impl Library {
 
     /// Metadata and source-relative bounds for every part, in playback order.
     pub fn flight_info(&self, flight: &str) -> Result<Vec<RecordingInfo>> {
-        let (_, _, timeline) = self.flight(flight)?;
+        let (flight, _, timeline) = self.flight(flight)?;
+        let session=self.session(&uuid_string(flight.session_id))?;
+        let mut counts=HashMap::<Uuid,usize>::new();
+        for (_,clips) in self.store.flights(session.id)? {
+            for clip in clips { *counts.entry(clip.source_file_id).or_default()+=1; }
+        }
         Ok(timeline.parts.into_iter().map(|(clip, source)| {
             let path = Path::new(&source.imported_path);
             let metadata = std::fs::metadata(path).ok().filter(|m| m.is_file());
             let cloud = fpv_media::only_in_cloud(path);
-            RecordingInfo { clip, available: metadata.is_some() && !cloud,
+            RecordingInfo { session:session.clone(), shared_clips:counts.get(&source.id).copied().unwrap_or(0), clip, available: metadata.is_some() && !cloud,
                 cloud, size_bytes: metadata.map(|m| m.len()), source }
         }).collect())
     }
@@ -1888,6 +1909,7 @@ impl Library {
         let metadata = ExportMetadata {
             session_name: session.name,
             flying_day: session.date.map(|date| date.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string()),
+            capture_time: timeline.parts.first().and_then(|(_,file)|file.media.creation_date).map(|date|date.to_rfc3339()),
         };
         // Text-entry destinations in the native UI have no OS overwrite
         // prompt. Check every part before writing any of them.
@@ -1901,7 +1923,7 @@ impl Library {
             return Err(LibraryError::Invalid(format!("destination already exists: {}", path.display())));
         }
         let ffmpeg = self.ffmpeg();
-        let exporter = ClipExporter::new(&ffmpeg).with_metadata(metadata);
+        let exporter = ClipExporter::new(&ffmpeg).with_metadata(metadata.clone());
         Ok(match mode {
             ExportMode::Lossless => vec![exporter.export_flight_with_mute(
                 &timeline.parts,
@@ -1922,7 +1944,10 @@ impl Library {
                     .map(|(index, (clip, file))| {
                         let path = destination.with_file_name(
                             format!("{stem} - part{}.{extension}", index + 1));
-                        Ok(exporter.export_clip_with_mute(
+                        let part_metadata=ExportMetadata {
+                            capture_time:file.media.creation_date.map(|date|date.to_rfc3339()), ..metadata.clone()
+                        };
+                        Ok(ClipExporter::new(&ffmpeg).with_metadata(part_metadata).export_clip_with_mute(
                             clip,
                             file,
                             &path,

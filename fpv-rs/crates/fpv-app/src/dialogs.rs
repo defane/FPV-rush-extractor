@@ -4,13 +4,13 @@ use crate::{
     ACCENT, App, Reply, Scope,
     browse::{flight_name, labels},
 };
-use chrono::{Datelike, Months, NaiveDate};
+use chrono::{Datelike, Months, NaiveDate, Timelike};
 use eframe::egui;
 use fpv_library::{
     CacheKind, CacheUsage, Config, ExportMode, FlightDeletion, FlightView, FolderView,
     ImportProgress, ReducePreview, RelocationPreview, SegmentProgress, SessionEdit, SessionView,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -36,6 +36,41 @@ enum Kind {
     FreeSpace,
 }
 
+struct InfoDateDraft {
+    known: bool,
+    date: Option<NaiveDate>,
+    month: NaiveDate,
+    open: bool,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    nanos: u32,
+}
+impl InfoDateDraft {
+    fn new(value: Option<chrono::DateTime<chrono::Utc>>) -> Self {
+        let date = value.map_or_else(|| chrono::Utc::now().date_naive(), |v| v.date_naive());
+        Self {
+            known: value.is_some(),
+            date: Some(date),
+            month: date.with_day(1).unwrap(),
+            open: false,
+            hour: value.map_or(0, |v| v.hour()),
+            minute: value.map_or(0, |v| v.minute()),
+            second: value.map_or(0, |v| v.second()),
+            nanos: value.map_or(0, |v| v.nanosecond()),
+        }
+    }
+    fn value(&self) -> Result<Option<String>, String> {
+        if !self.known {
+            return Ok(None);
+        }
+        self.date
+            .and_then(|d| d.and_hms_nano_opt(self.hour, self.minute, self.second, self.nanos))
+            .map(|v| Some(v.and_utc().to_rfc3339()))
+            .ok_or_else(|| "Choose a valid capture date and time".into())
+    }
+}
+
 pub(crate) struct Dialog {
     kind: Kind,
     title: String,
@@ -54,6 +89,7 @@ pub(crate) struct Dialog {
     acknowledged: bool,
     flight: Option<FlightView>,
     info: Option<Vec<fpv_library::RecordingInfo>>,
+    info_dates: HashMap<String, InfoDateDraft>,
     /// The reason a lossless export was refused, while the dialog asks how.
     mismatch: Option<String>,
     cut_requires_reencode: bool,
@@ -109,6 +145,7 @@ impl Dialog {
             acknowledged: false,
             flight: None,
             info: None,
+            info_dates: HashMap::new(),
             mismatch: None,
             cut_requires_reencode: false,
             file_name: String::new(),
@@ -309,7 +346,25 @@ impl Dialog {
                 self.editor_strip_next = index + 1;
                 self.editor_strip_job = None;
             }
-            Reply::FlightInfo(parts) => self.info = Some(parts),
+            Reply::FlightInfo(parts) => {
+                if let Some(first) = parts.first() {
+                    self.date = first
+                        .session
+                        .date
+                        .map(|v| v.with_timezone(&chrono::Local).date_naive());
+                    self.calendar_month = self
+                        .date
+                        .unwrap_or_else(|| chrono::Local::now().date_naive())
+                        .with_day(1)
+                        .unwrap();
+                }
+                for part in &parts {
+                    self.info_dates
+                        .entry(part.source.id.to_string())
+                        .or_insert_with(|| InfoDateDraft::new(part.source.media.creation_date));
+                }
+                self.info = Some(parts);
+            }
             Reply::Folders(folders) => self.folders = Some(folders),
             Reply::Reduce(preview) => self.reduction = Some(preview),
             Reply::Relocation(preview) => self.relocation = Some(preview),
@@ -336,7 +391,7 @@ impl Dialog {
     pub fn finished(&mut self, id: u64, success: bool) -> bool {
         if self.saving == Some(id) {
             self.saving = None;
-            success
+            success && self.kind != Kind::Info
         } else {
             false
         }
@@ -1243,7 +1298,38 @@ impl App {
                 }
             }
             Kind::Info => {
-                if let Some(parts) = &dialog.info {
+                if let Some(parts) = dialog.info.clone() {
+                    ui.checkbox(&mut dialog.flag, "Edit dates");
+                    if dialog.flag {
+                        ui.small("Save applies only the chosen field. Close discards unsaved changes. Capture times use UTC to avoid daylight-saving ambiguity.");
+                    }
+                    let mut save_day = false;
+                    let mut save_recording = None;
+                    if let Some(first) = parts.first() {
+                        ui.label(format!("Session: {}", first.session.name));
+                        if dialog.flag {
+                            date_picker(
+                                ui,
+                                "Session flying day (all flights)",
+                                &mut dialog.date,
+                                &mut dialog.calendar_month,
+                                &mut dialog.date_picker_open,
+                                true,
+                            );
+                            save_day = ui
+                                .add_enabled(
+                                    !self.session_busy(&fpv_core::uuid_string(first.session.id)),
+                                    egui::Button::new("Save session day"),
+                                )
+                                .clicked();
+                        } else {
+                            info_value(
+                                ui,
+                                "Session flying day",
+                                format_date(dialog.date).unwrap_or_else(|| "Unknown".into()),
+                            );
+                        }
+                    }
                     ui.label("Times refer to each original recording. End is exclusive.");
                     if parts.is_empty() {
                         ui.label("No recordings for this flight.");
@@ -1251,7 +1337,93 @@ impl App {
                     for (index, part) in parts.iter().enumerate() {
                         ui.separator();
                         ui.strong(format!("Recording {} of {}", index + 1, parts.len()));
-                        recording_info(ui, part);
+                        if dialog.flag {
+                            ui.small(format!("Capture time correction affects {} clips using this recording. Original files stay unchanged.",part.shared_clips));
+                            let id = part.source.id.to_string();
+                            let draft = dialog.info_dates.entry(id.clone()).or_insert_with(|| {
+                                InfoDateDraft::new(part.source.media.creation_date)
+                            });
+                            ui.push_id(&id, |ui| {
+                                ui.checkbox(&mut draft.known, "Capture time known");
+                                ui.add_enabled_ui(draft.known, |ui| {
+                                    date_picker(
+                                        ui,
+                                        "Capture date",
+                                        &mut draft.date,
+                                        &mut draft.month,
+                                        &mut draft.open,
+                                        false,
+                                    );
+                                    ui.label("Time (UTC)");
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label("Hour");
+                                        ui.add(egui::DragValue::new(&mut draft.hour).range(0..=23));
+                                        ui.label("Minute");
+                                        ui.add(
+                                            egui::DragValue::new(&mut draft.minute).range(0..=59),
+                                        );
+                                        ui.label("Second");
+                                        ui.add(
+                                            egui::DragValue::new(&mut draft.second).range(0..=59),
+                                        );
+                                    });
+                                });
+                                if !draft.known {
+                                    ui.small("Unknown: no capture timestamp will be stored.");
+                                }
+                                if ui
+                                    .add_enabled(
+                                        !self.session_busy(&fpv_core::uuid_string(part.session.id)),
+                                        egui::Button::new("Save recording date"),
+                                    )
+                                    .clicked()
+                                {
+                                    save_recording = Some((id.clone(), draft.value()));
+                                }
+                            });
+                        } else {
+                            info_value(
+                                ui,
+                                "Capture time (UTC)",
+                                part.source
+                                    .media
+                                    .creation_date
+                                    .map(|v| v.to_rfc3339())
+                                    .unwrap_or_else(|| "Unknown".into()),
+                            );
+                            recording_info(ui, part);
+                        }
+                    }
+                    let flight = dialog.id.clone();
+                    let session = parts.first().map(|p| fpv_core::uuid_string(p.session.id));
+                    let change = if save_day {
+                        session
+                            .clone()
+                            .map(|id| (true, id, Ok(format_date(dialog.date))))
+                    } else {
+                        save_recording.map(|(id, value)| (false, id, value))
+                    };
+                    if let Some((session_day, id, value)) = change {
+                        match value {
+                            Err(error) => self.notices.push(error),
+                            Ok(value) => {
+                                let job = self.submit_in(
+                                    Scope::Session(session.unwrap_or_default()),
+                                    "Save date",
+                                    false,
+                                    move |library, _| {
+                                        if session_day {
+                                            library.set_session_day(&id, value.as_deref())?;
+                                        } else {
+                                            library.set_recording_date(&id, value.as_deref())?;
+                                        }
+                                        Ok(Reply::FlightInfo(library.flight_info(&flight)?))
+                                    },
+                                );
+                                dialog.saving = Some(job);
+                                self.dialog_request = Some(job);
+                            }
+                        }
                     }
                 } else if self.tasks.iter().any(|task| {
                     Some(task.id) == self.dialog_request && !task.running && task.failed

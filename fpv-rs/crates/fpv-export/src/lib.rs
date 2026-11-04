@@ -45,6 +45,8 @@ pub struct ExportMetadata {
     pub session_name: String,
     /// Calendar day as displayed in the library, never converted to a UTC instant.
     pub flying_day: Option<String>,
+    /// Corrected recording timestamp; independent of the session calendar day.
+    pub capture_time: Option<String>,
 }
 
 pub struct ClipExporter<'a> {
@@ -173,7 +175,8 @@ impl<'a> ClipExporter<'a> {
         if let Some(metadata) = &self.metadata {
             let mut tags = vec!["-map_metadata".into(),"0".into(),
                 "-metadata".into(),format!("title={}",metadata.session_name),
-                "-metadata".into(),format!("date={}",metadata.flying_day.as_deref().unwrap_or(""))];
+                "-metadata".into(),format!("date={}",metadata.flying_day.as_deref().unwrap_or("")),
+                "-metadata".into(),format!("creation_time={}",metadata.capture_time.as_deref().unwrap_or(""))];
             if destination.extension().and_then(|e|e.to_str())
                 .is_some_and(|e| ["mp4","mov","m4v"].iter().any(|v|e.eq_ignore_ascii_case(v))) {
                 tags.extend(["-movflags".into(),"+use_metadata_tags".into(),

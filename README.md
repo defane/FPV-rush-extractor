@@ -137,6 +137,15 @@ own frame rate. End times and frame indexes are exclusive. Recognized Eachine
 EV300D recordings are labelled as headset DVR footage; recordings without
 reliable source evidence use a neutral Recording label.
 
+In Info, enable **Edit dates** to choose the session flying day with a calendar
+or correct a recording's capture date and time using calendar/hour/minute/second
+controls. Capture times use **UTC**, separately from the session's local flying
+day. The form shows how many clips use that recording. Save the chosen field to
+apply it; Close discards unsaved changes. Unknown capture times can remain unset.
+Corrections are saved in the library without changing video contents or file
+timestamps. MP4 exports use corrected capture times in `creation_time`; AVI
+exports carry the session day but have no corresponding precise capture-time tag.
+
 ## Adjust boundaries and export
 
 **Edit boundaries** shows the full original recording as an image strip below

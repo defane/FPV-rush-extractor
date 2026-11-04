@@ -212,6 +212,15 @@ Test (2) copy of PICT0031+0032: 829 MB → 508 MB, 7 flights of identical durati
 the same times. Doing it on real footage first exposed the rounding bug in cut boundaries
 (§6, "Cut boundaries are truncated").
 
+**Info date corrections (#37):** Info separates the session's local flying day
+from per-recording capture timestamps. Calendar and UTC hour/minute/second controls
+save only the selected field, with source-sharing scope shown. Existing
+`sourceFile.creationDate` stores a library correction; source bytes and filesystem
+mtimes are never rewritten. Capture edits survive restart and propagate to MP4
+`creation_time`, independently per separate part; AVI still uses its supported
+session-day `date` mapping. UTC avoids ambiguous/nonexistent DST clock times.
+Saving keeps Info open and refreshes it; Close discards unsaved drafts.
+
 **Capture provenance (#36):** `fpv_import::source_origin` distinguishes headset
 DVR, action camera and unknown. EV300D numeric filenames or camera metadata identify
 Eachine headset recordings even with H.264. Views use original paths (including
