@@ -11,6 +11,11 @@ on:
         type: choice
         default: all
         options: [all, linux, macos, windows]
+      macos_runner:
+        description: macOS runner (Apple Silicon can bypass an Intel queue)
+        type: choice
+        default: macos-15-intel
+        options: [macos-15-intel, macos-15]
   pull_request:
     paths:
       - "packaging/**"
@@ -78,7 +83,7 @@ jobs:
   macos:
     if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos'
     name: macOS universal
-    runs-on: macos-15-intel
+    runs-on: ${{ inputs.macos_runner || 'macos-15-intel' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
