@@ -1,6 +1,6 @@
 # Snow Split — segmentation design (#35)
 
-Status: implemented as an experimental selectable profile; broader validation is pending.
+Status: released as the Snow Split selectable profile following user acceptance. Broader independent accuracy validation remains pending.
 The user-facing algorithm name is **Snow Split**.
 
 The original proposal below records the requirements and candidate approaches.
@@ -88,5 +88,7 @@ were actually run.
 
 Changes must pass failing-then-passing regressions, unchanged Standard/Textured
 parity tests, workspace tests, strict Clippy, formatting and native UI checks.
-Do not close #35 while required benchmark evidence remains missing. No macOS build
-is part of this proposal; first validate the implementation under Linux.
+The original research acceptance gate below is historical. Following user validation,
+#35 is accepted as a product feature; this does not establish general accuracy or
+state-of-the-art performance. Independent benchmark evidence remains outstanding.
+Validate subsequent changes under Linux before requesting a macOS build.

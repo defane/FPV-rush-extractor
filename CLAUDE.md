@@ -31,7 +31,7 @@ about action-camera recordings never being segmented describe retired behavior.
 Long-GOP interior cuts require an explicit MPEG-4 re-encode; complete takes and
 MJPEG retain their lossless paths. Reduce remains limited to all-intra recordings.
 
-**Experimental Snow Split (#35):** `DetectionProfile::SnowSplit` (`snowSplit`)
+**Snow Split (#35):** `DetectionProfile::SnowSplit` (`snowSplit`)
 uses a separate noise-evidence classifier and interval builder. Only jointly
 confirmed local spatial/temporal static excludes footage; Black/Menu, minimum
 clip duration and whole-clip coherence do not reject clips in this mode. Four

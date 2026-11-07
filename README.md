@@ -82,7 +82,7 @@ noise, interference and very textured scenes can still produce incorrect cuts.
 The **Textured terrain** profile helps when the Standard profile splits good
 footage too aggressively.
 
-**Snow Split** is an experimental alternative that removes only confirmed analog
+**Snow Split** is a segmentation option that removes only confirmed analog
 static. It keeps black screens, menus and short usable takes. It samples four
 times per second and requires three consecutive snow samples before excluding a
 run. Strongly noise-like frozen frames are also detected; brief interference

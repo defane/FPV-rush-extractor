@@ -51,7 +51,7 @@ pub enum DetectionProfile {
     /// Footage whose clean picture has a low vertical correlation — fine,
     /// uniform terrain filling the frame, or a softer camera chain.
     Textured,
-    /// Experimental positive-noise-only segmentation.
+    /// Positive-noise-only segmentation.
     SnowSplit,
 }
 

@@ -1,6 +1,6 @@
 # Snow Split: implementation and evaluation
 
-Original evaluation: 2026-11-03; frozen-static follow-up: 2026-11-04. Status: experimental, with outstanding validation
+Original evaluation: 2026-11-03; frozen-static follow-up: 2026-11-04. Status at evaluation: experimental, with outstanding validation
 under #35. No source footage or review images are distributed with this report.
 
 ## Frozen-static follow-up (`snow-split-2`)
@@ -202,7 +202,8 @@ It keeps both EV300D usable windows, matching Textured while Standard loses 19
 seconds and makes one false cut. These are development results, not proof of
 improved accuracy on unseen FPV recordings. All three retain the entire external
 optical-TV static clip: **zero snow recall on that input**. All retain the clean
-OpenCV video. Consequently the new profile is experimental and #35 remains open.
+OpenCV video. At that evaluation the profile remained experimental. It has since been accepted
+by the user as the Snow Split product option; these accuracy limitations remain.
 Its demonstrated distinction is its snow-only preservation policy, not an
 established general accuracy improvement.
 
@@ -229,7 +230,7 @@ using temporal randomness or large grain as sufficient evidence.
 - Sampling cannot preserve every transition frame; boundaries lie on a 0.25-second
   grid before conversion to each source's own frame rate.
 - Broader FPV evaluation, frozen/banded-static coverage and offline learned
-  comparisons remain required before #35 can be closed as fully validated.
+  comparisons remain required before claiming broad independent accuracy validation.
 - No macOS build was dispatched for this change. Portable Rust and existing
   FFmpeg APIs are retained; native macOS/Windows execution remains unverified.
 

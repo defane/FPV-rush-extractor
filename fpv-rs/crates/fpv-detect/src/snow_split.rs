@@ -1,6 +1,6 @@
 //! Snow Split: positive local noise evidence, confirmed over time.
 //!
-//! Experimental calibration: EACHINE Flight 12 plus synthetic negatives. These
+//! Calibration corpus: EACHINE Flight 12 plus synthetic negatives. These
 //! are not replacements for the separately tuned Standard/Textured classifiers.
 use crate::{DetectedClip, FrameAnalyzer, FrameMetrics, FrameState};
 use fpv_core::{ClipEntry, ClipExit};

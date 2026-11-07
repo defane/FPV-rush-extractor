@@ -631,7 +631,7 @@ impl App {
                             });
                     });
                     ui.small(if dialog.profile == "snowSplit" {
-                        "Experimental: cut only on confirmed analog snow. Keep black screens, menus and short clips."
+                        "Cut only on confirmed analog snow. Keep black screens, menus and short clips."
                     } else if dialog.profile == "textured" {
                         "For rocky or highly detailed terrain that Standard may mistake for snow."
                     } else {
@@ -944,7 +944,7 @@ impl App {
                     });
                     ui.radio_value(&mut dialog.profile, "snowSplit".into(), "Snow Split");
                     ui.indent("snow-split", |ui| {
-                        ui.small("Experimental: cut only on confirmed analog snow. Keep black screens, menus and short clips.");
+                        ui.small("Cut only on confirmed analog snow. Keep black screens, menus and short clips.");
                     });
                     ui.small("A change applies at the next segmentation.");
                     if ui.button("Save").clicked() {
