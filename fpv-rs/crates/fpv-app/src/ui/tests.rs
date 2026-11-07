@@ -4052,6 +4052,8 @@ fn info_exposes_scoped_calendar_and_time_picker_controls() {
     for expected in [
         "Session flying day (all flights)",
         "Capture time known",
+        "Original file:",
+        "Original video.AVI",
         "Capture date",
         "Hour",
         "Minute",
@@ -4134,4 +4136,30 @@ fn info_saves_recording_date_through_worker_and_keeps_the_panel_open() {
         jobs.try_recv().is_err(),
         "close submits no additional changes"
     );
+}
+
+#[test]
+fn editing_action_menu_returns_to_unsaved_date_form() {
+    let ctx = egui::Context::default();
+    let (mut app, _jobs, _events) = app_with_worker(&ctx);
+    let flight = flight();
+    app.sessions = vec![session_of(vec![flight.clone()])];
+    let mut dialog = Dialog::info(&flight);
+    dialog.reply(Reply::FlightInfo(vec![info_part()]));
+    app.dialog = Some(dialog);
+    click_text(&ctx, &mut app, "Edit dates", App::dialog_window);
+    click_text(&ctx, &mut app, "…", App::dialog_window);
+    click_text(&ctx, &mut app, "Edit title…", App::dialog_window);
+    let texts = shown_texts(&ctx, &mut app, App::dialog_window);
+    assert!(
+        texts.iter().any(|s| s == "Save title"),
+        "title action must open: {texts:?}"
+    );
+    click_text(&ctx, &mut app, "Back", App::dialog_window);
+    let texts = shown_texts(&ctx, &mut app, App::dialog_window);
+    assert!(
+        texts.iter().any(|s| s == "Save session day"),
+        "date editing draft restored: {texts:?}"
+    );
+    assert!(texts.iter().any(|s| s == "Original video.AVI"));
 }

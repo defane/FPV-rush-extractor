@@ -191,3 +191,7 @@ where available.
 flights with five-second margins and moves the original DVR recordings to the
 trash. Reduced footage cannot be re-segmented. Removing a session can keep its
 recordings; deleting a flight only trashes recordings used exclusively by it.
+
+When editing dates or clip boundaries, the original recording filename stays visible.
+Use the **…** menu to open the usual flight actions. **Back** returns to your unsaved
+form; exports use saved boundaries until you explicitly save your changes.

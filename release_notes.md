@@ -1,5 +1,7 @@
 # Unreleased
 
+- Keep original filenames and shared flight actions available while editing, preserve unsaved drafts across actions, and use a common goggles icon for headset recordings (#38).
+
 - Promote Snow Split to a regular selectable detection profile after user acceptance; preserve its algorithm, opt-in selection and documented evaluation limits (#35).
 
 - Handle FFprobe 9’s merged MP4 creation-time values in capture-date export verification and reimport, preserving subsecond corrections and rejecting conflicting timestamps (#37).

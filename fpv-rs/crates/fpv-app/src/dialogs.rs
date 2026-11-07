@@ -73,6 +73,7 @@ impl InfoDateDraft {
 
 pub(crate) struct Dialog {
     kind: Kind,
+    drafts: Vec<(Dialog, Option<u64>)>,
     title: String,
     id: String,
     name: String,
@@ -129,6 +130,7 @@ impl Dialog {
     fn new(kind: Kind, title: impl Into<String>) -> Self {
         Self {
             kind,
+            drafts: Vec::new(),
             title: title.into(),
             id: String::new(),
             name: String::new(),
@@ -388,6 +390,52 @@ impl Dialog {
             _ => {}
         }
     }
+    /// Switch actions without saving drafts or exporting their unsaved ranges.
+    fn navigate(
+        mut self,
+        next: Dialog,
+        request: Option<u64>,
+        next_request: Option<u64>,
+    ) -> (Dialog, Option<u64>) {
+        if self.kind == next.kind && self.id == next.id {
+            return (self, request);
+        }
+        let mut drafts = std::mem::take(&mut self.drafts);
+        let (mut next, next_request) = drafts
+            .iter()
+            .position(|(draft, _)| draft.kind == next.kind && draft.id == next.id)
+            .map(|index| drafts.remove(index))
+            .unwrap_or((next, next_request));
+        let request = if self.kind == Kind::Editor {
+            self.editor_preview = None;
+            self.editor_loading = None;
+            self.editor_strip_job = None;
+            None
+        } else {
+            request
+        };
+        drafts.push((self, request));
+        next.drafts = drafts;
+        (next, next_request)
+    }
+
+    fn previous(&mut self) -> Option<(Dialog, Option<u64>)> {
+        let (mut previous, request) = self.drafts.pop()?;
+        previous.drafts = std::mem::take(&mut self.drafts);
+        Some((previous, request))
+    }
+
+    pub(crate) fn pending_reply(&mut self, id: u64, reply: Reply) {
+        if let Some((draft, _)) = self
+            .drafts
+            .iter_mut()
+            .find(|(_, request)| *request == Some(id))
+        {
+            draft.finished(id, true);
+            draft.reply(reply);
+        }
+    }
+
     pub fn finished(&mut self, id: u64, success: bool) -> bool {
         if self.saving == Some(id) {
             self.saving = None;
@@ -399,6 +447,45 @@ impl Dialog {
 }
 
 impl App {
+    pub(crate) fn close_dialog(&mut self) {
+        let previous = self.dialog.as_mut().and_then(Dialog::previous);
+        self.dialog = None;
+        self.dialog_request = None;
+        if let Some((dialog, request)) = previous {
+            self.dialog = Some(dialog);
+            self.dialog_request = request;
+            // A deleted flight cannot bring an old editor back.
+            if self
+                .dialog
+                .as_ref()
+                .is_some_and(|d| d.flight.is_some() && self.session_of_flight(&d.id).is_none())
+            {
+                self.close_dialog();
+            }
+        }
+    }
+
+    pub(crate) fn discard_missing_dialogs(&mut self) {
+        let valid: HashSet<_> = self
+            .sessions
+            .iter()
+            .flat_map(|s| &s.flights)
+            .map(|f| f.id.clone())
+            .collect();
+        if let Some(dialog) = &mut self.dialog {
+            dialog
+                .drafts
+                .retain(|(draft, _)| draft.flight.is_none() || valid.contains(&draft.id));
+        }
+        while self
+            .dialog
+            .as_ref()
+            .is_some_and(|d| d.flight.is_some() && !valid.contains(&d.id))
+        {
+            self.close_dialog();
+        }
+    }
+
     /// What a dialog's form waits for: another import for the library-wide
     /// ones, a task remaking its session for the others.
     fn dialog_scope(&self, dialog: &Dialog) -> Scope {
@@ -452,6 +539,7 @@ impl App {
             return;
         };
         let mut close = false;
+        let mut dialog_request = None;
         let mut modal = egui::Modal::new(egui::Id::new("form"));
         if dialog.kind == Kind::Editor {
             modal.area = modal.area.default_size(egui::vec2(
@@ -514,19 +602,63 @@ impl App {
                             Ok(Reply::Done("Boundaries saved".into()))
                         }));
                 }
-                if ui.button("Close").clicked() {
+                if matches!(
+                    dialog.kind,
+                    Kind::Info | Kind::Editor | Kind::Title | Kind::Export
+                ) {
+                    let context = self.sessions.iter().find_map(|session| {
+                        session
+                            .flights
+                            .iter()
+                            .find(|flight| flight.id == dialog.id)
+                            .map(|flight| (session.id.clone(), flight.clone()))
+                    });
+                    if let Some((session, flight)) = context {
+                        let request = self.dialog_request;
+                        ui.add_enabled_ui(enabled && !self.session_busy(&session), |ui| {
+                            ui.menu_button("…", |ui| self.flight_menu(ui, &session, &flight));
+                        });
+                        if self.dialog.is_some() {
+                            // The menu's request belongs to the new view.
+                            dialog_request = Some((request, self.dialog_request));
+                        }
+                    }
+                }
+                if !dialog.drafts.is_empty() {
+                    ui.weak("Back/Close returns to your draft. Export uses saved boundaries.");
+                }
+                if ui
+                    .button(if dialog.drafts.is_empty() {
+                        "Close"
+                    } else {
+                        "Back"
+                    })
+                    .clicked()
+                {
                     close = true;
                 }
             });
         });
-        if matches!(dialog.kind, Kind::Export | Kind::Bulk)
-            && let Some(id) = dialog.saving
-        {
-            self.export_dialogs.insert(id, dialog);
-        } else if !close {
-            self.dialog = Some(dialog);
+        if let Some((request, next_request)) = dialog_request {
+            let next = self.dialog.take().unwrap();
+            let (next, request) = dialog.navigate(next, request, next_request);
+            self.dialog = Some(next);
+            self.dialog_request = request;
+        } else if matches!(dialog.kind, Kind::Export | Kind::Bulk) && dialog.saving.is_some() {
+            let previous = dialog.previous();
+            self.export_dialogs.insert(dialog.saving.unwrap(), dialog);
+            self.dialog = previous.map(|(dialog, request)| {
+                self.dialog_request = request;
+                dialog
+            });
+            if self.dialog.is_none() {
+                self.dialog_request = None;
+            }
         } else {
-            self.dialog_request = None;
+            self.dialog = Some(dialog);
+            if close {
+                self.close_dialog();
+            }
         }
     }
 
@@ -1337,6 +1469,7 @@ impl App {
                     for (index, part) in parts.iter().enumerate() {
                         ui.separator();
                         ui.strong(format!("Recording {} of {}", index + 1, parts.len()));
+                        info_value(ui, "Original file", original_file_name(&part.source));
                         if dialog.flag {
                             ui.small(format!("Capture time correction affects {} clips using this recording. Original files stay unchanged.",part.shared_clips));
                             let id = part.source.id.to_string();
@@ -1755,18 +1888,18 @@ fn info_path(ui: &mut egui::Ui, name: &str, value: &str) {
     ui.add(egui::Label::new(value).selectable(true).wrap());
 }
 
+fn original_file_name(source: &fpv_core::SourceFile) -> String {
+    std::path::Path::new(&source.original_path)
+        .file_name()
+        .or_else(|| std::path::Path::new(&source.imported_path).file_name())
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Unknown".into())
+}
+
 fn recording_info(ui: &mut egui::Ui, part: &fpv_library::RecordingInfo) {
     let source = &part.source;
     let media = &source.media;
     let original = std::path::Path::new(&source.original_path);
-    info_value(
-        ui,
-        "Original file",
-        original
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Unknown".into()),
-    );
     info_path(ui, "Original path", &source.original_path);
     info_path(ui, "Library path", &source.imported_path);
     info_value(
@@ -2382,5 +2515,49 @@ mod source_strip_tests {
             dialog.editor_strip_next, 1,
             "invalid indices cannot advance the strip"
         );
+    }
+}
+
+#[cfg(test)]
+mod action_navigation_tests {
+    use super::*;
+
+    #[test]
+    fn switching_actions_keeps_date_and_trim_drafts_and_routes_pending_info() {
+        let mut info = Dialog::new(Kind::Info, "Info");
+        info.id = "flight".into();
+        info.flag = true;
+        info.notes = "unsaved date draft".into();
+        let mut editor = Dialog::new(Kind::Editor, "Editor");
+        editor.id = "flight".into();
+        let (mut editor, request) = info.navigate(editor, Some(7), None);
+        assert_eq!(request, None);
+        editor.pending_reply(7, Reply::FlightInfo(vec![]));
+        assert!(editor.drafts[0].0.info.is_some());
+        editor.editor_saved = vec![(123, 456)];
+        editor.editor_loading = Some("old source".into());
+        let mut info = Dialog::new(Kind::Info, "Fresh info");
+        info.id = "flight".into();
+        let (info, request) = editor.navigate(info, Some(8), Some(9));
+        assert_eq!(request, Some(7));
+        assert!(info.flag);
+        assert_eq!(info.notes, "unsaved date draft");
+        assert_eq!(info.drafts.len(), 1);
+        let mut info = info;
+        let (editor, request) = info.previous().unwrap();
+        assert_eq!(request, None, "suspended decoder requests are invalidated");
+        assert_eq!(editor.editor_saved, [(123, 456)]);
+        assert!(editor.editor_loading.is_none());
+        assert!(editor.drafts.is_empty());
+    }
+
+    #[test]
+    fn reopening_the_active_action_does_not_reset_its_draft() {
+        let mut dialog = Dialog::new(Kind::Title, "Title");
+        dialog.name = "Unsaved title".into();
+        let (dialog, request) = dialog.navigate(Dialog::new(Kind::Title, "Title"), Some(3), None);
+        assert_eq!(dialog.name, "Unsaved title");
+        assert_eq!(request, Some(3));
+        assert!(dialog.drafts.is_empty());
     }
 }

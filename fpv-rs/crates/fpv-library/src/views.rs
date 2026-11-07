@@ -225,7 +225,7 @@ pub(crate) fn flight_view(flight: &Flight, clips: &[Clip], files: &HashMap<Uuid,
         clips: parts.iter().map(|(clip, file)| ClipView {
             id: uuid_string(clip.id),
             file_id: uuid_string(file.id),
-            file_name: file_name(&file.imported_path),
+            file_name: file_name(if Path::new(&file.original_path).file_name().is_some() { &file.original_path } else { &file.imported_path }),
             start_frame: clip.start_frame,
             end_frame: clip.end_frame,
             fps: file.media.frame_rate.value(),

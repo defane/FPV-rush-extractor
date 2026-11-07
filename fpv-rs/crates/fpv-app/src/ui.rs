@@ -250,15 +250,32 @@ fn paint_metadata_icon(ui: &egui::Ui, kind: MetadataIcon, area: egui::Rect) {
         }
 
         MetadataIcon::Dvr => {
-            painter.rect_stroke(body, 2.0, stroke, egui::StrokeKind::Inside);
+            let center = body.center();
+            let lens = egui::vec2(body.width() * 0.4, body.height() * 0.65);
+            for x in [body.left() + lens.x * 0.5, body.right() - lens.x * 0.5] {
+                painter.rect_stroke(
+                    egui::Rect::from_center_size(egui::pos2(x, center.y), lens),
+                    2.0,
+                    stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
             painter.line_segment(
                 [
-                    body.left_top() + egui::vec2(3.0, 3.0),
-                    body.right_top() - egui::vec2(3.0, -3.0),
+                    center - egui::vec2(1.5, 0.5),
+                    center + egui::vec2(1.5, -0.5),
                 ],
                 stroke,
             );
-            painter.circle_filled(body.right_bottom() - egui::vec2(3.0, 3.0), 1.2_f32, color);
+            for (x, direction) in [(body.left(), -1.0), (body.right(), 1.0)] {
+                painter.line_segment(
+                    [
+                        egui::pos2(x, center.y),
+                        egui::pos2(x + direction * 2.0, center.y - 2.0),
+                    ],
+                    stroke,
+                );
+            }
         }
         MetadataIcon::Camera => {
             let lens = body.center() - egui::vec2(1.5, 0.0);
@@ -1639,7 +1656,7 @@ impl App {
     }
 
     /// A card's actions: behind its "…" and on a right-click alike.
-    fn flight_menu(&mut self, ui: &mut egui::Ui, session: &str, flight: &FlightView) {
+    pub(crate) fn flight_menu(&mut self, ui: &mut egui::Ui, session: &str, flight: &FlightView) {
         if ui
             .add_enabled(flight.cloud, egui::Button::new("Download recordings"))
             .clicked()

@@ -1764,6 +1764,8 @@ fn moves_and_copies_selected_flights_with_independent_recordings_and_annotations
     library.set_playback_mute(&original.id,true).unwrap();
     let copied = library.transfer_flights(std::slice::from_ref(&original.id),&destination,true).unwrap();
     assert_ne!(copied[0],original.id);
+    let copied_view = library.snapshot().unwrap().into_iter().find(|s| s.id == destination).unwrap();
+    assert_eq!(copied_view.flights[0].clips.iter().map(|c| &c.file_name).collect::<Vec<_>>(), original.clips.iter().map(|c| &c.file_name).collect::<Vec<_>>(), "editing transferred sources must retain original filenames");
     let sources = library.store.source_files(parse(&destination).unwrap()).unwrap();
     assert_eq!(sources.len(),original.clips.len());
     assert_eq!(library.store.playback_mute(parse(&copied[0]).unwrap()).unwrap(),Some(true));

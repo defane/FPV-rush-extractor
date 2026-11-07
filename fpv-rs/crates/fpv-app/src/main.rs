@@ -460,7 +460,7 @@ impl App {
                         .as_mut()
                         .is_some_and(|dialog| dialog.finished(id, done))
                     {
-                        self.dialog = None;
+                        self.close_dialog();
                     }
                     if let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) {
                         task.running = false;
@@ -572,6 +572,8 @@ impl App {
                                 && let Some(dialog) = &mut self.dialog
                             {
                                 dialog.reply(reply);
+                            } else if let Some(dialog) = &mut self.dialog {
+                                dialog.pending_reply(id, reply);
                             }
                         }
                     }
@@ -582,6 +584,7 @@ impl App {
                 Event::Snapshot(sessions, config) => {
                     self.sessions = sessions;
                     self.config = config;
+                    self.discard_missing_dialogs();
                     if let Some(viewer) = &mut self.viewer {
                         if let Some(flight) = self
                             .sessions
@@ -636,8 +639,7 @@ impl App {
             }
             Escape::Dialog => {
                 // A task it started goes on, in the task bar.
-                self.dialog = None;
-                self.dialog_request = None;
+                self.close_dialog();
             }
             Escape::About => self.show_about = false,
             Escape::Player => self.viewer = None,
