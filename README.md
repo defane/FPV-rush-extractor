@@ -190,9 +190,9 @@ Export also offers an **Encoding** choice, independently of the flight/part layo
 
 ProRes MOV decoding is listed for macOS, Windows and Linux in Blackmagic's
 [Resolve codec guide](https://documents.blackmagicdesign.com/SupportNotes/DaVinci_Resolve_21_Supported_Codec_List.pdf).
-This avoids relying on H.264/AAC support in Resolve Free on Linux. Actual Resolve
-import testing remains to be confirmed; FFmpeg validation alone is not an editor
-compatibility test. Export respects recording No Sound and global export mute.
+This avoids relying on H.264/AAC support in Resolve Free on Linux. Export compatibility
+has been confirmed by user testing in DaVinci Resolve. Export respects recording
+No Sound and global export mute.
 
 ## Storage and background work
 

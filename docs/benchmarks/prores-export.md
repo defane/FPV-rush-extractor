@@ -26,12 +26,18 @@ Missing-encoder and invalid-container/geometry tests preserve staged publication
 and source files. The build keeps GPL/nonfree/autodetection disabled and enables
 only FFmpeg's built-in ProRes encoder/decoder; no external codec library is added.
 
-## Remaining editor validation
+## Editor validation
 
 Blackmagic's [Resolve 21.1 codec matrix](https://documents.blackmagicdesign.com/SupportNotes/DaVinci_Resolve_21_Supported_Codec_List.pdf)
 lists ProRes MOV decode on macOS, Windows and Rocky Linux. H.264 decode on Linux
 is Studio restricted. This motivated ProRes MOV rather than a universal H.264
-MP4 promise. Actual Resolve import, scrubbing and audio playback have **not**
-been tested here. Record the OS and Free/Studio version when validating exported
-samples in Resolve; keep #39 open until that manual acceptance check is complete.
-Native macOS/Windows builds for this change have not been run.
+MP4 promise.
+
+On 2026-11-07 the user confirmed that exported output works in DaVinci Resolve,
+accepting the export workflow for #39. The OS, Resolve version/edition and detailed
+scrubbing/audio checks were not specified; this confirms the reported workflow,
+not every combination in the vendor's compatibility matrix.
+
+The native macOS universal build at `b990621` passed workspace tests, Clippy and
+the installed-app smoke check in [GitHub Actions](https://github.com/defane/FPV-rush-extractor/actions/runs/42403890763).
+A native Windows build for this change has not been run.

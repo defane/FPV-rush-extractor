@@ -4,7 +4,7 @@
 
 - Synchronize boundary preview on every Start/End click, including reselecting the active edge; End previews the final included frame without altering the draft (#40).
 
-- Add independent As is / ProRes 422 HQ MOV export encoding for single flights, parts and batches; retain metadata/mute policies and enable the built-in LGPL ProRes codec without new libraries. Actual Resolve import validation is pending (#39).
+- Add independent As is / ProRes 422 HQ MOV export encoding for single flights, parts and batches; retain metadata/mute policies and enable the built-in LGPL ProRes codec without new libraries. DaVinci Resolve export compatibility is confirmed by user testing (#39).
 
 - Keep original filenames and shared flight actions available while editing, preserve unsaved drafts across actions, and use a common goggles icon for headset recordings (#38).
 
