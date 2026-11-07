@@ -7,8 +7,9 @@ use crate::{
 use chrono::{Datelike, Months, NaiveDate, Timelike};
 use eframe::egui;
 use fpv_library::{
-    CacheKind, CacheUsage, Config, ExportMode, FlightDeletion, FlightView, FolderView,
-    ImportProgress, ReducePreview, RelocationPreview, SegmentProgress, SessionEdit, SessionView,
+    CacheKind, CacheUsage, Config, ExportEncoding, ExportMode, FlightDeletion, FlightView,
+    FolderView, ImportProgress, ReducePreview, RelocationPreview, SegmentProgress, SessionEdit,
+    SessionView,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -87,6 +88,7 @@ pub(crate) struct Dialog {
     flag: bool,
     profile: String,
     mode: ExportMode,
+    encoding: ExportEncoding,
     acknowledged: bool,
     flight: Option<FlightView>,
     info: Option<Vec<fpv_library::RecordingInfo>>,
@@ -144,6 +146,7 @@ impl Dialog {
             flag: false,
             profile: "standard".into(),
             mode: ExportMode::Lossless,
+            encoding: ExportEncoding::AsIs,
             acknowledged: false,
             flight: None,
             info: None,
@@ -1575,6 +1578,64 @@ impl App {
                         if dialog.flights.len() == 1 { "" } else { "s" }
                     )).wrap());
                 }
+                ui.label("Encoding");
+                let changed = ui
+                    .radio_value(
+                        &mut dialog.encoding,
+                        ExportEncoding::AsIs,
+                        "As is (copy video)",
+                    )
+                    .changed()
+                    | ui.radio_value(
+                        &mut dialog.encoding,
+                        ExportEncoding::ProRes422Hq,
+                        "ProRes 422 HQ (MOV, for editing)",
+                    )
+                    .changed();
+                if changed {
+                    dialog.mismatch = None;
+                    let extension = if dialog.encoding == ExportEncoding::ProRes422Hq {
+                        "mov"
+                    } else {
+                        std::path::Path::new(&dialog.file_name)
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("mp4")
+                    };
+                    if dialog.kind == Kind::Export && !dialog.path.is_empty() {
+                        dialog.path = PathBuf::from(&dialog.path)
+                            .with_extension(extension)
+                            .to_string_lossy()
+                            .into_owned();
+                    }
+                }
+                if dialog.encoding == ExportEncoding::ProRes422Hq {
+                    ui.small("High quality, lossy 10-bit 4:2:2 video; larger files. Audio becomes 24-bit stereo PCM at 48 kHz. No scaling. Multipart files use their dominant frame rate; separate parts retain each source rate and size.");
+                    ui.radio_value(
+                        &mut dialog.mode,
+                        ExportMode::Lossless,
+                        "One file per flight",
+                    );
+                    ui.radio_value(
+                        &mut dialog.mode,
+                        ExportMode::Parts,
+                        "Separate recording parts",
+                    );
+                } else {
+                    ui.small("Preserve video packets where exact cuts allow it. Container-incompatible audio may become AAC. Precise long-GOP cuts require an explicit re-encode choice.");
+                    if dialog.kind == Kind::Export && dialog.mismatch.is_none() {
+                        ui.radio_value(
+                            &mut dialog.mode,
+                            ExportMode::Lossless,
+                            "One file per flight",
+                        );
+                        ui.radio_value(
+                            &mut dialog.mode,
+                            ExportMode::Parts,
+                            "Separate recording parts",
+                        );
+                    }
+                }
                 field(
                     ui,
                     if dialog.kind == Kind::Bulk {
@@ -1586,7 +1647,14 @@ impl App {
                 );
                 if ui.button("Choose destination…").clicked() {
                     let name = if dialog.kind == Kind::Export {
-                        dialog.file_name.clone()
+                        if dialog.encoding == ExportEncoding::ProRes422Hq {
+                            PathBuf::from(&dialog.file_name)
+                                .with_extension("mov")
+                                .to_string_lossy()
+                                .into_owned()
+                        } else {
+                            dialog.file_name.clone()
+                        }
                     } else {
                         "Flights".into()
                     };
@@ -1620,7 +1688,7 @@ impl App {
                     if ui.button("Re-encode into one file").clicked() {
                         chosen = Some(ExportMode::Reencode);
                     }
-                } else if dialog.kind == Kind::Bulk {
+                } else if dialog.kind == Kind::Bulk && dialog.encoding == ExportEncoding::AsIs {
                     ui.label("For precise cuts or incompatible frame rates:");
                     ui.radio_value(
                         &mut dialog.mode,
@@ -1645,6 +1713,7 @@ impl App {
                 }
                 if let Some(mode) = chosen {
                     dialog.mismatch = None;
+                    let encoding = dialog.encoding;
                     let (id, ids, path, bulk) = (
                         dialog.id.clone(),
                         dialog.flights.clone(),
@@ -1655,10 +1724,11 @@ impl App {
                         Some(
                             self.submit("Export flights", false, move |library, progress| {
                                 if bulk {
-                                    let report = library.export_flights(
+                                    let report = library.export_flights_encoded(
                                         &ids,
                                         &path,
                                         mode,
+                                        encoding,
                                         |done, total, line| progress.count(done, total, line),
                                     )?;
                                     bulk_summary(&report)
@@ -1666,7 +1736,7 @@ impl App {
                                         .map_err(fpv_library::LibraryError::Invalid)
                                 } else {
                                     // Library::export also refuses overwrite, for all modes.
-                                    export_reply(library.export(&id, &path, mode))
+                                    export_reply(library.export_encoded(&id, &path, mode, encoding))
                                 }
                             }),
                         );

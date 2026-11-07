@@ -17,6 +17,10 @@ pub enum ExportError {
     #[error("{0} is not all-intra: a precise cut inside the recording requires video re-encoding; \
              a complete recording can still be stream-copied")]
     NotAllIntra(String),
+    #[error("ProRes exports require a .mov destination")]
+    ProResContainer,
+    #[error("recording dimensions differ; export separate ProRes parts to retain each original size")]
+    ProResDimensions,
     #[error("no clips to export")]
     NothingToExport,
     /// Two recordings of a single flight were captured at different rates, so
@@ -160,6 +164,42 @@ impl<'a> ClipExporter<'a> {
         self.write_video(&concat_arguments(&list, destination), destination)
     }
 
+    /// Editing preset using FFmpeg's LGPL ProRes encoder. A single part keeps
+    /// its source size/rate; multipart output explicitly uses the dominant rate.
+    pub fn export_prores(&self, parts: &[Part], destination: &Path, mute: bool) -> Result<PathBuf, ExportError> {
+        let Some((_, first)) = parts.first() else { return Err(ExportError::NothingToExport); };
+        if !destination.extension().is_some_and(|e| e.eq_ignore_ascii_case("mov")) {
+            return Err(ExportError::ProResContainer);
+        }
+        if parts.iter().any(|(_, file)| (file.media.width, file.media.height) != (first.media.width, first.media.height)) {
+            return Err(ExportError::ProResDimensions);
+        }
+        let audio = !mute && parts.iter().any(|(_, file)| !file.muted && file.media.audio_codec.is_some());
+        let rate = FrameRate::dominant(parts);
+        let arguments = |(clip, file): &Part| {
+            let (start, duration) = span(clip, file);
+            let mut args = vec!["-hide_banner".into(), "-loglevel".into(), "error".into(),
+                "-i".into(), file.imported_path.clone(),
+                "-ss".into(), seconds_argument(start), "-t".into(), seconds_argument(duration),
+                "-c:v".into(), "prores_ks".into(), "-profile:v".into(), "3".into(),
+                "-pix_fmt".into(), "yuv422p10le".into()];
+            if parts.len() > 1 {
+                args.extend(["-vf".into(), format!("fps={}/{}", rate.numerator, rate.denominator)]);
+            }
+            if audio { normalize_audio(&mut args, file, "pcm_s24le"); }
+            else { args.extend(["-map".into(), "0:v:0".into(), "-an".into()]); }
+            Ok(args)
+        };
+        if parts.len() == 1 {
+            let mut args = arguments(&parts[0])?;
+            args.extend(["-y".into(), destination.to_string_lossy().into_owned()]);
+            return self.write_video(&args, destination);
+        }
+        let workspace = Workspace::beside(destination, "fpv-prores")?;
+        let list = self.cut(parts, workspace.path(), destination, arguments)?;
+        self.write_video(&concat_arguments(&list, destination), destination)
+    }
+
     /// Stage beside the destination, validate actual video packets, then publish
     /// without replacing an existing file. Failed muxers may leave zero bytes or
     /// just a container header even when they report success.
@@ -266,15 +306,19 @@ fn copy_new(source: &Path, destination: &Path) -> std::io::Result<()> {
 /// Mixed mute policies need homogeneous audio streams for concatenation. Only
 /// audio is normalized; lossless exports retain the original video packets.
 fn normalize_flight_audio(arguments: &mut Vec<String>, file: &SourceFile, destination: &Path) {
+    let codec = if destination.extension().is_some_and(|e| e.eq_ignore_ascii_case("avi")) {
+        "pcm_s16le"
+    } else { "aac" };
+    normalize_audio(arguments, file, codec);
+}
+
+fn normalize_audio(arguments: &mut Vec<String>, file: &SourceFile, codec: &str) {
     let silent = file.muted || file.media.audio_codec.is_none();
     if silent {
         let input_end = arguments.iter().position(|arg| arg == "-i").unwrap() + 2;
         arguments.splice(input_end..input_end, ["-f".into(), "lavfi".into(), "-i".into(),
             "anullsrc=r=48000:cl=stereo,aresample=osf=s16".into()]);
     }
-    let codec = if destination.extension().is_some_and(|e| e.eq_ignore_ascii_case("avi")) {
-        "pcm_s16le"
-    } else { "aac" };
     arguments.extend(["-map".into(), "0:v:0".into(), "-map".into(),
         if silent { "1:a:0" } else { "0:a:0" }.into(), "-c:a".into(), codec.into(),
         "-ar".into(), "48000".into(), "-ac".into(), "2".into()]);

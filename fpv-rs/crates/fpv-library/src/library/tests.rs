@@ -1919,3 +1919,46 @@ fn recording_dates_are_library_only_validated_persistent_and_distinct_from_sessi
     assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(),modified);
     assert!(library.set_recording_date(&uuid_string(Uuid::new_v4()),None).is_err());
 }
+
+#[test]
+fn prores_preset_exports_exact_cuts_parts_and_batches_with_metadata_and_mute() {
+    let (mut fixture, session) = imported();
+    let library = &mut fixture.library;
+    let flight = &session.flights[0];
+    let first = &flight.clips[0];
+    library.update_clip(&first.id, 5, 35).unwrap();
+    let mut tools = vec![None];
+    if let Some(path) = std::env::var_os("FPV_TEST_BUNDLED_TOOLS") { tools.push(Some(PathBuf::from(path))); }
+    for (index, tool) in tools.into_iter().enumerate() {
+        library.tools = tool;
+        for mode in [ExportMode::Lossless, ExportMode::Parts] {
+            let path = fixture._root.path().join(format!("preset-{index}-{mode:?}.mov"));
+            let paths = library.export_encoded(&flight.id, &path, mode, ExportEncoding::ProRes422Hq).unwrap();
+            assert_eq!(paths.len(), if mode == ExportMode::Parts { 2 } else { 1 });
+            for path in paths {
+                let info = MediaProbe::new(&library.ffmpeg()).probe(&path).unwrap();
+                assert_eq!(info.video_codec, "prores");
+                assert_eq!(info.audio_codec.as_deref(), Some("pcm_s24le"));
+                assert_eq!((info.width, info.height), (320, 240));
+                assert!((info.frame_rate.value() - 30.0).abs() < 0.01);
+                let output = Command::new("ffprobe").args(["-v", "error", "-show_entries", "stream=pix_fmt,profile:format_tags", "-of", "json"]).arg(&path).output().unwrap();
+                assert!(output.status.success());
+                let tags: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(tags["streams"][0]["pix_fmt"], "yuv422p10le");
+                assert_eq!(tags["streams"][0]["profile"], "HQ");
+                assert_eq!(tags["format"]["tags"]["session"], "Letz Kwad");
+                assert_eq!(tags["format"]["tags"]["session_date"], "2026-08-23");
+                assert!(info.creation_date.is_some());
+                // Exactly 30 selected frames from each source, including an interior H.264 cut.
+                assert!((info.duration - if mode == ExportMode::Parts { 1.0 } else { 2.0 }).abs() < 0.05, "{}", info.duration);
+            }
+        }
+        library.config.mute_videos = true;
+        let batch = library.export_flights_encoded(std::slice::from_ref(&flight.id), &fixture._root.path().join(format!("preset-batch-{index}")), ExportMode::Lossless, ExportEncoding::ProRes422Hq, |_, _, _| {}).unwrap();
+        assert!(batch.failed.is_empty(), "{:?}", batch.failed);
+        assert_eq!(batch.written.len(), 1);
+        assert_eq!(batch.written[0].extension().unwrap(), "mov");
+        assert!(MediaProbe::new(&library.ffmpeg()).probe(&batch.written[0]).unwrap().audio_codec.is_none());
+        library.config.mute_videos = false;
+    }
+}

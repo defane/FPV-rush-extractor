@@ -4163,3 +4163,26 @@ fn editing_action_menu_returns_to_unsaved_date_form() {
     );
     assert!(texts.iter().any(|s| s == "Original video.AVI"));
 }
+
+#[test]
+fn export_encoding_choice_updates_the_container_without_changing_layout() {
+    let ctx = egui::Context::default();
+    let mut app = app(&ctx);
+    let mut dialog = Dialog::export("Training", &flight());
+    dialog.reply(Reply::Picked(Some("/out/flight.mp4".into())));
+    app.dialog = Some(dialog);
+    click_text(
+        &ctx,
+        &mut app,
+        "ProRes 422 HQ (MOV, for editing)",
+        App::dialog_window,
+    );
+    let texts = shown_texts(&ctx, &mut app, App::dialog_window);
+    for expected in [
+        "/out/flight.mov",
+        "One file per flight",
+        "Separate recording parts",
+    ] {
+        assert!(texts.iter().any(|s| s == expected), "{expected}: {texts:?}");
+    }
+}

@@ -75,8 +75,8 @@ build() {
             --enable-muxer=avi,mov,mp4,matroska,image2,image2pipe,rawvideo,pcm_f32le,pcm_s16le,wav,framemd5,md5,null,adts \
             --enable-parser=mjpeg,h264,hevc,mpeg4video,aac,mpegaudio \
             --enable-bsf=extract_extradata,h264_mp4toannexb \
-            --enable-decoder=mjpeg,h264,hevc,mpeg4,aac,mp3,flac,opus,vorbis,adpcm_ima_wav,png,rawvideo,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,wrapped_avframe \
-            --enable-encoder=mjpeg,mpeg4,aac,png,rawvideo,pcm_s16le,pcm_s24le,pcm_f32le,wrapped_avframe \
+            --enable-decoder=prores,mjpeg,h264,hevc,mpeg4,aac,mp3,flac,opus,vorbis,adpcm_ima_wav,png,rawvideo,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,wrapped_avframe \
+            --enable-encoder=prores_ks,mjpeg,mpeg4,aac,png,rawvideo,pcm_s16le,pcm_s24le,pcm_f32le,wrapped_avframe \
             --enable-filter=scale,fps,format,aresample,anull,null,trim,atrim,setpts,asetpts,concat,testsrc,testsrc2,smptebars,sine,anoisesrc,color,anullsrc \
             --enable-indev=lavfi "${platform[@]}"
         make -j"$JOBS"

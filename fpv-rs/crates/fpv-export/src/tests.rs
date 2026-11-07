@@ -260,3 +260,35 @@ fn mpeg4_export_uses_the_measured_rate_within_its_codec_clock_limits() {
         assert!((bounded.value() / rate.value() - 1.0).abs() < 1e-6);
     }
 }
+
+#[test]
+fn prores_refuses_wrong_containers_and_geometry_before_running_tools() {
+    let ffmpeg = RecordingFfmpeg::default();
+    let out = tempfile::tempdir().unwrap();
+    let parts = mismatched_pair();
+    let exporter = ClipExporter::new(&ffmpeg);
+    assert!(matches!(exporter.export_prores(&parts, &out.path().join("bad.mp4"), false), Err(ExportError::ProResContainer)));
+    let mut changed = parts.clone();
+    changed[1].1.media.width *= 2;
+    assert!(matches!(exporter.export_prores(&changed, &out.path().join("bad.mov"), false), Err(ExportError::ProResDimensions)));
+    assert!(ffmpeg.calls().is_empty());
+}
+
+#[test]
+fn unavailable_prores_encoder_cleans_up_without_publishing_a_file() {
+    struct MissingEncoder;
+    impl FfmpegInvoking for MissingEncoder {
+        fn run(&self, tool: FfmpegTool, args: &[String]) -> Result<ProcessResult, FfmpegError> {
+            assert_eq!(tool, FfmpegTool::Ffmpeg);
+            std::fs::write(args.last().unwrap(), b"partial header").unwrap();
+            Ok(ProcessResult { status: 1, stdout: vec![], stderr: "Unknown encoder 'prores_ks'".into() })
+        }
+    }
+    let out = tempfile::tempdir().unwrap();
+    let destination = out.path().join("export.mov");
+    let file = source("clip.mp4", FrameRate::new(30, 1), "h264");
+    let result = ClipExporter::new(&MissingEncoder).export_prores(&[part(&file, 10, 20)], &destination, false);
+    assert!(result.is_err());
+    assert!(!destination.exists());
+    assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0);
+}

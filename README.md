@@ -172,6 +172,23 @@ to AAC while the video remains unchanged. Flights whose
 recordings have incompatible frame rates can be exported as separate lossless
 parts or explicitly re-encoded into one file.
 
+Export also offers an **Encoding** choice, independently of the flight/part layout:
+
+- **As is (copy video)** preserves source video packets whenever the selected cut
+  supports stream-copy. A precise long-GOP cut still needs explicit re-encoding.
+- **ProRes 422 HQ (MOV, for editing)** creates high-quality, lossy 10-bit 4:2:2
+  video with 24-bit stereo PCM audio at 48 kHz. Files are larger than typical
+  H.264 MP4 files. No scaling is applied. One multipart file uses the dominant
+  source frame rate; separate parts preserve each recording's size and rate.
+  Different source sizes require separate parts. Source bit depths above 10 and
+  4:4:4 chroma are converted; encoding cannot restore detail absent from the source.
+
+ProRes MOV decoding is listed for macOS, Windows and Linux in Blackmagic's
+[Resolve codec guide](https://documents.blackmagicdesign.com/SupportNotes/DaVinci_Resolve_21_Supported_Codec_List.pdf).
+This avoids relying on H.264/AAC support in Resolve Free on Linux. Actual Resolve
+import testing remains to be confirmed; FFmpeg validation alone is not an editor
+compatibility test. Export respects recording No Sound and global export mute.
+
 ## Storage and background work
 
 Set your recording destination in **Settings**; the default is

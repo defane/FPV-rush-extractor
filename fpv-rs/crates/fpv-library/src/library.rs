@@ -67,6 +67,14 @@ pub enum ExportMode {
     Reencode,
 }
 
+/// Codec choice is independent of flight/part layout.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExportEncoding {
+    #[default]
+    AsIs,
+    ProRes422Hq,
+}
+
 /// Whether a strip frame may be the nearest keyframe rather than the exact
 /// frame. Only on long-GOP footage, where the exact one costs a GOP of 4K
 /// decoding (~1.7 s on 10-bit HEVC, the pilot's Osmo takes), and only when the
@@ -1904,6 +1912,10 @@ impl Library {
 
     /// Writes a flight out. Returns the files written.
     pub fn export(&self, flight: &str, destination: &Path, mode: ExportMode) -> Result<Vec<PathBuf>> {
+        self.export_encoded(flight, destination, mode, ExportEncoding::AsIs)
+    }
+
+    pub fn export_encoded(&self, flight: &str, destination: &Path, mode: ExportMode, encoding: ExportEncoding) -> Result<Vec<PathBuf>> {
         let (flight, _, timeline) = self.flight(flight)?;
         let session = self.session(&uuid_string(flight.session_id))?;
         let metadata = ExportMetadata {
@@ -1924,6 +1936,9 @@ impl Library {
         }
         let ffmpeg = self.ffmpeg();
         let exporter = ClipExporter::new(&ffmpeg).with_metadata(metadata.clone());
+        if encoding == ExportEncoding::ProRes422Hq && mode != ExportMode::Parts {
+            return Ok(vec![exporter.export_prores(&timeline.parts, destination, self.config.mute_videos)?]);
+        }
         Ok(match mode {
             ExportMode::Lossless => vec![exporter.export_flight_with_mute(
                 &timeline.parts,
@@ -1947,7 +1962,11 @@ impl Library {
                         let part_metadata=ExportMetadata {
                             capture_time:file.media.creation_date.map(|date|date.to_rfc3339()), ..metadata.clone()
                         };
-                        Ok(ClipExporter::new(&ffmpeg).with_metadata(part_metadata).export_clip_with_mute(
+                        let exporter = ClipExporter::new(&ffmpeg).with_metadata(part_metadata);
+                        if encoding == ExportEncoding::ProRes422Hq {
+                            return Ok(exporter.export_prores(&[(clip.clone(), file.clone())], &path, self.config.mute_videos)?);
+                        }
+                        Ok(exporter.export_clip_with_mute(
                             clip,
                             file,
                             &path,
@@ -1969,7 +1988,12 @@ impl Library {
     /// `Reencode` choice. A flight that fails is reported and the batch
     /// goes on; `progress` gets (flights done, total, the flight starting).
     pub fn export_flights(&self, flights: &[String], folder: &Path, on_mismatch: ExportMode,
-                          mut progress: impl FnMut(usize, usize, &str)) -> Result<BulkExport> {
+                          progress: impl FnMut(usize, usize, &str)) -> Result<BulkExport> {
+        self.export_flights_encoded(flights, folder, on_mismatch, ExportEncoding::AsIs, progress)
+    }
+
+    pub fn export_flights_encoded(&self, flights: &[String], folder: &Path, on_mismatch: ExportMode,
+                          encoding: ExportEncoding, mut progress: impl FnMut(usize, usize, &str)) -> Result<BulkExport> {
         std::fs::create_dir_all(folder)?;
         let sessions = self.store.sessions()?;
         let mut outcome = BulkExport::default();
@@ -1991,8 +2015,10 @@ impl Library {
                 continue;
             };
             progress(index, flights.len(), &name);
+            let extension = if encoding == ExportEncoding::ProRes422Hq { "mov" } else { extension };
             let destination = free_name(folder, &name, extension);
-            let written = match self.export(id, &destination, ExportMode::Lossless) {
+            let initial = if encoding == ExportEncoding::ProRes422Hq { on_mismatch } else { ExportMode::Lossless };
+            let written = match self.export_encoded(id, &destination, initial, encoding) {
                 // A batch's explicit choice applies to all source codecs.
                 Err(LibraryError::Export(ExportError::MismatchedFrameRates(..))) => {
                     self.export(id, &destination, on_mismatch)
