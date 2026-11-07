@@ -60,8 +60,12 @@ pub(crate) fn nudge_controls(
 ) -> Option<i64> {
     let mut preview = None;
     ui.horizontal(|ui| {
-        ui.selectable_value(edge, Edge::Start, "Start");
-        ui.selectable_value(edge, Edge::End, "End");
+        if ui.selectable_value(edge, Edge::Start, "Start").clicked() {
+            preview = Some(clip.start_frame);
+        }
+        if ui.selectable_value(edge, Edge::End, "End").clicked() {
+            preview = Some(clip.end_frame - 1);
+        }
         let frame = match edge {
             Edge::Start => clip.start_frame,
             Edge::End => clip.end_frame,
@@ -400,6 +404,72 @@ mod tests {
             entry: "unknown".into(),
             exit: "nosignal".into(),
             thumbnail: None,
+        }
+    }
+
+    #[test]
+    fn clicking_start_or_end_seeks_each_time_without_changing_the_draft() {
+        for (start, end) in [(0, 1), (20, 80), (99, 100)] {
+            let ctx = egui::Context::default();
+            let mut clip = clip();
+            clip.start_frame = start;
+            clip.end_frame = end;
+            clip.fps = 24.486;
+            let mut edge = Edge::Start;
+            let mut render = |events| {
+                let mut preview = None;
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(800.0, 300.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            preview = nudge_controls(ui, &mut clip, &mut edge, Some((start, end)));
+                        });
+                    },
+                );
+                (output, preview)
+            };
+            render(vec![]);
+            for (label, expected) in [
+                ("Start", start),
+                ("Start", start),
+                ("End", end - 1),
+                ("End", end - 1),
+            ] {
+                let (output, _) = render(vec![]);
+                let position = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(t) if t.galley.job.text == label => {
+                            Some(t.pos + egui::vec2(4.0, 4.0))
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                let mut requested = None;
+                for pressed in [true, false] {
+                    requested = render(vec![
+                        egui::Event::PointerMoved(position),
+                        egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ])
+                    .1
+                    .or(requested);
+                }
+                assert_eq!(requested, Some(expected), "{label} at [{start}, {end})");
+            }
+            assert_eq!((clip.start_frame, clip.end_frame), (start, end));
         }
     }
 

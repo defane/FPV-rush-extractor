@@ -151,7 +151,8 @@ exports carry the session day but have no corresponding precise capture-time tag
 **Edit boundaries** shows the full original recording as an image strip below
 the preview. Hover or scrub the strip to inspect the source at that position,
 including outside the selected clip. Move the left handle for the start and the
-right handle for the end, or use frame and time-step controls for fine adjustment. For multipart flights, select
+right handle for the end, or use frame and time-step controls for fine adjustment.
+Click **Start** or **End** to inspect that boundary; End previews the last included frame. For multipart flights, select
 the source clip to edit. **Save this clip** applies the range; closing without
 saving discards the draft. Editing boundaries does not change source files.
 
