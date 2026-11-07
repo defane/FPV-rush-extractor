@@ -1,5 +1,7 @@
 # Unreleased
 
+- Resize the integrated Tasks / Notifications panel by dragging its top edge, retain its expanded size and share usable space between independently scrolling lists, including on small displays (#41).
+
 - Synchronize boundary preview on every Start/End click, including reselecting the active edge; End previews the final included frame without altering the draft (#40).
 
 - Add independent As is / ProRes 422 HQ MOV export encoding for single flights, parts and batches; retain metadata/mute policies and enable the built-in LGPL ProRes codec without new libraries. Actual Resolve import validation is pending (#39).

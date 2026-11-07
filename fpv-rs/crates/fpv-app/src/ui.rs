@@ -2172,8 +2172,22 @@ impl App {
     }
 
     pub(crate) fn task_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("tasks").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+        let expanded = self.show_tasks || self.show_notices;
+        // Separate identities keep the user's expanded height when collapsed.
+        let mut panel =
+            egui::TopBottomPanel::bottom(if expanded { "tasks" } else { "tasks-collapsed" });
+        if expanded {
+            let maximum = (ctx.available_rect().height() * 0.8).max(1.0);
+            panel = panel
+                .resizable(true)
+                .default_height(340.0)
+                .height_range(160.0_f32.min(maximum)..=maximum);
+        }
+        panel.show(ctx, |ui| {
+            if expanded {
+                ui.set_min_height(ui.available_height());
+            }
+            ui.horizontal_wrapped(|ui| {
                 let shown = || self.tasks.iter().filter(|task| !task.quiet || task.failed);
                 let running = shown().filter(|task| task.running).count();
                 let failed = shown().filter(|task| task.failed).count();
@@ -2231,101 +2245,124 @@ impl App {
                 ui.separator();
                 import_task_status(ui, task);
             }
+            let count = usize::from(self.show_notices) + usize::from(self.show_tasks);
+            let section_height = (ui.available_height() / count.max(1) as f32
+                - ui.spacing().item_spacing.y)
+                .max(0.0);
             if self.show_notices {
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(crate::section("Notifications"));
-                    if !self.notices.items().is_empty() && ui.button("Clear all").clicked() {
-                        self.notices.clear();
-                    }
-                });
-                if self.notices.items().is_empty() {
-                    ui.weak("Nothing went wrong.");
-                }
-                let mut dismissed = None;
-                egui::ScrollArea::vertical()
-                    .id_salt("notices")
-                    .max_height(160.0)
-                    .show(ui, |ui| {
-                        for (index, notice) in self.notices.items().iter().enumerate() {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.weak(&notice.at);
-                                ui.colored_label(Color32::LIGHT_RED, notice.text.trim());
-                                if notice.times > 1 {
-                                    ui.weak(format!("{} times", notice.times));
-                                }
-                                if ui.button("Dismiss").clicked() {
-                                    dismissed = Some(index);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), section_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(crate::section("Notifications"));
+                            if !self.notices.items().is_empty() && ui.button("Clear all").clicked()
+                            {
+                                self.notices.clear();
+                            }
+                        });
+                        if self.notices.items().is_empty() {
+                            ui.weak("Nothing went wrong.");
+                        }
+                        let mut dismissed = None;
+                        egui::ScrollArea::vertical()
+                            .id_salt("notices")
+                            .max_height(ui.available_height().max(0.0))
+                            .auto_shrink([false, false])
+                            .min_scrolled_height(0.0)
+                            .show(ui, |ui| {
+                                for (index, notice) in self.notices.items().iter().enumerate() {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.weak(&notice.at);
+                                        ui.colored_label(Color32::LIGHT_RED, notice.text.trim());
+                                        if notice.times > 1 {
+                                            ui.weak(format!("{} times", notice.times));
+                                        }
+                                        if ui.button("Dismiss").clicked() {
+                                            dismissed = Some(index);
+                                        }
+                                    });
                                 }
                             });
+                        if let Some(index) = dismissed {
+                            self.notices.dismiss(index);
                         }
-                    });
-                if let Some(index) = dismissed {
-                    self.notices.dismiss(index);
-                }
+                    },
+                );
             }
             if self.show_tasks {
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(crate::section("Tasks"));
-                    if self.tasks.iter().any(|task| !task.running)
-                        && ui.button("Clear finished").clicked()
-                    {
-                        self.tasks.retain(|task| task.running);
-                    }
-                });
-                if !self.tasks.iter().any(|task| !task.quiet || task.failed) {
-                    ui.weak("Nothing has run yet.");
-                }
-                egui::ScrollArea::vertical()
-                    .max_height(160.0)
-                    .show(ui, |ui| {
-                        for task in self
-                            .tasks
-                            .iter()
-                            .rev()
-                            .filter(|task| !task.quiet || task.failed)
-                        {
-                            ui.horizontal_wrapped(|ui| {
-                                if task.running {
-                                    ui.spinner();
-                                } else if task.failed {
-                                    ui.colored_label(Color32::LIGHT_RED, "✖");
-                                } else {
-                                    ui.colored_label(Color32::LIGHT_GREEN, "✔");
-                                }
-                                ui.label(&task.label);
-                                if task.failed {
-                                    ui.colored_label(Color32::LIGHT_RED, &task.line);
-                                } else {
-                                    ui.label(&task.line);
-                                }
-                                if task.running && task.total > 0 {
-                                    ui.add(
-                                        egui::ProgressBar::new(
-                                            task.done as f32 / task.total as f32,
-                                        )
-                                        .desired_width(130.0)
-                                        .show_percentage(),
-                                    );
-                                }
-                                let end = task.ended.unwrap_or_else(std::time::Instant::now);
-                                ui.weak(crate::taskbar::elapsed(
-                                    end.saturating_duration_since(task.started).as_secs_f64(),
-                                ));
-                            });
-                            if !task.log.is_empty() {
-                                ui.collapsing(
-                                    format!("Details: {} #{}", task.label, task.id),
-                                    |ui| {
-                                        for line in &task.log {
-                                            ui.small(line);
-                                        }
-                                    },
-                                );
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), section_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(crate::section("Tasks"));
+                            if self.tasks.iter().any(|task| !task.running)
+                                && ui.button("Clear finished").clicked()
+                            {
+                                self.tasks.retain(|task| task.running);
                             }
+                        });
+                        if !self.tasks.iter().any(|task| !task.quiet || task.failed) {
+                            ui.weak("Nothing has run yet.");
                         }
-                    });
+                        egui::ScrollArea::vertical()
+                            .max_height(ui.available_height().max(0.0))
+                            .auto_shrink([false, false])
+                            .min_scrolled_height(0.0)
+                            .show(ui, |ui| {
+                                for task in self
+                                    .tasks
+                                    .iter()
+                                    .rev()
+                                    .filter(|task| !task.quiet || task.failed)
+                                {
+                                    ui.horizontal_wrapped(|ui| {
+                                        if task.running {
+                                            ui.spinner();
+                                        } else if task.failed {
+                                            ui.colored_label(Color32::LIGHT_RED, "✖");
+                                        } else {
+                                            ui.colored_label(Color32::LIGHT_GREEN, "✔");
+                                        }
+                                        ui.label(&task.label);
+                                        if task.failed {
+                                            ui.colored_label(Color32::LIGHT_RED, &task.line);
+                                        } else {
+                                            ui.label(&task.line);
+                                        }
+                                        if task.running && task.total > 0 {
+                                            ui.add(
+                                                egui::ProgressBar::new(
+                                                    task.done as f32 / task.total as f32,
+                                                )
+                                                .desired_width(130.0)
+                                                .show_percentage(),
+                                            );
+                                        }
+                                        let end =
+                                            task.ended.unwrap_or_else(std::time::Instant::now);
+                                        ui.weak(crate::taskbar::elapsed(
+                                            end.saturating_duration_since(task.started)
+                                                .as_secs_f64(),
+                                        ));
+                                    });
+                                    if !task.log.is_empty() {
+                                        ui.collapsing(
+                                            format!("Details: {} #{}", task.label, task.id),
+                                            |ui| {
+                                                for line in &task.log {
+                                                    ui.small(line);
+                                                }
+                                            },
+                                        );
+                                    }
+                                }
+                            });
+                    },
+                );
             }
         });
     }

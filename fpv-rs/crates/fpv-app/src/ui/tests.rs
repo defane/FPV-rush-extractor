@@ -4186,3 +4186,143 @@ fn export_encoding_choice_updates_the_container_without_changing_layout() {
         assert!(texts.iter().any(|s| s == expected), "{expected}: {texts:?}");
     }
 }
+
+#[test]
+fn task_and_notification_panel_drag_resizes_content_and_remembers_expanded_height() {
+    use egui::containers::panel::PanelState;
+    for (tasks, notices) in [(true, false), (false, true), (true, true)] {
+        let ctx = egui::Context::default();
+        let (mut app, _jobs, _events) = app_with_worker(&ctx);
+        for index in 0..30 {
+            app.submit(format!("Task row {index}"), false, |_, _| unreachable!());
+            app.notices.push(format!("Notice row {index}"));
+        }
+        app.tasks[0].running = false;
+        app.show_tasks = tasks;
+        app.show_notices = notices;
+        let unread = app.notices.unread();
+        let size = egui::vec2(900.0, 900.0);
+        let render = |app: &mut App, size, events| {
+            let mut raw = input(size);
+            raw.events = events;
+            ctx.run(raw, |ctx| app.task_bar(ctx))
+        };
+        for _ in 0..5 {
+            render(&mut app, size, vec![]);
+        }
+        let height = || {
+            PanelState::load(&ctx, egui::Id::new("tasks"))
+                .unwrap()
+                .rect
+                .height()
+        };
+        let before = height();
+        let visible = |output: &egui::FullOutput, prefix: &str| {
+            output.shapes.iter().filter(|s| {
+            matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text.starts_with(prefix) && s.clip_rect.contains(t.pos) && s.clip_rect.contains(t.pos + t.galley.size()))
+        }).count()
+        };
+        let initial = render(&mut app, size, vec![]);
+        let start = egui::pos2(size.x / 2.0, size.y - before);
+        let end = start - egui::vec2(0.0, 220.0);
+        render(&mut app, size, vec![egui::Event::PointerMoved(start)]);
+        render(
+            &mut app,
+            size,
+            vec![egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+        );
+        for _ in 0..4 {
+            render(&mut app, size, vec![egui::Event::PointerMoved(end)]);
+        }
+        render(
+            &mut app,
+            size,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        let enlarged = render(&mut app, size, vec![]);
+        let expanded = height();
+        assert!(
+            expanded > before + 100.0,
+            "drag must enlarge the panel: {before} -> {expanded}"
+        );
+        for (shown, prefix) in [(tasks, "Task row"), (notices, "Notice row")] {
+            if shown {
+                assert!(
+                    visible(&enlarged, prefix) > visible(&initial, prefix),
+                    "resizing must reveal more {prefix} content"
+                );
+            }
+        }
+        let start = egui::pos2(size.x / 2.0, size.y - height());
+        let end = start + egui::vec2(0.0, 90.0);
+        render(&mut app, size, vec![egui::Event::PointerMoved(start)]);
+        render(
+            &mut app,
+            size,
+            vec![egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+        );
+        for _ in 0..4 {
+            render(&mut app, size, vec![egui::Event::PointerMoved(end)]);
+        }
+        render(
+            &mut app,
+            size,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        render(&mut app, size, vec![]);
+        assert!(
+            height() < expanded - 50.0,
+            "drag must also reduce the panel"
+        );
+        let expanded = height();
+        app.show_tasks = false;
+        app.show_notices = false;
+        for _ in 0..3 {
+            render(&mut app, size, vec![]);
+        }
+        app.show_tasks = tasks;
+        app.show_notices = notices;
+        for _ in 0..3 {
+            render(&mut app, size, vec![]);
+        }
+        assert!((height() - expanded).abs() < 2.0);
+        let small = egui::vec2(360.0, 320.0);
+        let mut output = render(&mut app, small, vec![]);
+        for _ in 0..3 {
+            output = render(&mut app, small, vec![]);
+        }
+        assert!(
+            height() <= small.y * 0.8 + 2.0,
+            "panel remains inside the smaller viewport: {} (tasks={tasks}, notices={notices})",
+            height()
+        );
+        for (shown, label) in [(tasks, "Clear finished"), (notices, "Clear all")] {
+            if shown {
+                assert!(output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == label && s.clip_rect.contains(t.pos))), "{label} must stay reachable");
+            }
+        }
+        assert_eq!(app.tasks.len(), 30);
+        assert_eq!(app.notices.items().len(), 30);
+        assert_eq!(app.notices.unread(), unread);
+    }
+}

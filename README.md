@@ -156,6 +156,10 @@ Click **Start** or **End** to inspect that boundary; End previews the last inclu
 the source clip to edit. **Save this clip** applies the range; closing without
 saving discards the draft. Editing boundaries does not change source files.
 
+When editing dates or clip boundaries, the original recording filename stays visible.
+Use the **…** menu to open the usual flight actions. **Back** returns to your unsaved
+form; exports use saved boundaries until you explicitly save your changes.
+
 Choose **Export** from a flight's menu or select several flights for batch
 export. Exports continue in the bottom **Tasks** panel after the form closes.
 Existing destination files are never overwritten; failed exports report their
@@ -197,6 +201,9 @@ Set your recording destination in **Settings**; the default is
 configuration/database directory. Cached thumbnails and previews can be cleared
 in Settings without deleting recordings.
 
+Drag the top edge of the expanded **Tasks / Notifications** panel to resize it.
+The lists use the added space and retain the expanded size when collapsed and reopened.
+
 The collapsible **Tasks** panel shows operation progress, completed work and
 errors. Imports and exports continue while you browse the library.
 
@@ -209,7 +216,3 @@ where available.
 flights with five-second margins and moves the original DVR recordings to the
 trash. Reduced footage cannot be re-segmented. Removing a session can keep its
 recordings; deleting a flight only trashes recordings used exclusively by it.
-
-When editing dates or clip boundaries, the original recording filename stays visible.
-Use the **…** menu to open the usual flight actions. **Back** returns to your unsaved
-form; exports use saved boundaries until you explicitly save your changes.
