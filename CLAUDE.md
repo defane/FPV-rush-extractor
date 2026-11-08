@@ -98,6 +98,12 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   **A tool there is removed before the new one is written**: macOS caches a binary's code
   signature by file, and the arm64 `ffmpeg` copied over the universal one of a previous
   run was killed on its first start ("Killed: 9", the pilot's Mac, 2026-10-28).
+  **A build folder is started over when the compiler or SDK changes** (2026-10-31): an
+  Xcode update put a new SDK behind the same `MacOSX.sdk` link, configure saw nothing
+  new, and make stopped on the old SDK's `SDKSettings.json`, listed by the earlier
+  objects. `build-<arch>/toolchain.txt` keeps the resolved SDK path and the compiler's
+  version; reproduced on Linux with a vanished header and a stand-in `cc`, and **verified
+  by the pilot on their Mac**: the next `make macos` rebuilt FFmpeg and went through.
 - Bundled FFmpeg must enable its internal `extract_extradata` bitstream filter:
   stream probing needs it to retain H.264/HEVC headers before indexed seeks.
   The player tries input-side seeking, with a sequential fallback if no video
@@ -549,6 +555,14 @@ Tauri app's (§10).
     feature is not done while it is red.
 - Rust: `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`,
   and `cargo fmt -p fpv-app -- --check`. No Node or TypeScript build step.
+- **Nothing reaches `main` without a green CI** (settled 2026-11-08, the pilot's rule, and it
+  binds the pilot's own changes too). Every change goes through a branch and a pull request,
+  and merges only once `ci.yml` has passed on Linux, macOS and Windows. No direct push to
+  `main`: there the CI only runs afterwards. `[skip ci]` is forbidden on a branch headed for
+  `main`, and GitHub obeys it anywhere in a commit message, even quoted: the commit adding
+  this rule skipped its own CI that way, so never write it literally in one. `make check` on
+  one machine does not replace the CI: the Windows crash of 2026-10-30 (§3.1, "The tests
+  never open the sound card") only ever showed on the Windows runner.
 
 ---
 
@@ -570,6 +584,19 @@ Tauri app's (§10).
    `LICENSE-APACHE`). Keep the FFmpeg license, exact source archive, SHA-256 and
    build instructions beside redistributed tools; GPL/nonfree components are
    forbidden in the bundled FFmpeg build.
+   **The Mac build's two deadlines** (2026-10-31, left as they are on the pilot's call):
+   - `hdiutil create -volname … -format …` warns on macOS 27 that it is deprecated
+     for `diskutil image create`, and still makes the DMG (the pilot's `make macos`).
+     It stays: the universal DMG is built on `macos-15-intel`, where `diskutil image`
+     has not been checked to exist. Change it when a macOS drops `hdiutil create`, or
+     after checking the replacement on every runner that packages.
+   - The Intel half of the universal DMG comes from GitHub's `macos-15-intel` runner,
+     announced as its last Intel image, expected to go around 2027 (not checked). macOS 15 itself
+     loses security updates when macOS 28 ships (Apple supports the current release and
+     the two before it, expected autumn 2027), and Apple has said macOS 26 is the last
+     release for Intel Macs. When the runner goes: drop the Intel half, or cross-compile
+     it from an Apple Silicon runner — `build-ffmpeg.sh universal` already cross-compiles
+     FFmpeg for x86_64.
 
 ### Settled 2026-09-03
 

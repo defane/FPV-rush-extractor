@@ -43,23 +43,37 @@ JOBS="${JOBS:-4}"
 
 build() {
     local arch="$1" build="$WORK/build-$1" prefix="$WORK/install-$1"
-    mkdir -p "$build"
-    local platform=()
+    local platform=() toolchain
     case "$(uname -s)" in
         Darwin)
-            local cpu="$arch"
+            local cpu="$arch" sdk
             [ "$cpu" != aarch64 ] || cpu=arm64
+            sdk="$(xcrun --sdk macosx --show-sdk-path)"
+            toolchain="$(cd "$sdk" && pwd -P; clang --version)"
             platform=(--target-os=darwin --arch="$cpu" --cc=clang --enable-cross-compile
-                --sysroot="$(xcrun --sdk macosx --show-sdk-path)"
+                --sysroot="$sdk"
                 --extra-cflags="-arch $cpu -mmacosx-version-min=11.0"
                 --extra-ldflags="-arch $cpu -mmacosx-version-min=11.0"
                 # Apple's own decoder, a system framework: the player needs it
                 # for 4K HEVC (78 s for 30 s in software on the pilot's Mac).
                 --enable-videotoolbox --enable-hwaccel=h264_videotoolbox,hevc_videotoolbox) ;;
-        MINGW*|MSYS*) platform=(--target-os=mingw32 --arch=x86_64 --cc=gcc --extra-ldflags=-static) ;;
-        Linux) ;;
+        MINGW*|MSYS*)
+            toolchain="$(gcc --version)"
+            platform=(--target-os=mingw32 --arch=x86_64 --cc=gcc --extra-ldflags=-static) ;;
+        Linux) toolchain="$(cc --version)" ;;
         *) echo "Unsupported build host: $(uname -s)" >&2; exit 1 ;;
     esac
+    # The objects of an earlier build list the system headers they were made
+    # from. An Xcode update replaces the SDK behind the same MacOSX.sdk link, so
+    # configure sees nothing new and make stops on a header that is gone ("No
+    # rule to make target .../MacOSX27.0.sdk/SDKSettings.json", the pilot's Mac,
+    # 2026-10-31). A build made by another compiler or SDK starts over.
+    if [ -d "$build" ] && [ "$(cat "$build/toolchain.txt" 2>/dev/null)" != "$toolchain" ]; then
+        echo "The compiler or SDK changed since the last FFmpeg build: rebuilding $arch from scratch"
+        rm -rf "$build"
+    fi
+    mkdir -p "$build"
+    printf '%s\n' "$toolchain" > "$build/toolchain.txt"
     (
         cd "$build"
         # Disabling autodetection prevents a developer's installed libx264,
