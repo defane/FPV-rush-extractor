@@ -555,6 +555,12 @@ Tauri app's (§10).
     feature is not done while it is red.
 - Rust: `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`,
   and `cargo fmt -p fpv-app -- --check`. No Node or TypeScript build step.
+- **Nothing reaches `main` without a green CI** (settled 2026-11-08, the pilot's rule, and it
+  binds the pilot's own changes too). Every change goes through a branch and a pull request,
+  and merges only once `ci.yml` has passed on Linux, macOS and Windows. No direct push to
+  `main`: there the CI only runs afterwards. `[skip ci]` is forbidden on a branch headed for
+  `main`. `make check` on one machine does not replace it: the Windows crash of 2026-10-30
+  (§3.1, "The tests never open the sound card") only ever showed on the Windows runner.
 
 ---
 
