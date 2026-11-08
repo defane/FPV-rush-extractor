@@ -1,0 +1,23 @@
+# recording\tstart seconds\tend seconds\tusable|snow|loss|recovery\tsplit
+# Local private footage; no video pixels are stored in this manifest.
+EACHINE — Flight 12.mp4	0	22.25	usable	calibration
+EACHINE — Flight 12.mp4	22.25	40.767	snow	calibration
+EACHINE — Flight 12.mp4	22.25	22.25	loss	calibration
+# Development windows reviewed visually at four frames/second.
+# These recordings also informed model selection; they are not held-out evaluation.
+# Transitional/ambiguous quarter-seconds are deliberately left unlabelled.
+Indoor — Flight 13.mp4	108	111	usable	validation
+Indoor — Flight 13.mp4	111	128	snow	validation
+Indoor — Flight 13.mp4	132.75	140	usable	validation
+Indoor — Flight 13.mp4	202	207.5	usable	validation
+Indoor — Flight 13.mp4	207.5	214.25	snow	validation
+Indoor — Flight 13.mp4	242	250	usable	validation
+Indoor — Flight 13.mp4	111	111	loss	validation
+Indoor — Flight 13.mp4	207.5	207.5	loss	validation
+EV300D_0002.AVI	60	76	usable	validation
+EV300D_0002.AVI	280	296	usable	validation
+# Indoor 128–132.75 and 214.25–242 contain mixed noise/recognizable interference.
+# Their usable/snow meaning is unresolved; excluded from accuracy claims.
+# External sources reviewed before the first detector run; optical TV is not DVR footage.
+analog-tv-noise.avi	0	10.937333	snow	external-evaluation
+opencv-vtest.avi	0	79.5	usable	external-evaluation

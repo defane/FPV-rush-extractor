@@ -68,12 +68,38 @@ impl Default for FolderPattern {
     }
 }
 
+/// Capture provenance is independent of codec and all-intra export capability.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub enum CaptureOrigin { HeadsetDvr, ActionCamera, Unknown }
+
+fn is_eachine(file: &DiscoveredFile, media: &MediaInfo) -> bool {
+    let camera=media.camera.as_deref().unwrap_or("").to_ascii_uppercase();
+    let name=file.name().to_ascii_uppercase();
+    let stem=std::path::Path::new(&name).file_stem().and_then(|s|s.to_str()).unwrap_or("");
+    camera.contains("EV300D") || stem.strip_prefix("EV300D_")
+        .is_some_and(|digits| digits.len()>=4 && digits.bytes().all(|b|b.is_ascii_digit()))
+}
+
+pub fn source_origin(file: &DiscoveredFile, media: &MediaInfo) -> CaptureOrigin {
+    if is_eachine(file,media) { return CaptureOrigin::HeadsetDvr; }
+    let name=file.name().to_ascii_uppercase();
+    if file.gopro.is_some() || name.starts_with("DJI_") || (name.starts_with("VID_") && name.contains("_00_"))
+        || media.camera.as_deref().is_some_and(|s|!s.trim().is_empty()) {
+        CaptureOrigin::ActionCamera
+    } else if media.is_analog_dvr() {
+        // Preserve the legacy MJPEG DVR hint when no stronger camera evidence exists.
+        CaptureOrigin::HeadsetDvr
+    } else { CaptureOrigin::Unknown }
+}
+
 /// What recorded a file, for `{source}`. MJPEG is the Fat Shark DVR's
 /// signature (the Scout's `.mov` included); action cams are told apart by the
 /// names they give their files.
 pub fn source_label(file: &DiscoveredFile, media: &MediaInfo) -> &'static str {
     let name = file.name().to_ascii_uppercase();
-    if media.needs_segmentation() {
+    if is_eachine(file,media) {
+        "EACHINE"
+    } else if source_origin(file,media) == CaptureOrigin::HeadsetDvr {
         "FATSHARK"
     } else if file.gopro.is_some() {
         "GOPRO"
@@ -89,12 +115,11 @@ pub fn source_label(file: &DiscoveredFile, media: &MediaInfo) -> &'static str {
 
 /// What recorded a file, as the library shows it: `DVR` for the goggles'
 /// recordings; for an action cam, the model its tags name (`MediaInfo::camera`)
-/// or else the brand its file names give away, and `Action cam` when neither
+/// or else the brand its file names give away, and `Recording` when neither
 /// says.
 pub fn source_name(file: &DiscoveredFile, media: &MediaInfo) -> String {
-    if media.needs_segmentation() {
-        return "DVR".into();
-    }
+    if is_eachine(file,media) { return "Eachine EV300D DVR".into(); }
+    if source_origin(file,media) == CaptureOrigin::HeadsetDvr { return "DVR".into(); }
     if let Some(camera) = &media.camera {
         return camera.clone();
     }
@@ -102,7 +127,7 @@ pub fn source_name(file: &DiscoveredFile, media: &MediaInfo) -> String {
         "GOPRO" => "GoPro",
         "DJI" => "DJI",
         "INSTA360" => "Insta360",
-        _ => "Action cam",
+        _ => "Recording",
     }.into()
 }
 
@@ -129,7 +154,7 @@ pub fn session_of_folder(folder: &str) -> (Option<NaiveDate>, String) {
 }
 
 /// Every label `source_label` gives.
-const SOURCE_LABELS: [&str; 5] = ["FATSHARK", "GOPRO", "DJI", "INSTA360", "CAM"];
+const SOURCE_LABELS: [&str; 6] = ["FATSHARK", "EACHINE", "GOPRO", "DJI", "INSTA360", "CAM"];
 
 /// A name a folder can carry on every desktop: no path separators, no colon,
 /// never empty, and never `.` or `..` — a session named `..` under the
@@ -166,7 +191,25 @@ mod tests {
         assert_eq!(name("GH010042.MP4", &take("h264", None)), "GoPro");
         assert_eq!(name("DJI_0001.MP4", &take("hevc", None)), "DJI");
         assert_eq!(name("VID_20261010_101500_00_001.mp4", &take("h264", None)), "Insta360");
-        assert_eq!(name("clip.mp4", &take("h264", None)), "Action cam");
+        assert_eq!(name("clip.mp4", &take("h264", None)), "Recording");
+    }
+
+    #[test]
+    fn recognizes_eachine_provenance_without_treating_every_avi_or_h264_as_a_headset() {
+        let mut media=MediaInfo::new(720,576,FrameRate::new(30,1),10.0,"h264");
+        let eachine=DiscoveredFile::new("/card/EV300D_0002.AVI");
+        assert_eq!(source_origin(&eachine,&media),CaptureOrigin::HeadsetDvr);
+        assert_eq!(source_label(&eachine,&media),"EACHINE");
+        assert_eq!(source_name(&eachine,&media),"Eachine EV300D DVR");
+        assert_eq!(session_of_folder("2026-11-04 Training EACHINE").1,"Training");
+        for name in ["clip.avi","clip.mp4","EV300D_notes.avi"] {
+            assert_eq!(source_origin(&DiscoveredFile::new(name),&media),CaptureOrigin::Unknown);
+        }
+        media.camera=Some("Eachine EV300D".into());
+        assert_eq!(source_origin(&DiscoveredFile::new("renamed.mp4"),&media),CaptureOrigin::HeadsetDvr);
+        media.camera=Some("GoPro HERO11".into());
+        assert_eq!(source_origin(&DiscoveredFile::new("renamed.mp4"),&media),CaptureOrigin::ActionCamera);
+        assert!(!media.is_all_intra());assert!(media.needs_segmentation());
     }
 
     #[test]

@@ -38,6 +38,49 @@ fn metadata_icon(ui: &mut egui::Ui, kind: MetadataIcon) {
     });
 }
 
+pub(crate) fn import_task_status(ui: &mut egui::Ui, task: &crate::Task) {
+    ui.horizontal_wrapped(|ui| {
+        if task.running {
+            ui.spinner();
+        }
+        ui.strong(if task.running {
+            if task.line.starts_with("Detecting flights ·") {
+                "Detecting flights"
+            } else {
+                "Importing videos"
+            }
+        } else if task.failed {
+            "Import failed"
+        } else {
+            "Import finished"
+        });
+        if task.running && task.total == 0 {
+            ui.label("Scanning videos…");
+        }
+        if task.failed {
+            ui.colored_label(Color32::LIGHT_RED, &task.line);
+        } else {
+            ui.label(&task.line);
+        }
+    });
+    if task.running && task.total > 0 {
+        ui.add(
+            egui::ProgressBar::new((task.done as f32 / task.total as f32).clamp(0.0, 1.0)).text(
+                format!(
+                    "{}/{} videos {}",
+                    task.done,
+                    task.total,
+                    if task.line.starts_with("Detecting flights ·") {
+                        "analyzed"
+                    } else {
+                        "processed"
+                    }
+                ),
+            ),
+        );
+    }
+}
+
 /// A view tab: a block of the column's width and a fixed height, its name
 /// centred on one line and how many centred below — drawn here, since egui's
 /// button places a centred two-line text off its middle.
@@ -207,15 +250,32 @@ fn paint_metadata_icon(ui: &egui::Ui, kind: MetadataIcon, area: egui::Rect) {
         }
 
         MetadataIcon::Dvr => {
-            painter.rect_stroke(body, 2.0, stroke, egui::StrokeKind::Inside);
+            let center = body.center();
+            let lens = egui::vec2(body.width() * 0.4, body.height() * 0.65);
+            for x in [body.left() + lens.x * 0.5, body.right() - lens.x * 0.5] {
+                painter.rect_stroke(
+                    egui::Rect::from_center_size(egui::pos2(x, center.y), lens),
+                    2.0,
+                    stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
             painter.line_segment(
                 [
-                    body.left_top() + egui::vec2(3.0, 3.0),
-                    body.right_top() - egui::vec2(3.0, -3.0),
+                    center - egui::vec2(1.5, 0.5),
+                    center + egui::vec2(1.5, -0.5),
                 ],
                 stroke,
             );
-            painter.circle_filled(body.right_bottom() - egui::vec2(3.0, 3.0), 1.2_f32, color);
+            for (x, direction) in [(body.left(), -1.0), (body.right(), 1.0)] {
+                painter.line_segment(
+                    [
+                        egui::pos2(x, center.y),
+                        egui::pos2(x + direction * 2.0, center.y - 2.0),
+                    ],
+                    stroke,
+                );
+            }
         }
         MetadataIcon::Camera => {
             let lens = body.center() - egui::vec2(1.5, 0.0);
@@ -744,7 +804,16 @@ impl App {
                 });
                 ui.separator();
                 if self.browse.view == View::Sessions {
-                    ui.small(RichText::new("SESSIONS").strong().color(ACCENT));
+                    ui.horizontal(|ui| {
+                        ui.small(RichText::new("SESSIONS").strong().color(ACCENT));
+                        if ui
+                            .add_enabled(!self.busy_with(&Scope::Library), egui::Button::new("+"))
+                            .on_hover_text("New session")
+                            .clicked()
+                        {
+                            self.dialog = Some(Dialog::new_session());
+                        }
+                    });
                     let ids: Vec<&str> = self.sessions.iter().map(|s| s.id.as_str()).collect();
                     browse::follow(
                         &ids,
@@ -803,7 +872,14 @@ impl App {
                                                 }
                                             }
                                             for camera in &sources.cameras {
-                                                metadata_icon(ui, MetadataIcon::Camera);
+                                                metadata_icon(
+                                                    ui,
+                                                    if camera == "Recording" {
+                                                        MetadataIcon::Film
+                                                    } else {
+                                                        MetadataIcon::Camera
+                                                    },
+                                                );
                                                 ui.small(RichText::new(camera).weak());
                                             }
                                             if !away.is_empty() {
@@ -979,7 +1055,7 @@ impl App {
                         session.segmentable && self.ffmpeg_ok,
                         egui::Button::new(browse::segment_label(session)),
                     )
-                    .on_hover_text("Action-cam takes are left as they are")
+                    .on_hover_text("Detect usable clips in every unreduced recording")
                     .clicked()
                 {
                     self.dialog = Some(Dialog::segment(session));
@@ -1193,6 +1269,23 @@ impl App {
                 if ui.add_enabled(!self.selected.is_empty() && !remade && self.ffmpeg_ok,
                     egui::Button::new(format!("Export {}…", self.selected.len()))).clicked() {
                     self.dialog = Some(Dialog::bulk(self.selected.iter().cloned().collect()));
+                }
+                for (label,copy) in [("Move",false),("Copy",true)] {
+                    if ui.add_enabled(!self.selected.is_empty() && !remade,
+                        egui::Button::new(format!("{label} {}…",self.selected.len()))).clicked() {
+                        let mut ids: Vec<_> = self.selected.iter().cloned().collect();
+                        ids.sort();
+                        self.dialog = Some(Dialog::transfer(ids,copy));
+                    }
+                }
+                if ui.add_enabled(!self.selected.is_empty() && !remade,
+                    egui::Button::new(crate::danger_text(format!("Delete {}…", self.selected.len())))).clicked() {
+                    let mut ids: Vec<_> = self.selected.iter().cloned().collect();
+                    ids.sort();
+                    self.dialog = Some(Dialog::delete_flights(ids.clone()));
+                    self.dialog_request = Some(self.submit("Plan selected deletion", true, move |library, _| {
+                        Ok(Reply::Deletion(library.flights_deletion(&ids)?))
+                    }));
                 }
             }); }
             let range = page_range(items.len(), &mut self.browse.page, self.browse.page_size);
@@ -1464,7 +1557,9 @@ impl App {
                 ui.horizontal_wrapped(|ui| {
                     metadata_icon(
                         ui,
-                        if flight.action_cam {
+                        if flight.source == "Recording" {
+                            MetadataIcon::Film
+                        } else if flight.action_cam {
                             MetadataIcon::Camera
                         } else {
                             MetadataIcon::Dvr
@@ -1560,8 +1655,15 @@ impl App {
         });
     }
 
-    /// A card's actions: behind its "…" and on a right-click alike.
-    fn flight_menu(&mut self, ui: &mut egui::Ui, session: &str, flight: &FlightView) {
+    /// Shared actions for thumbnails, dialogs and the player. Returns whether
+    /// navigation must close the current player after rendering.
+    pub(crate) fn flight_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &str,
+        flight: &FlightView,
+    ) -> bool {
+        let mut close_player = false;
         if ui
             .add_enabled(flight.cloud, egui::Button::new("Download recordings"))
             .clicked()
@@ -1576,12 +1678,26 @@ impl App {
             self.dialog = Some(Dialog::free_flight(flight));
             ui.close();
         }
+        if ui.button("Info").clicked() {
+            self.dialog = Some(Dialog::info(flight));
+            let id = flight.id.clone();
+            self.dialog_request = Some(self.submit(
+                "Recording information",
+                true,
+                move |library, _| Ok(Reply::FlightInfo(library.flight_info(&id)?)),
+            ));
+            ui.close();
+        }
         if ui.button("Edit title…").clicked() {
             self.dialog = Some(Dialog::title(flight));
             ui.close();
         }
         if ui.button("Edit boundaries…").clicked() {
             self.viewer = None;
+            self.cancel_playback_request();
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            close_player = true;
             self.dialog = Some(Dialog::editor(flight));
             ui.close();
         }
@@ -1604,6 +1720,7 @@ impl App {
             ));
             ui.close();
         }
+        close_player
     }
 
     pub(crate) fn player_window(&mut self, ctx: &egui::Context) {
@@ -1620,6 +1737,8 @@ impl App {
                     Some(ctx.load_texture("video", image, egui::TextureOptions::LINEAR));
             }
         }
+        let shortcuts_allowed = self.dialog.is_none() && !egui::Popup::is_any_open(ctx);
+        let previous_mute = viewer.playback_muted || viewer.volume <= 0.001;
         let mut open = true;
         let fullscreen = viewer.fullscreen;
         let expanded = fullscreen || viewer.window.maximized;
@@ -1703,11 +1822,28 @@ impl App {
                 },
             )
         });
+        if shown
+            .as_ref()
+            .is_some_and(|shown| shown.inner == Some(true))
+        {
+            open = false;
+        }
         if !expanded && let Some(shown) = shown {
             viewer.window.normal_rect = Some(shown.response.rect);
         }
         viewer.window.was_expanded = expanded;
-        if viewer.fullscreen && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        let muted = viewer.playback_muted || viewer.volume <= 0.001;
+        if !viewer.muted && muted != previous_mute {
+            let id = viewer.flight.id.clone();
+            self.submit("Remember playback mute", true, move |library, _| {
+                library.set_playback_mute(&id, muted)?;
+                Ok(Reply::Done("Playback mute saved".into()))
+            });
+        }
+        if shortcuts_allowed
+            && viewer.fullscreen
+            && ctx.input(|input| input.key_pressed(egui::Key::Escape))
+        {
             viewer.fullscreen = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         }
@@ -1717,6 +1853,7 @@ impl App {
             }
             self.viewer = Some(viewer);
         } else {
+            self.cancel_playback_request();
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         }
     }
@@ -1727,7 +1864,8 @@ impl App {
         viewer: &mut Viewer,
         ctx: &egui::Context,
         content_height: f32,
-    ) {
+    ) -> bool {
+        let mut close_player = false;
         let header = ui.horizontal_wrapped(|ui| {
             if !viewer.fullscreen
                 && ui
@@ -1750,6 +1888,20 @@ impl App {
             {
                 viewer.fullscreen = !viewer.fullscreen;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(viewer.fullscreen));
+            }
+            let context = self.sessions.iter().find_map(|session| {
+                session
+                    .flights
+                    .iter()
+                    .find(|flight| flight.id == viewer.flight.id)
+                    .map(|flight| (session.id.clone(), flight.clone()))
+            });
+            if let Some((session, flight)) = context {
+                ui.add_enabled_ui(!self.session_busy(&session), |ui| {
+                    ui.menu_button("…", |ui| {
+                        close_player = self.flight_menu(ui, &session, &flight);
+                    });
+                });
             }
             ui.label(flight_name(&viewer.flight));
         });
@@ -2039,7 +2191,10 @@ impl App {
                 );
             });
         }
-        if !ui.ctx().wants_keyboard_input() {
+        if self.dialog.is_none()
+            && !egui::Popup::is_any_open(ctx)
+            && !ui.ctx().wants_keyboard_input()
+        {
             if ui.input(|input| input.key_pressed(egui::Key::Space)) {
                 viewer.player.pause(!viewer.player.paused());
             }
@@ -2055,11 +2210,26 @@ impl App {
                 viewer.player.seek(viewer.player.position() + 5.0);
             }
         }
+        close_player
     }
 
     pub(crate) fn task_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("tasks").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+        let expanded = self.show_tasks || self.show_notices;
+        // Separate identities keep the user's expanded height when collapsed.
+        let mut panel =
+            egui::TopBottomPanel::bottom(if expanded { "tasks" } else { "tasks-collapsed" });
+        if expanded {
+            let maximum = (ctx.available_rect().height() * 0.8).max(1.0);
+            panel = panel
+                .resizable(true)
+                .default_height(340.0)
+                .height_range(160.0_f32.min(maximum)..=maximum);
+        }
+        panel.show(ctx, |ui| {
+            if expanded {
+                ui.set_min_height(ui.available_height());
+            }
+            ui.horizontal_wrapped(|ui| {
                 let shown = || self.tasks.iter().filter(|task| !task.quiet || task.failed);
                 let running = shown().filter(|task| task.running).count();
                 let failed = shown().filter(|task| task.failed).count();
@@ -2108,101 +2278,133 @@ impl App {
                     }
                 });
             });
-            if self.show_notices {
+            if let Some(task) = self
+                .tasks
+                .iter()
+                .rev()
+                .find(|t| t.label == "Import recordings")
+            {
                 ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(crate::section("Notifications"));
-                    if !self.notices.items().is_empty() && ui.button("Clear all").clicked() {
-                        self.notices.clear();
-                    }
-                });
-                if self.notices.items().is_empty() {
-                    ui.weak("Nothing went wrong.");
-                }
-                let mut dismissed = None;
-                egui::ScrollArea::vertical()
-                    .id_salt("notices")
-                    .max_height(160.0)
-                    .show(ui, |ui| {
-                        for (index, notice) in self.notices.items().iter().enumerate() {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.weak(&notice.at);
-                                ui.colored_label(Color32::LIGHT_RED, notice.text.trim());
-                                if notice.times > 1 {
-                                    ui.weak(format!("{} times", notice.times));
-                                }
-                                if ui.button("Dismiss").clicked() {
-                                    dismissed = Some(index);
+                import_task_status(ui, task);
+            }
+            let count = usize::from(self.show_notices) + usize::from(self.show_tasks);
+            let section_height = (ui.available_height() / count.max(1) as f32
+                - ui.spacing().item_spacing.y)
+                .max(0.0);
+            if self.show_notices {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), section_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(crate::section("Notifications"));
+                            if !self.notices.items().is_empty() && ui.button("Clear all").clicked()
+                            {
+                                self.notices.clear();
+                            }
+                        });
+                        if self.notices.items().is_empty() {
+                            ui.weak("Nothing went wrong.");
+                        }
+                        let mut dismissed = None;
+                        egui::ScrollArea::vertical()
+                            .id_salt("notices")
+                            .max_height(ui.available_height().max(0.0))
+                            .auto_shrink([false, false])
+                            .min_scrolled_height(0.0)
+                            .show(ui, |ui| {
+                                for (index, notice) in self.notices.items().iter().enumerate() {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.weak(&notice.at);
+                                        ui.colored_label(Color32::LIGHT_RED, notice.text.trim());
+                                        if notice.times > 1 {
+                                            ui.weak(format!("{} times", notice.times));
+                                        }
+                                        if ui.button("Dismiss").clicked() {
+                                            dismissed = Some(index);
+                                        }
+                                    });
                                 }
                             });
+                        if let Some(index) = dismissed {
+                            self.notices.dismiss(index);
                         }
-                    });
-                if let Some(index) = dismissed {
-                    self.notices.dismiss(index);
-                }
+                    },
+                );
             }
             if self.show_tasks {
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(crate::section("Tasks"));
-                    if self.tasks.iter().any(|task| !task.running)
-                        && ui.button("Clear finished").clicked()
-                    {
-                        self.tasks.retain(|task| task.running);
-                    }
-                });
-                if !self.tasks.iter().any(|task| !task.quiet || task.failed) {
-                    ui.weak("Nothing has run yet.");
-                }
-                egui::ScrollArea::vertical()
-                    .max_height(160.0)
-                    .show(ui, |ui| {
-                        for task in self
-                            .tasks
-                            .iter()
-                            .rev()
-                            .filter(|task| !task.quiet || task.failed)
-                        {
-                            ui.horizontal_wrapped(|ui| {
-                                if task.running {
-                                    ui.spinner();
-                                } else if task.failed {
-                                    ui.colored_label(Color32::LIGHT_RED, "✖");
-                                } else {
-                                    ui.colored_label(Color32::LIGHT_GREEN, "✔");
-                                }
-                                ui.label(&task.label);
-                                if task.failed {
-                                    ui.colored_label(Color32::LIGHT_RED, &task.line);
-                                } else {
-                                    ui.label(&task.line);
-                                }
-                                if task.running && task.total > 0 {
-                                    ui.add(
-                                        egui::ProgressBar::new(
-                                            task.done as f32 / task.total as f32,
-                                        )
-                                        .desired_width(130.0)
-                                        .show_percentage(),
-                                    );
-                                }
-                                let end = task.ended.unwrap_or_else(std::time::Instant::now);
-                                ui.weak(crate::taskbar::elapsed(
-                                    end.saturating_duration_since(task.started).as_secs_f64(),
-                                ));
-                            });
-                            if !task.log.is_empty() {
-                                ui.collapsing(
-                                    format!("Details: {} #{}", task.label, task.id),
-                                    |ui| {
-                                        for line in &task.log {
-                                            ui.small(line);
-                                        }
-                                    },
-                                );
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), section_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(crate::section("Tasks"));
+                            if self.tasks.iter().any(|task| !task.running)
+                                && ui.button("Clear finished").clicked()
+                            {
+                                self.tasks.retain(|task| task.running);
                             }
+                        });
+                        if !self.tasks.iter().any(|task| !task.quiet || task.failed) {
+                            ui.weak("Nothing has run yet.");
                         }
-                    });
+                        egui::ScrollArea::vertical()
+                            .max_height(ui.available_height().max(0.0))
+                            .auto_shrink([false, false])
+                            .min_scrolled_height(0.0)
+                            .show(ui, |ui| {
+                                for task in self
+                                    .tasks
+                                    .iter()
+                                    .rev()
+                                    .filter(|task| !task.quiet || task.failed)
+                                {
+                                    ui.horizontal_wrapped(|ui| {
+                                        if task.running {
+                                            ui.spinner();
+                                        } else if task.failed {
+                                            ui.colored_label(Color32::LIGHT_RED, "✖");
+                                        } else {
+                                            ui.colored_label(Color32::LIGHT_GREEN, "✔");
+                                        }
+                                        ui.label(&task.label);
+                                        if task.failed {
+                                            ui.colored_label(Color32::LIGHT_RED, &task.line);
+                                        } else {
+                                            ui.label(&task.line);
+                                        }
+                                        if task.running && task.total > 0 {
+                                            ui.add(
+                                                egui::ProgressBar::new(
+                                                    task.done as f32 / task.total as f32,
+                                                )
+                                                .desired_width(130.0)
+                                                .show_percentage(),
+                                            );
+                                        }
+                                        let end =
+                                            task.ended.unwrap_or_else(std::time::Instant::now);
+                                        ui.weak(crate::taskbar::elapsed(
+                                            end.saturating_duration_since(task.started)
+                                                .as_secs_f64(),
+                                        ));
+                                    });
+                                    if !task.log.is_empty() {
+                                        ui.collapsing(
+                                            format!("Details: {} #{}", task.label, task.id),
+                                            |ui| {
+                                                for line in &task.log {
+                                                    ui.small(line);
+                                                }
+                                            },
+                                        );
+                                    }
+                                }
+                            });
+                    },
+                );
             }
         });
     }

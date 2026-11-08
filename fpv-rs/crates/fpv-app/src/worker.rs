@@ -15,10 +15,14 @@ pub type Work =
 #[derive(Debug)]
 pub enum Reply {
     Done(String),
+    Export(BackgroundWork),
+    SessionCreated(String),
+    FlightsTransferred(String),
     Playback {
         flight: String,
         at: f64,
         parts: Vec<NativeSegment>,
+        playback_mute: Option<bool>,
     },
     BoundarySource {
         clip: String,
@@ -28,7 +32,13 @@ pub enum Reply {
         key: String,
         thumbnail: Thumbnail,
     },
+    BoundaryStrip {
+        clip: String,
+        index: usize,
+        thumbnail: Thumbnail,
+    },
     Folders(Vec<FolderView>),
+    FlightInfo(Vec<fpv_library::RecordingInfo>),
     Reduce(ReducePreview),
     Relocation(RelocationPreview),
     Deletion(FlightDeletion),
@@ -42,6 +52,17 @@ pub enum Reply {
     /// A lossless export met recordings at different rates: the library's
     /// reason, for the dialog to ask how instead.
     Mismatch(String),
+    NeedsReencode(String),
+}
+
+/// Prepared work owns snapshots and source leases, never the database.
+type ExportWork = Box<dyn FnOnce(&Progress) -> Result<Reply, fpv_library::LibraryError> + Send>;
+pub struct BackgroundWork(pub ExportWork);
+
+impl std::fmt::Debug for BackgroundWork {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Prepared export")
+    }
 }
 
 pub struct Job {
@@ -78,6 +99,19 @@ pub struct Progress {
 }
 
 impl Progress {
+    #[cfg(test)]
+    pub(crate) fn for_test(id: u64, context: egui::Context) -> (Self, Receiver<Event>) {
+        let (sender, events) = mpsc::channel();
+        (
+            Self {
+                id,
+                sender,
+                context,
+            },
+            events,
+        )
+    }
+
     pub fn step(&self, step: Step) {
         let _ = self.sender.send(Event::Progress { id: self.id, step });
         self.context.request_repaint();
@@ -97,6 +131,69 @@ pub struct Worker {
 }
 
 impl Worker {
+    fn run_jobs(mut library: Library, jobs: Receiver<Job>, tx: Sender<Event>, ctx: egui::Context) {
+        // Keep the existing one-export-at-a-time resource policy, independent of library reads.
+        let (exports, pending) = mpsc::channel::<(u64, BackgroundWork)>();
+        let output = tx.clone();
+        let context = ctx.clone();
+        std::thread::spawn(move || {
+            for (id, work) in pending {
+                let progress = Progress {
+                    id,
+                    sender: output.clone(),
+                    context: context.clone(),
+                };
+                progress.count(0, 0, "Exporting…");
+                let result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (work.0)(&progress)))
+                        .map_err(|_| {
+                            "The export stopped unexpectedly; unfinished output was discarded."
+                                .to_string()
+                        })
+                        .and_then(|r| r.map_err(|error| error.to_string()));
+                if output.send(Event::Finished { id, result }).is_err() {
+                    break;
+                }
+                context.request_repaint();
+            }
+        });
+        for job in jobs {
+            let progress = Progress {
+                id: job.id,
+                sender: tx.clone(),
+                context: ctx.clone(),
+            };
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                (job.work)(&mut library, &progress)
+            }))
+            .map_err(|_| {
+                "The operation stopped unexpectedly; the library transaction was rolled back."
+                    .to_string()
+            })
+            .and_then(|result| result.map_err(|error| error.to_string()));
+            if let Ok(Reply::Export(work)) = result {
+                if exports.send((job.id, work)).is_err() {
+                    let _ = tx.send(Event::Finished {
+                        id: job.id,
+                        result: Err("The export worker is unavailable.".into()),
+                    });
+                    ctx.request_repaint();
+                }
+                continue;
+            }
+            let _ = tx.send(Event::Finished { id: job.id, result });
+            match library.snapshot() {
+                Ok(snapshot) => {
+                    let _ = tx.send(Event::Snapshot(snapshot, library.config().clone()));
+                }
+                Err(error) => {
+                    let _ = tx.send(Event::Fatal(error.to_string()));
+                }
+            }
+            ctx.request_repaint();
+        }
+    }
+
     pub fn start(context: egui::Context) -> Self {
         let (sender, jobs) = mpsc::channel::<Job>();
         let (events, receiver) = mpsc::channel();
@@ -129,7 +226,7 @@ impl Worker {
                 Ok::<_, fpv_library::LibraryError>(library)
             })();
             ctx.request_repaint();
-            let mut library = match result {
+            let library = match result {
                 Ok(library) => library,
                 Err(error) => {
                     let _ = tx.send(Event::Fatal(error.to_string()));
@@ -137,31 +234,7 @@ impl Worker {
                     return;
                 }
             };
-            for job in jobs {
-                let progress = Progress {
-                    id: job.id,
-                    sender: tx.clone(),
-                    context: ctx.clone(),
-                };
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    (job.work)(&mut library, &progress)
-                }))
-                .map_err(|_| {
-                    "The operation stopped unexpectedly; the library transaction was rolled back."
-                        .to_string()
-                })
-                .and_then(|result| result.map_err(|error| error.to_string()));
-                let _ = tx.send(Event::Finished { id: job.id, result });
-                match library.snapshot() {
-                    Ok(snapshot) => {
-                        let _ = tx.send(Event::Snapshot(snapshot, library.config().clone()));
-                    }
-                    Err(error) => {
-                        let _ = tx.send(Event::Fatal(error.to_string()));
-                    }
-                }
-                ctx.request_repaint();
-            }
+            Self::run_jobs(library, jobs, tx, ctx);
         });
         // Card polling is independent of long-running imports and segmentation.
         std::thread::spawn(move || {
@@ -243,5 +316,282 @@ mod tests {
             None,
             "an empty variable is no override"
         );
+    }
+}
+
+#[cfg(test)]
+mod export_scheduling_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn a_held_export_does_not_block_playback_preparation_or_start_a_second_export() {
+        let root = tempfile::tempdir().unwrap();
+        let library = Library::open_with(
+            &root.path().join("config"),
+            &root.path().join("cache"),
+            Config {
+                media_root: root.path().join("videos"),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        let (jobs, input) = mpsc::channel();
+        let (events, output) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            Worker::run_jobs(library, input, events, egui::Context::default())
+        });
+        let (release, held) = mpsc::channel::<()>();
+        jobs.send(Job {
+            id: 1,
+            work: Box::new(move |_, _| {
+                Ok(Reply::Export(BackgroundWork(Box::new(move |progress| {
+                    progress.count(0, 1, "Export running");
+                    let _ = held.recv();
+                    Ok(Reply::Done("Export complete".into()))
+                }))))
+            }),
+        })
+        .unwrap();
+        loop {
+            if matches!(
+                output.recv_timeout(Duration::from_secs(10)).unwrap(),
+                Event::Progress { id: 1, .. }
+            ) {
+                break;
+            }
+        }
+        jobs.send(Job {
+            id: 2,
+            work: Box::new(|_, _| {
+                Ok(Reply::Export(BackgroundWork(Box::new(|_| {
+                    Ok(Reply::Done("Second export complete".into()))
+                }))))
+            }),
+        })
+        .unwrap();
+        jobs.send(Job {
+            id: 3,
+            work: Box::new(|_, _| {
+                Ok(Reply::Playback {
+                    flight: "next".into(),
+                    at: 0.0,
+                    parts: vec![],
+                    playback_mute: Some(true),
+                })
+            }),
+        })
+        .unwrap();
+        loop {
+            match output.recv_timeout(Duration::from_secs(10)).unwrap() {
+                Event::Finished { id: 1 | 2, .. } => {
+                    panic!("the held export and queued export must not have completed")
+                }
+                Event::Finished {
+                    id: 3,
+                    result:
+                        Ok(Reply::Playback {
+                            playback_mute: Some(true),
+                            ..
+                        }),
+                } => break,
+                _ => {}
+            }
+        }
+        drop(release);
+        let mut finished = vec![];
+        while finished.len() < 2 {
+            if let Event::Finished { id, result } =
+                output.recv_timeout(Duration::from_secs(10)).unwrap()
+            {
+                assert!(result.is_ok());
+                finished.push(id);
+            }
+        }
+        assert_eq!(finished, [1, 2], "exports preserve FIFO execution");
+        drop(jobs);
+        worker.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod real_export_playback_tests {
+    use super::*;
+    use fpv_library::{ExportEncoding, ExportMode};
+    use fpv_media::{FfmpegRunner, FfmpegTool, MediaProbe};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn real_exports_and_native_decoding_complete_concurrently() {
+        let root = tempfile::tempdir().unwrap();
+        let card = root.path().join("card");
+        std::fs::create_dir(&card).unwrap();
+        let tools = std::env::var_os("FPV_TEST_BUNDLED_TOOLS").map(PathBuf::from);
+        assert!(
+            FfmpegTool::Ffmpeg
+                .command(tools.as_deref())
+                .args([
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=640x480:rate=25:duration=4",
+                    "-c:v",
+                    "mpeg4",
+                    "-q:v",
+                    "4",
+                    "-y"
+                ])
+                .arg(card.join("GH010001.MP4"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        let library = Library::open_with(
+            &root.path().join("config"),
+            &root.path().join("cache"),
+            Config {
+                media_root: root.path().join("videos"),
+                ..Default::default()
+            },
+            tools.clone(),
+        )
+        .unwrap();
+        library
+            .import(&card, "Concurrent", None, false, |_| {})
+            .unwrap();
+        let flight = library.snapshot().unwrap()[0].flights[0].id.clone();
+        let (jobs, input) = mpsc::channel();
+        let (events, output) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            Worker::run_jobs(library, input, events, egui::Context::default())
+        });
+        for (index, encoding, bulk) in [
+            (0, ExportEncoding::AsIs, false),
+            (1, ExportEncoding::ProRes422Hq, false),
+            (2, ExportEncoding::ProRes422Hq, true),
+        ] {
+            let destination = root.path().join(format!(
+                "output-{index}.{}",
+                if encoding == ExportEncoding::AsIs {
+                    "mp4"
+                } else {
+                    "mov"
+                }
+            ));
+            let id = flight.clone();
+            let path = destination.clone();
+            let export = index * 2 + 1;
+            jobs.send(Job {
+                id: export,
+                work: Box::new(move |library, _| {
+                    if bulk {
+                        let plan = library.prepare_exports(&[id])?;
+                        Ok(Reply::Export(BackgroundWork(Box::new(move |progress| {
+                            plan.write(
+                                &path.with_extension("batch"),
+                                ExportMode::Parts,
+                                encoding,
+                                |done, total, line| progress.count(done, total, line),
+                            )?;
+                            Ok(Reply::Done("Batch exported".into()))
+                        }))))
+                    } else {
+                        let plan = library.prepare_export(&id)?;
+                        Ok(Reply::Export(BackgroundWork(Box::new(move |_| {
+                            plan.write(&path, ExportMode::Lossless, encoding)?;
+                            Ok(Reply::Done("Exported".into()))
+                        }))))
+                    }
+                }),
+            })
+            .unwrap();
+            loop {
+                if matches!(output.recv_timeout(Duration::from_secs(10)).unwrap(), Event::Progress { id, .. } if id == export)
+                {
+                    break;
+                }
+            }
+            let start = Instant::now();
+            let id = flight.clone();
+            jobs.send(Job {
+                id: export + 1,
+                work: Box::new(move |library, _| {
+                    Ok(Reply::Playback {
+                        parts: library.native_playback(&id)?,
+                        playback_mute: library.playback_mute(&id)?,
+                        flight: id,
+                        at: 0.0,
+                    })
+                }),
+            })
+            .unwrap();
+            let mut finished = false;
+            let mut export_ms = None;
+            let parts = loop {
+                match output.recv_timeout(Duration::from_secs(10)).unwrap() {
+                    Event::Finished { id, result } if id == export => {
+                        result.unwrap();
+                        finished = true;
+                        export_ms = Some(start.elapsed().as_millis());
+                    }
+                    Event::Finished {
+                        id,
+                        result: Ok(Reply::Playback { parts, .. }),
+                    } if id == export + 1 => break parts,
+                    _ => {}
+                }
+            };
+            let prepared_ms = start.elapsed().as_millis();
+            let player = crate::player::Player::new_source_preview(
+                parts,
+                tools.clone(),
+                0.0,
+                egui::Context::default(),
+                0.0,
+                25.0,
+            );
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(frame) = player.frame() {
+                    assert!(!frame.rgb.is_empty());
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "native frame: {:?}",
+                    player.warnings()
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let frame_ms = start.elapsed().as_millis();
+            drop(player);
+            while !finished {
+                if let Event::Finished { id, result } =
+                    output.recv_timeout(Duration::from_secs(10)).unwrap()
+                    && id == export
+                {
+                    result.unwrap();
+                    finished = true;
+                    export_ms = Some(start.elapsed().as_millis());
+                }
+            }
+            if !bulk {
+                assert!(
+                    MediaProbe::new(&FfmpegRunner::new(tools.clone()))
+                        .probe(&destination)
+                        .unwrap()
+                        .duration
+                        > 0.0
+                );
+            }
+            eprintln!(
+                "encoding={encoding:?} batch={bulk}: prepare={prepared_ms}ms first-frame={frame_ms}ms export-result-observed={export_ms:?}ms"
+            );
+        }
+        drop(jobs);
+        worker.join().unwrap();
     }
 }

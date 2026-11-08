@@ -1,0 +1,16 @@
+recording	profile	split	labeled_s	unknown_s	usable_kept_s	usable_lost_s	snow_kept_s	precision	recall	raw_noise_precision	raw_noise_recall	false_cuts	boundary_mean_abs_s	missing_boundaries	decode_analyze_s	peak_process_rss_kib
+EACHINE — Flight 12.mp4	snowSplit	calibration	40.750	0.017	22.250	0.000	0.000	1.000000	1.000000	1.000000	1.000000	0	0.000000	0	1.717	31732
+EACHINE — Flight 12.mp4	standard	calibration	40.750	0.017	22.250	0.000	0.000	1.000000	1.000000	1.000000	1.000000	0	0.000000	0	1.059	25388
+EACHINE — Flight 12.mp4	textured	calibration	40.750	0.017	22.250	0.000	0.000	1.000000	1.000000	1.000000	1.000000	0	0.000000	0	1.047	26140
+EV300D_0002.AVI	snowSplit	validation	32.000	308.500	32.000	0.000	0.000	n/a	n/a	0.000000	n/a	0	n/a	0	11.934	28544
+EV300D_0002.AVI	standard	validation	32.000	308.500	13.000	19.000	0.000	0.000000	n/a	0.000000	n/a	1	n/a	0	12.632	30888
+EV300D_0002.AVI	textured	validation	32.000	308.500	32.000	0.000	0.000	n/a	n/a	n/a	n/a	0	n/a	0	13.731	30376
+Indoor — Flight 13.mp4	snowSplit	validation	47.500	552.567	23.750	0.000	0.000	1.000000	1.000000	1.000000	1.000000	0	0.000000	0	22.827	36576
+Indoor — Flight 13.mp4	standard	validation	47.500	552.567	23.750	0.000	0.000	1.000000	1.000000	1.000000	1.000000	0	0.000000	0	14.271	32388
+Indoor — Flight 13.mp4	textured	validation	47.500	552.567	23.750	0.000	0.000	1.000000	1.000000	1.000000	1.000000	0	0.000000	0	22.116	32404
+analog-tv-noise.avi	snowSplit	external-evaluation	10.937	0.000	0.000	0.000	10.937	n/a	0.000000	n/a	0.000000	0	n/a	0	0.602	9948
+analog-tv-noise.avi	standard	external-evaluation	10.937	0.000	0.000	0.000	10.937	n/a	0.000000	n/a	0.000000	0	n/a	0	0.647	14168
+analog-tv-noise.avi	textured	external-evaluation	10.937	0.000	0.000	0.000	10.937	n/a	0.000000	n/a	0.000000	0	n/a	0	0.702	14128
+opencv-vtest.avi	snowSplit	external-evaluation	79.500	0.000	79.500	0.000	0.000	n/a	n/a	n/a	n/a	0	n/a	0	2.140	16888
+opencv-vtest.avi	standard	external-evaluation	79.500	0.000	79.500	0.000	0.000	n/a	n/a	n/a	n/a	0	n/a	0	1.448	20084
+opencv-vtest.avi	textured	external-evaluation	79.500	0.000	79.500	0.000	0.000	n/a	n/a	n/a	n/a	0	n/a	0	1.903	22952

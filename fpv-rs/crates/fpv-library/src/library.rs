@@ -5,13 +5,16 @@ use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use fpv_core::{Clip, DetectionProfile, DetectionRun, FigureTag, Flight, FlightTimeline, MediaInfo, REDUCED_ALGORITHM,
                Session, SourceFile, uuid_string};
 use fpv_detect::{DetectorSettings, FileDetector};
-use fpv_export::{ClipExporter, ExportError};
+use fpv_export::{ClipExporter, ExportError, ExportMetadata};
 use fpv_import::{FolderPattern, ImportEvent, LibraryImporter};
 use fpv_media::{FfmpegRunner, FrameReader, MediaProbe, ThumbnailGenerator};
 use fpv_pipeline::{SegmentationEvent, SegmentationReport, SegmentationService};
 use fpv_proxy::{ProxyCache, ProxyGenerator};
 use fpv_store::{LibraryStore, StoreError};
 use uuid::Uuid;
+
+mod exports;
+pub use exports::{PreparedExport, PreparedExports};
 
 use crate::Config;
 use crate::reduce::{MARGIN_SECONDS, into_piece, kept_ranges};
@@ -42,6 +45,19 @@ pub enum LibraryError {
 
 pub type Result<T> = std::result::Result<T, LibraryError>;
 
+/// Stored metadata for one clip's source; looking at Info never reads media
+/// content or downloads a cloud placeholder.
+#[derive(Debug, Clone)]
+pub struct RecordingInfo {
+    pub session: Session,
+    pub shared_clips: usize,
+    pub clip: Clip,
+    pub source: SourceFile,
+    pub available: bool,
+    pub cloud: bool,
+    pub size_bytes: Option<u64>,
+}
+
 /// How a flight is written out. `Lossless` refuses a flight whose recordings
 /// disagree on their rate; the user then picks one of the other two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -52,6 +68,14 @@ pub enum ExportMode {
     Parts,
     /// One file, each part resampled to the dominant rate (CLAUDE.md 2).
     Reencode,
+}
+
+/// Codec choice is independent of flight/part layout.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExportEncoding {
+    #[default]
+    AsIs,
+    ProRes422Hq,
 }
 
 /// Whether a strip frame may be the nearest keyframe rather than the exact
@@ -67,7 +91,7 @@ fn rough_strip(media: &MediaInfo, spacing: f64) -> bool {
 /// Whether a flight can play from its own files: every part from an action
 /// cam. The DVR's MJPEG never can.
 fn plays_directly<'m>(media: impl IntoIterator<Item = &'m MediaInfo>) -> bool {
-    media.into_iter().all(|media| !media.needs_segmentation())
+    media.into_iter().all(|media| !media.is_analog_dvr())
 }
 
 /// How the player opens a flight (`Library::playback`).
@@ -370,6 +394,7 @@ pub struct Library {
     pub store: LibraryStore,
     config: Config,
     tools: Option<PathBuf>,
+    export_leases: exports::ExportLeases,
     /// The cloud drive the import folder may sit in; the tests stand in their
     /// own, there being no File Provider on Linux.
     cloud: CloudDrive,
@@ -440,7 +465,7 @@ impl Library {
         let library = Self {
             root: config.media_root.clone(), config_directory: config_directory.to_path_buf(),
             cache_directory: cache_directory.to_path_buf(), store, config, tools,
-            cloud: CloudDrive::default(),
+            cloud: CloudDrive::default(), export_leases: Default::default(),
         };
         library.move_posters_into_cache()?;
         library.sweep_orphaned_thumbnails()?;
@@ -868,7 +893,7 @@ impl Library {
         let mut plans = vec![];
         let mut unsegmented = 0;
         for file in self.store.source_files(session)? {
-            if !file.media.needs_segmentation() || reduced.contains(&file.id) {
+            if !file.media.is_all_intra() || reduced.contains(&file.id) {
                 continue;
             }
             if self.store.detection_runs(file.id)?.is_empty() {
@@ -919,6 +944,7 @@ impl Library {
     pub fn reduce_session(&self, session: &str, mut progress: impl FnMut(usize, usize, String))
         -> Result<ReduceSummary> {
         let session = self.session(session)?;
+        self.ensure_export_sources_idle(self.store.source_files(session.id)?.iter().map(|f| f.id))?;
         let (plans, _) = self.reduce_plans(session.id)?;
         let mut summary = ReduceSummary::default();
         let total = plans.len();
@@ -1038,11 +1064,12 @@ impl Library {
         Ok((pieces.len(), before.saturating_sub(after)))
     }
 
-    /// Runs the detector over a session's DVR recordings and files the flights.
+    /// Runs signal detection over all unreduced recordings, independent of codec.
     /// Re-running is cheap and reversible by design (CLAUDE.md 3.2).
     pub fn segment(&self, session: &str, progress: impl FnMut(SegmentationEvent))
         -> Result<SegmentationReport> {
         let session = self.session(session)?;
+        self.ensure_export_sources_idle(self.store.source_files(session.id)?.iter().map(|f| f.id))?;
         // The session's own thresholds; the run records them, so a clip set
         // stays explainable whichever profile produced it.
         let settings = DetectorSettings::for_profile(session.detection_profile);
@@ -1052,6 +1079,53 @@ impl Library {
             .segment(session.id, &self.posters(), progress)?;
         self.sweep_orphaned_thumbnails()?;
         Ok(report)
+    }
+
+    /// Analyze only sources delivered by this import, leaving reviewed flights alone.
+    pub fn segment_imported(&self, ids: &[Uuid], progress: impl FnMut(SegmentationEvent))
+        -> Result<SegmentationReport> {
+        self.segment_imported_using(ids, None, progress)
+    }
+
+    /// Persist the import's chosen session profile and apply it only to new sources.
+    pub fn segment_imported_with_profile(&self, ids: &[Uuid], profile: &str,
+                                         progress: impl FnMut(SegmentationEvent))
+        -> Result<SegmentationReport> {
+        if DetectionProfile::from_raw(profile).is_none() {
+            return Err(LibraryError::Invalid(format!("no detection profile {profile}")));
+        }
+        self.segment_imported_using(ids, Some(profile), progress)
+    }
+
+    fn segment_imported_using(&self, ids: &[Uuid], profile: Option<&str>, mut progress: impl FnMut(SegmentationEvent))
+        -> Result<SegmentationReport> {
+        self.ensure_export_sources_idle(ids.iter().copied())?;
+        let mut sessions: Vec<(Uuid, Vec<Uuid>)> = Vec::new();
+        for id in ids {
+            let file = self.store.source_file(*id)?
+                .ok_or_else(|| LibraryError::NotFound(format!("recording {id}")))?;
+            if let Some((_, files)) = sessions.iter_mut().find(|(s, _)| *s == file.session_id) {
+                if !files.contains(id) { files.push(*id); }
+            } else { sessions.push((file.session_id, vec![*id])); }
+        }
+        let ffmpeg = self.ffmpeg();
+        let mut combined = SegmentationReport::default();
+        for (session_id, files) in sessions {
+            if let Some(profile) = profile {
+                self.set_detection_profile(&uuid_string(session_id), profile)?;
+            }
+            let session = self.session(&uuid_string(session_id))?;
+            let settings = DetectorSettings::for_profile(session.detection_profile);
+            let detector = FileDetector::new(settings.clone(), FrameReader::new(self.tools.clone()));
+            let report = SegmentationService::new(&detector, &ffmpeg, &self.store, settings)
+                .segment_imported(session_id, &files, &self.posters(), &mut progress)?;
+            combined.flights += report.flights;
+            combined.clips += report.clips;
+            combined.failed.extend(report.failed);
+            combined.stitched.extend(report.stitched);
+        }
+        self.sweep_orphaned_thumbnails()?;
+        Ok(combined)
     }
 
     // Editing
@@ -1074,11 +1148,19 @@ impl Library {
     /// later takes them back without copying them again.
     pub fn delete_session(&self, id: &str, keep_recordings: bool) -> Result<()> {
         let session = self.session(id)?;
+        self.ensure_export_sources_idle(self.store.source_files(session.id)?.iter().map(|f| f.id))?;
         // The media folders, recovered from the files rather than recomputed
         // from a name the user may have changed since.
         let folders: HashSet<PathBuf> = self.store.source_files(session.id)?.iter()
             .filter_map(|f| Path::new(&f.imported_path).parent().map(Path::to_path_buf))
             .collect();
+        if !keep_recordings {
+            // A destination folder can contain another session's transferred recordings.
+            for other in self.store.sessions()? {
+                let files = self.store.source_files(other.id)?;
+                self.ensure_export_sources_idle(files.iter().filter(|file| folders.iter().any(|folder| Path::new(&file.imported_path).starts_with(folder))).map(|file| file.id))?;
+            }
+        }
         self.store.delete_session(session.id)?;
         for folder in folders.iter().filter(|f| !keep_recordings && f.exists()) {
             if let Err(error) = trash::delete(folder) {
@@ -1094,12 +1176,107 @@ impl Library {
     /// notes and tags. Text is trimmed, and an emptied place or note is none.
     /// A tag given twice, in any case, is kept once as first written. The
     /// day only dates the session: folders already on disk keep their names.
+    /// Move/copy selected flights without changing source bytes. Each destination
+    /// source has its own path/identity, so reduction and deletion stay isolated.
+    pub fn transfer_flights(&self, ids: &[String], destination: &str, copy: bool) -> Result<Vec<String>> {
+        let destination = self.session(destination)?;
+        if ids.is_empty() { return Err(LibraryError::Invalid("select at least one flight".into())); }
+        let mut selected = Vec::new();
+        let mut originals = HashMap::new();
+        for id in ids {
+            let id = parse(id)?;
+            if selected.contains(&id) { continue; }
+            let (flight,clips) = self.store.flight(id)?.ok_or_else(||LibraryError::NotFound(format!("flight {id}")))?;
+            if !copy { self.ensure_export_sources_idle(clips.iter().map(|c| c.source_file_id))?; }
+            if flight.session_id == destination.id { return Err(LibraryError::Invalid("choose another session".into())); }
+            for clip in clips {
+                let source = self.store.source_file(clip.source_file_id)?.ok_or_else(||LibraryError::NotFound("recording".into()))?;
+                if !Path::new(&source.imported_path).is_file() {
+                    return Err(LibraryError::Invalid(format!("recording is unavailable: {}",source.imported_path)));
+                }
+                originals.insert(source.id, source);
+            }
+            selected.push(id);
+        }
+        let folder = self.root.join(format!("{} — {}",fpv_import::folder_name(&destination.name),destination.id));
+        std::fs::create_dir_all(&folder)?;
+        let mut created = Vec::new();
+        let operation = (|| {
+            let mut sources = Vec::new();
+            let mut tags = Vec::new();
+            let mut runs = Vec::new();
+            for (old_id, mut source) in originals {
+                let old_path = PathBuf::from(&source.imported_path);
+                source.id = Uuid::new_v4();
+                source.session_id = destination.id;
+                let path = folder.join(format!("{}-{}",source.id,file_name(&source.imported_path)));
+                // Reserve a unique alias. A hard link shares immutable bytes;
+                // cross-filesystem/unsupported links fall back to a checked copy.
+                match std::fs::hard_link(&old_path,&path) {
+                    Ok(()) => created.push(path.clone()),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Err(error.into()),
+                    Err(_) => {
+                        let mut input = std::fs::File::open(&old_path)?;
+                        let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+                        created.push(path.clone());
+                        let expected = input.metadata()?.len();
+                        let copied = std::io::copy(&mut input,&mut output)?;
+                        if copied != expected || input.metadata()?.len() != expected {
+                            return Err(LibraryError::Invalid("recording changed while copying".into()));
+                        }
+                        output.set_modified(input.metadata()?.modified()?)?;
+                        output.sync_all()?;
+                    }
+                }
+                source.imported_path = path.to_string_lossy().into_owned();
+                for mut tag in self.store.tags_of_source_file(old_id)? {
+                    tag.id = Uuid::new_v4(); tag.source_file_id = source.id; tags.push(tag);
+                }
+                for mut run in self.store.detection_runs(old_id)? {
+                    run.id = Uuid::new_v4(); run.source_file_id = source.id; runs.push(run);
+                }
+                sources.push((old_id,source));
+            }
+            Ok(self.store.transfer_flights(&selected,destination.id,copy,&sources,&tags,&runs)?
+                .into_iter().map(uuid_string).collect())
+        })();
+        if operation.is_err() {
+            for path in created { let _ = std::fs::remove_file(path); }
+            let _ = std::fs::remove_dir(folder);
+        }
+        operation
+    }
+
+    /// Library corrections never rewrite video bytes or filesystem timestamps.
+    pub fn set_recording_date(&self, id: &str, value: Option<&str>) -> Result<()> {
+        let date=value.map(|s|chrono::DateTime::parse_from_rfc3339(s)
+            .map(|d|d.to_utc()).map_err(|_|LibraryError::Invalid("not a valid date/time with UTC offset".into())))
+            .transpose()?;
+        Ok(self.store.set_recording_date(parse(id)?,date)?)
+    }
+
+    pub fn set_session_day(&self, id: &str, value: Option<&str>) -> Result<()> {
+        let session=self.session(id)?;
+        let date=value.map(local_midnight).transpose()?;
+        Ok(self.store.save_session(&Session{date,..session})?)
+    }
+
+    pub fn create_session(&self, edit: &SessionEdit) -> Result<String> {
+        let session = Session::new("", None);
+        let id = session.id;
+        self.save_session_details(session, edit)?;
+        Ok(uuid_string(id))
+    }
+
     pub fn update_session(&self, id: &str, edit: &SessionEdit) -> Result<()> {
+        self.save_session_details(self.session(id)?, edit)
+    }
+
+    fn save_session_details(&self, session: Session, edit: &SessionEdit) -> Result<()> {
         let name = edit.name.trim();
         if name.is_empty() {
             return Err(LibraryError::Invalid("a session needs a name".into()));
         }
-        let session = self.session(id)?;
         let date = match edit.date.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
             Some(day) => Some(local_midnight(day)?),
             None => None,
@@ -1111,10 +1288,9 @@ impl Library {
                 labels.push(label.to_owned());
             }
         }
-        self.store.save_session(&Session {
+        Ok(self.store.save_session_details(&Session {
             name: name.into(), date, location: text(&edit.location), notes: text(&edit.notes), ..session
-        })?;
-        Ok(self.store.set_session_labels(session.id, &labels)?)
+        }, &labels)?)
     }
 
     pub fn set_detection_profile(&self, id: &str, profile: &str) -> Result<()> {
@@ -1122,6 +1298,15 @@ impl Library {
             .ok_or_else(|| LibraryError::Invalid(format!("no detection profile {profile}")))?;
         let session = self.session(id)?;
         Ok(self.store.save_session(&Session { detection_profile: profile, ..session })?)
+    }
+
+    pub fn playback_mute(&self, id: &str) -> Result<Option<bool>> {
+        Ok(self.store.playback_mute(parse(id)?)?)
+    }
+
+    /// Playback only; never changes source audio or export policy.
+    pub fn set_playback_mute(&self, id: &str, muted: bool) -> Result<()> {
+        Ok(self.store.set_playback_mute(parse(id)?, muted)?)
     }
 
     /// Sets or clears a flight's title; empty falls back to "Flight N".
@@ -1212,6 +1397,7 @@ impl Library {
     pub fn move_session_into_import_folder(&self, session: &str, mut progress: impl FnMut(usize, usize, String))
         -> Result<RelocationSummary> {
         let session = self.session(session)?;
+        self.ensure_export_sources_idle(self.store.source_files(session.id)?.iter().map(|f| f.id))?;
         let plan = self.relocation_plan(&session)?;
         let total = plan.len();
         let mut summary = RelocationSummary::default();
@@ -1291,7 +1477,8 @@ impl Library {
             let name = file_name(&file.imported_path);
             // A file is the flight's own when nothing else is cut from it: an
             // action-cam take, or a reduced piece no other flight lies in.
-            if file.media.needs_segmentation() && !reduced.contains(&file.id) {
+            if !reduced.contains(&file.id) && (views::origin(&file) == fpv_import::CaptureOrigin::HeadsetDvr
+                || clip.start_frame > 0 || clip.end_frame < views::last_frame(&file) + 1) {
                 plan.recordings.push(name);
             } else if others.iter().any(|c| c.source_file_id == file.id) {
                 plan.shared.push(name);
@@ -1310,12 +1497,80 @@ impl Library {
     /// flight stays for that one. The library changes in one transaction;
     /// the files follow.
     pub fn delete_flight(&self, id: &str) -> Result<FlightDeletion> {
+        self.ensure_export_sources_idle(self.flight_files(id)?.iter().map(|f| f.id))?;
         let (plan, flight, going) = self.plan_flight_deletion(id)?;
         self.store.delete_flight(flight, &going.iter().map(|f| f.id).collect::<Vec<_>>())?;
         for file in &going {
             if let Err(error) = trash::delete(&file.imported_path) {
                 log::warn!("could not move {} to the trash: {error}", file.imported_path);
             }
+        }
+        Ok(plan)
+    }
+
+    /// Preview the union of selected flights, counting each source once.
+    pub fn flights_deletion(&self, ids: &[String]) -> Result<FlightDeletion> {
+        Ok(self.plan_flights_deletion(ids)?.0)
+    }
+
+    fn plan_flights_deletion(&self, ids: &[String]) -> Result<(FlightDeletion, Vec<Uuid>, Vec<SourceFile>)> {
+        if ids.is_empty() { return Err(LibraryError::Invalid("No flights selected".into())); }
+        let mut selected = Vec::new();
+        for id in ids {
+            let id = parse(id)?;
+            if !selected.contains(&id) { selected.push(id); }
+        }
+        let mut sources: Vec<(SourceFile, bool)> = Vec::new();
+        let mut sessions = HashSet::new();
+        for id in &selected {
+            let (flight, clips, _) = self.flight(&uuid_string(*id))?;
+            sessions.insert(flight.session_id);
+            let reduced = self.store.reduced_files(flight.session_id)?;
+            for clip in clips {
+                let file = self.store.source_file(clip.source_file_id)?
+                    .ok_or_else(|| LibraryError::NotFound("Selected recording".into()))?;
+                let protected = !reduced.contains(&file.id) && (views::origin(&file) == fpv_import::CaptureOrigin::HeadsetDvr
+                    || clip.start_frame > 0 || clip.end_frame < views::last_frame(&file) + 1);
+                if let Some((_, keep)) = sources.iter_mut().find(|(f, _)| f.id == file.id) {
+                    *keep |= protected;
+                } else { sources.push((file, protected)); }
+            }
+        }
+        let mut others = HashSet::new();
+        for session in sessions {
+            for (flight, clips) in self.store.flights(session)? {
+                if !selected.contains(&flight.id) {
+                    others.extend(clips.iter().map(|c| c.source_file_id));
+                }
+            }
+        }
+        let mut plan = FlightDeletion::default();
+        let mut going = Vec::new();
+        for (file, protected) in sources {
+            let name = file_name(&file.imported_path);
+            if protected { plan.recordings.push(name); }
+            else if others.contains(&file.id) { plan.shared.push(name); }
+            else { plan.trashed.push(name); going.push(file); }
+        }
+        Ok((plan, selected, going))
+    }
+
+    pub fn delete_flights(&self, ids: &[String]) -> Result<FlightDeletion> {
+        self.delete_flights_with_trash(ids, |path| trash::delete(path).map_err(|e| e.to_string()))
+    }
+
+    fn delete_flights_with_trash(&self, ids: &[String], mut dispose: impl FnMut(&str) -> std::result::Result<(), String>) -> Result<FlightDeletion> {
+        for id in ids { self.ensure_export_sources_idle(self.flight_files(id)?.iter().map(|f| f.id))?; }
+        let (plan, flights, going) = self.plan_flights_deletion(ids)?;
+        self.store.delete_flights(&flights, &going.iter().map(|f| f.id).collect::<Vec<_>>())?;
+        let mut failed = Vec::new();
+        for file in going {
+            if let Err(error) = dispose(&file.imported_path) {
+                failed.push(format!("{}: {error}", file.imported_path));
+            }
+        }
+        if !failed.is_empty() {
+            return Err(LibraryError::Invalid(format!("Deleted {} flights from the library; could not move recordings to Trash (files left on disk): {}", flights.len(), failed.join("; "))));
         }
         Ok(plan)
     }
@@ -1490,13 +1745,16 @@ impl Library {
     pub fn free_up_session(&self, session: &str, progress: impl FnMut(usize, usize, String))
         -> Result<FreeUpSummary> {
         let session = self.session(session)?;
+        self.ensure_export_sources_idle(self.store.source_files(session.id)?.iter().map(|f| f.id))?;
         Ok(self.free_up_space(self.store.source_files(session.id)?, progress))
     }
 
     /// Makes a flight's recordings Online Only again (`free_up_space`).
     pub fn free_up_flight(&self, flight: &str, progress: impl FnMut(usize, usize, String))
         -> Result<FreeUpSummary> {
-        Ok(self.free_up_space(self.flight_files(flight)?, progress))
+        let files = self.flight_files(flight)?;
+        self.ensure_export_sources_idle(files.iter().map(|f| f.id))?;
+        Ok(self.free_up_space(files, progress))
     }
 
     /// Asks the cloud drive to take each of `files` that is on this disk back
@@ -1585,6 +1843,29 @@ impl Library {
         Ok(shown)
     }
 
+    /// A thumbnail across the complete original source, not the flight's trim.
+    pub fn source_strip_frame(&self, file: &str, index: usize, count: usize) -> Result<Thumbnail> {
+        if count == 0 || index >= count {
+            return Err(LibraryError::Invalid("invalid source filmstrip position".into()));
+        }
+        let source = self.store.source_file(parse(file)?)?
+            .ok_or_else(|| LibraryError::NotFound(format!("recording {file}")))?;
+        let path = Path::new(&source.imported_path);
+        if fpv_media::only_in_cloud(path) { return Err(Self::in_cloud_error(&source)); }
+        let frames = source.media.frame_count.unwrap_or_else(||
+            (source.media.duration * source.media.frame_rate.value()).round() as i64).max(1);
+        let frame = if count == 1 { 0 } else {
+            ((frames - 1) as f64 * index as f64 / (count - 1) as f64).round() as i64
+        };
+        let cached = self.cache_directory.join("preview").join(format!("{file}-strip-{count}-{index}.jpg"));
+        if cached.exists() { return Ok(Thumbnail::cached(cached)); }
+        let runner = self.ffmpeg();
+        let generator = ThumbnailGenerator::new(&runner);
+        let seconds = source.media.frame_rate.seconds(frame);
+        let image = generator.generate(path, seconds, 160, &cached)?;
+        Ok(Thumbnail::made(image))
+    }
+
     /// The source frame under a boundary, for the editor — decoded from the
     /// recording itself, never the proxy, whose frames are resampled.
     pub fn preview_frame(&self, file: &str, frame: i64) -> Result<Thumbnail> {
@@ -1634,52 +1915,30 @@ impl Library {
 
     // Export
 
+    /// Metadata and source-relative bounds for every part, in playback order.
+    pub fn flight_info(&self, flight: &str) -> Result<Vec<RecordingInfo>> {
+        let (flight, _, timeline) = self.flight(flight)?;
+        let session=self.session(&uuid_string(flight.session_id))?;
+        let mut counts=HashMap::<Uuid,usize>::new();
+        for (_,clips) in self.store.flights(session.id)? {
+            for clip in clips { *counts.entry(clip.source_file_id).or_default()+=1; }
+        }
+        Ok(timeline.parts.into_iter().map(|(clip, source)| {
+            let path = Path::new(&source.imported_path);
+            let metadata = std::fs::metadata(path).ok().filter(|m| m.is_file());
+            let cloud = fpv_media::only_in_cloud(path);
+            RecordingInfo { session:session.clone(), shared_clips:counts.get(&source.id).copied().unwrap_or(0), clip, available: metadata.is_some() && !cloud,
+                cloud, size_bytes: metadata.map(|m| m.len()), source }
+        }).collect())
+    }
+
     /// Writes a flight out. Returns the files written.
     pub fn export(&self, flight: &str, destination: &Path, mode: ExportMode) -> Result<Vec<PathBuf>> {
-        let (_, _, timeline) = self.flight(flight)?;
-        // Text-entry destinations in the native UI have no OS overwrite
-        // prompt. Check every part before writing any of them.
-        let destinations = if mode == ExportMode::Parts {
-            let stem = destination.file_stem().unwrap_or_default().to_string_lossy();
-            let extension = destination.extension().and_then(|s| s.to_str()).unwrap_or("avi");
-            (1..=timeline.parts.len()).map(|index|
-                destination.with_file_name(format!("{stem} - part{index}.{extension}"))).collect()
-        } else { vec![destination.to_path_buf()] };
-        if let Some(path) = destinations.iter().find(|path| path.exists()) {
-            return Err(LibraryError::Invalid(format!("destination already exists: {}", path.display())));
-        }
-        let ffmpeg = self.ffmpeg();
-        let exporter = ClipExporter::new(&ffmpeg);
-        Ok(match mode {
-            ExportMode::Lossless => vec![exporter.export_flight_with_mute(
-                &timeline.parts,
-                destination,
-                self.config.mute_videos,
-            )?],
-            ExportMode::Reencode => vec![exporter.export_flight_reencoded_with_mute(
-                &timeline.parts,
-                destination,
-                None,
-                self.config.mute_videos,
-            )?],
-            ExportMode::Parts => {
-                let stem = destination.file_stem().map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "flight".into());
-                let extension = destination.extension().and_then(|e| e.to_str()).unwrap_or("avi");
-                timeline.parts.iter().enumerate()
-                    .map(|(index, (clip, file))| {
-                        let path = destination.with_file_name(
-                            format!("{stem} - part{}.{extension}", index + 1));
-                        Ok(exporter.export_clip_with_mute(
-                            clip,
-                            file,
-                            &path,
-                            self.config.mute_videos,
-                        )?)
-                    })
-                    .collect::<Result<_>>()?
-            }
-        })
+        self.export_encoded(flight, destination, mode, ExportEncoding::AsIs)
+    }
+
+    pub fn export_encoded(&self, flight: &str, destination: &Path, mode: ExportMode, encoding: ExportEncoding) -> Result<Vec<PathBuf>> {
+        self.prepare_export(flight)?.write(destination, mode, encoding)
     }
 
     /// Exports several flights into `folder`, one after the other, each under
@@ -1688,56 +1947,23 @@ impl Library {
     ///
     /// A flight whose recordings disagree on their rate cannot be asked about
     /// one by one in a batch, so `on_mismatch` (`Parts` or `Reencode`) answers
-    /// for all of them up front — `Reencode` for DVR footage only; an action
-    /// cam's take always gets its lossless parts. A flight that fails is reported and the batch
+    /// for all of them up front. Precise long-GOP cuts can also use an explicit
+    /// `Reencode` choice. A flight that fails is reported and the batch
     /// goes on; `progress` gets (flights done, total, the flight starting).
     pub fn export_flights(&self, flights: &[String], folder: &Path, on_mismatch: ExportMode,
-                          mut progress: impl FnMut(usize, usize, &str)) -> Result<BulkExport> {
-        std::fs::create_dir_all(folder)?;
-        let sessions = self.store.sessions()?;
-        let mut outcome = BulkExport::default();
-        for (index, id) in flights.iter().enumerate() {
-            let label = match self.flight(id) {
-                Ok((flight, _, timeline)) => {
-                    let session = sessions.iter().find(|s| s.id == flight.session_id)
-                        .map(|s| s.name.as_str()).unwrap_or("Session");
-                    let title = flight.title.clone()
-                        .unwrap_or_else(|| format!("Flight {}", flight.order_in_session));
-                    let dvr = timeline.parts.iter().any(|(_, f)| f.media.needs_segmentation());
-                    let intra = timeline.parts.iter().all(|(_, f)| f.media.is_all_intra());
-                    let (name, extension) = export_name(session, &title, dvr);
-                    Some((name, extension, intra))
-                }
-                Err(_) => None,
-            };
-            let Some((name, extension, intra)) = label else {
-                outcome.failed.push((id.clone(), "not in the library".into()));
-                continue;
-            };
-            progress(index, flights.len(), &name);
-            let destination = free_name(folder, &name, extension);
-            let written = match self.export(id, &destination, ExportMode::Lossless) {
-                // Re-encoding resamples MJPEG; an action cam's long-GOP take
-                // cannot go that way, so it gets its lossless parts instead.
-                Err(LibraryError::Export(ExportError::MismatchedFrameRates(..))) => {
-                    let mode = if intra { on_mismatch } else { ExportMode::Parts };
-                    self.export(id, &destination, mode)
-                }
-                other => other,
-            };
-            match written {
-                Ok(files) => outcome.written.extend(files),
-                Err(error) => outcome.failed.push((name, error.to_string())),
-            }
-        }
-        progress(flights.len(), flights.len(), "");
-        Ok(outcome)
+                          progress: impl FnMut(usize, usize, &str)) -> Result<BulkExport> {
+        self.export_flights_encoded(flights, folder, on_mismatch, ExportEncoding::AsIs, progress)
+    }
+
+    pub fn export_flights_encoded(&self, flights: &[String], folder: &Path, on_mismatch: ExportMode,
+                          encoding: ExportEncoding, mut progress: impl FnMut(usize, usize, &str)) -> Result<BulkExport> {
+        self.prepare_exports(flights)?.write(folder, on_mismatch, encoding, &mut progress)
     }
 
     /// The session's clips as ground-truth rows for the detector's tuning
     /// harness — corrections feed back as labelled data (CLAUDE.md 4.6). Real
-    /// seconds: `fpv_spike` reads plain numbers as seconds. DVR files only;
-    /// action-cam takes were never detected.
+    /// seconds: `fpv_spike` reads plain numbers as seconds. Only actual detection
+    /// results are exported; whole-file import placeholders are not ground truth.
     pub fn export_labels(&self, session: &str, destination: &Path) -> Result<usize> {
         let session = self.session(session)?;
         let mut lines = vec![
@@ -1754,6 +1980,10 @@ impl Library {
         }
         let mut rows = 0;
         for file in self.store.source_files(session.id)?.iter().filter(|f| f.media.needs_segmentation()) {
+            let runs = self.store.detection_runs(file.id)?;
+            if runs.is_empty() || runs.iter().all(|run| run.algorithm_version == fpv_import::WHOLE_FILE_ALGORITHM) {
+                continue; // whole-file import placeholders are not detector ground truth
+            }
             let rate = file.media.frame_rate;
             let mut clips = by_file.remove(&file.id).unwrap_or_default();
             clips.sort_by_key(|c| c.start_frame);

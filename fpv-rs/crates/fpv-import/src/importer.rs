@@ -124,7 +124,7 @@ impl<'a> LibraryImporter<'a> {
         let mut whole: Vec<Probed> = vec![];
         for file in files {
             match probe.probe(&file.path) {
-                Ok(media) if media.needs_segmentation() => segmented.push((file, media)),
+                Ok(media) if media.is_analog_dvr() => segmented.push((file, media)),
                 Ok(media) => {
                     let media = MediaInfo { creation_date: cam_timestamp(&file, &media), ..media };
                     whole.push((file, media));
@@ -273,7 +273,7 @@ impl<'a> LibraryImporter<'a> {
                 continue;
             }
             let media = match probe.probe(&file.path) {
-                Ok(media) if media.needs_segmentation() => media,
+                Ok(media) if media.is_analog_dvr() => media,
                 Ok(media) => MediaInfo { creation_date: cam_timestamp(&file, &media), ..media },
                 Err(error) => {
                     fail(&mut report, &mut progress, &file.path, error.to_string());
@@ -301,7 +301,7 @@ impl<'a> LibraryImporter<'a> {
         let files: Vec<SourceFile> = saved.iter().map(|(f, _)| f.clone()).collect();
         self.store.save_source_files(&files)?;
         report.sessions.push(session.clone());
-        let takes: Vec<_> = saved.into_iter().filter(|(f, _)| !f.media.needs_segmentation()).collect();
+        let takes: Vec<_> = saved.into_iter().filter(|(f, _)| !f.media.is_analog_dvr()).collect();
         if !takes.is_empty() {
             let posters = self.posters.clone().unwrap_or_else(|| PathBuf::from("thumbnails"));
             for flight in self.save_whole_file_flights(session, &takes, &posters)? {

@@ -10,6 +10,8 @@
 mod detector;
 mod file_detector;
 mod metrics;
+mod snow_split;
+pub use snow_split::{SnowSplitEvidence, VERSION as SNOW_SPLIT_VERSION};
 
 pub use detector::{ClipDetector, DetectedClip, DetectorSettings, FrameState};
 pub use file_detector::{ClipDetecting, ClipStitcher, DetectError, DetectionResult,

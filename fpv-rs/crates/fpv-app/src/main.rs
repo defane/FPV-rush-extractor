@@ -32,6 +32,20 @@ pub(crate) enum Scope {
     None,
     Library,
     Session(String),
+    Sessions(Vec<String>),
+}
+
+fn scopes_overlap(a: &Scope, b: &Scope) -> bool {
+    match (a, b) {
+        (Scope::None, _) | (_, Scope::None) => false,
+        (Scope::Library, Scope::Library) => true,
+        (Scope::Session(a), Scope::Session(b)) => a == b,
+        (Scope::Sessions(a), Scope::Session(b)) | (Scope::Session(b), Scope::Sessions(a)) => {
+            a.contains(b)
+        }
+        (Scope::Sessions(a), Scope::Sessions(b)) => a.iter().any(|id| b.contains(id)),
+        _ => false,
+    }
 }
 
 /// What Escape closes: the topmost thing open, one press at a time.
@@ -66,14 +80,14 @@ struct Open {
 fn escape_target(open: Open) -> Escape {
     if open.menu {
         Escape::Menu
-    } else if open.full_screen {
-        Escape::FullScreen
     } else if open.cloud_wait {
         Escape::CloudWait
     } else if open.dialog {
         Escape::Dialog
     } else if open.about {
         Escape::About
+    } else if open.full_screen {
+        Escape::FullScreen
     } else if open.player {
         Escape::Player
     } else if open.panels {
@@ -136,7 +150,9 @@ pub(crate) struct App {
     next_id: u64,
     dialog: Option<Dialog>,
     dialog_request: Option<u64>,
+    export_dialogs: std::collections::BTreeMap<u64, Dialog>,
     viewer: Option<Viewer>,
+    playback_request: Option<u64>,
     /// A flight waiting for its recordings to come down before it plays.
     cloud_wait: Option<cloudwait::CloudWait>,
     /// Downloads left to finish in the background: their flight does not open.
@@ -278,8 +294,10 @@ impl App {
             tasks: vec![],
             next_id: 1,
             dialog: None,
+            export_dialogs: Default::default(),
             dialog_request: None,
             viewer: None,
+            playback_request: None,
             cloud_wait: None,
             detached: HashSet::new(),
             strips: strips::Strips::default(),
@@ -366,7 +384,7 @@ impl App {
             && self
                 .tasks
                 .iter()
-                .any(|task| task.running && !task.quiet && task.scope == *scope)
+                .any(|task| task.running && !task.quiet && scopes_overlap(&task.scope, scope))
     }
 
     fn session_busy(&self, session: &str) -> bool {
@@ -438,13 +456,13 @@ impl App {
                         && result.is_ok()
                         && self.tasks.iter().any(|task| task.id == id && !task.quiet);
                     // A refused lossless export keeps its dialog open, to ask how.
-                    let done = matches!(&result, Ok(reply) if !matches!(reply, Reply::Mismatch(_)));
+                    let done = matches!(&result, Ok(reply) if !matches!(reply, Reply::Mismatch(_) | Reply::NeedsReencode(_)));
                     if self
                         .dialog
                         .as_mut()
                         .is_some_and(|dialog| dialog.finished(id, done))
                     {
-                        self.dialog = None;
+                        self.close_dialog();
                     }
                     if let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) {
                         task.running = false;
@@ -456,17 +474,27 @@ impl App {
                             Err(error) => error.clone(),
                         };
                     }
+                    let recovery = match &result {
+                        Ok(Reply::Mismatch(reason)) => Some(Reply::Mismatch(reason.clone())),
+                        Ok(Reply::NeedsReencode(reason)) => {
+                            Some(Reply::NeedsReencode(reason.clone()))
+                        }
+                        _ => None,
+                    };
+                    if let Some(mut dialog) = self.export_dialogs.remove(&id)
+                        && let Some(reply) = recovery
+                    {
+                        dialog.finished(id, false);
+                        dialog.reply(reply);
+                        self.export_dialogs.insert(id, dialog);
+                    }
                     match result {
                         Err(error) if strip_batch => {
                             self.strips.failed();
                             self.notices.push(format!("Hover strips: {error}"));
                         }
                         Err(error) => self.notices.push(error),
-                        Ok(Reply::Mismatch(reason)) => {
-                            if let Some(dialog) = &mut self.dialog {
-                                dialog.reply(Reply::Mismatch(reason));
-                            }
-                        }
+                        Ok(Reply::Mismatch(_) | Reply::NeedsReencode(_)) => {}
                         Ok(Reply::Strips(prepared)) => {
                             let (next, failed) =
                                 self.strips
@@ -480,6 +508,12 @@ impl App {
                             }
                         }
                         Ok(Reply::Done(_)) => {}
+                        Ok(Reply::SessionCreated(id) | Reply::FlightsTransferred(id)) => {
+                            self.browse.view = browse::View::Sessions;
+                            self.browse.session = Some(id);
+                            self.browse.page = 0;
+                            self.selected.clear();
+                        }
                         Ok(Reply::VideoPreferences {
                             mute_videos,
                             do_not_show_splash,
@@ -488,8 +522,15 @@ impl App {
                             self.config.do_not_show_splash = do_not_show_splash;
                         }
                         // Downloaded in the background, as asked: nothing opens.
-                        Ok(Reply::Playback { .. }) if detached => {}
-                        Ok(Reply::Playback { flight, at, parts }) => {
+                        Ok(Reply::Playback { .. })
+                            if detached
+                                || self.playback_request.is_some_and(|latest| latest != id) => {}
+                        Ok(Reply::Playback {
+                            flight,
+                            at,
+                            parts,
+                            playback_mute,
+                        }) => {
                             if let Some(flight) = self
                                 .sessions
                                 .iter()
@@ -500,7 +541,8 @@ impl App {
                                 // with No Sound. Mute videos only starts muted:
                                 // the speaker brings the sound back.
                                 let silent = parts.iter().all(|part| !part.has_audio);
-                                let muted = silent || self.config.mute_videos;
+                                let muted =
+                                    silent || playback_mute.unwrap_or(self.config.mute_videos);
                                 let player = player::Player::new_with_volume(
                                     parts,
                                     self.tools.clone(),
@@ -508,6 +550,9 @@ impl App {
                                     ctx.clone(),
                                     if muted { 0.0 } else { 1.0 },
                                 );
+                                if self.viewer.as_ref().is_some_and(|viewer| viewer.fullscreen) {
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                                }
                                 self.viewer = Some(Viewer {
                                     flight: flight.clone(),
                                     player,
@@ -534,6 +579,8 @@ impl App {
                                 && let Some(dialog) = &mut self.dialog
                             {
                                 dialog.reply(reply);
+                            } else if let Some(dialog) = &mut self.dialog {
+                                dialog.pending_reply(id, reply);
                             }
                         }
                     }
@@ -544,6 +591,7 @@ impl App {
                 Event::Snapshot(sessions, config) => {
                     self.sessions = sessions;
                     self.config = config;
+                    self.discard_missing_dialogs();
                     if let Some(viewer) = &mut self.viewer {
                         if let Some(flight) = self
                             .sessions
@@ -590,6 +638,9 @@ impl App {
             player: self.viewer.is_some(),
             panels: self.show_tasks || self.show_notices,
         });
+        if !matches!(target, Escape::Menu | Escape::FullScreen | Escape::Nothing) {
+            ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        }
         match target {
             Escape::CloudWait => {
                 if let Some(wait) = self.cloud_wait.take() {
@@ -598,11 +649,13 @@ impl App {
             }
             Escape::Dialog => {
                 // A task it started goes on, in the task bar.
-                self.dialog = None;
-                self.dialog_request = None;
+                self.close_dialog();
             }
             Escape::About => self.show_about = false,
-            Escape::Player => self.viewer = None,
+            Escape::Player => {
+                self.viewer = None;
+                self.cancel_playback_request();
+            }
             Escape::Panels => {
                 self.show_tasks = false;
                 self.show_notices = false;
@@ -634,8 +687,14 @@ impl App {
         self.strip_batch = Some(id);
     }
 
+    fn cancel_playback_request(&mut self) {
+        self.playback_request = Some(0);
+    }
+
     fn play(&mut self, flight: &FlightView, at: f64) {
-        self.viewer = None;
+        if let Some(wait) = self.cloud_wait.take() {
+            self.detached.insert(wait.task);
+        }
         let id = flight.id.clone();
         let task = self.submit(
             format!("Open {}", flight_name(flight)),
@@ -660,11 +719,13 @@ impl App {
                 }
                 Ok(Reply::Playback {
                     parts: library.native_playback(&id)?,
+                    playback_mute: library.playback_mute(&id)?,
                     flight: id,
                     at,
                 })
             },
         );
+        self.playback_request = Some(task);
         if flight.cloud {
             self.cloud_wait = Some(cloudwait::CloudWait {
                 task,
@@ -884,7 +945,7 @@ mod escape_tests {
                 menu: false,
                 ..all()
             }),
-            Escape::FullScreen
+            Escape::CloudWait
         );
         let windowed = || Open {
             menu: false,
@@ -914,6 +975,14 @@ mod escape_tests {
             ..windowed()
         };
         assert_eq!(escape_target(player), Escape::Player);
+        assert_eq!(
+            escape_target(Open {
+                full_screen: true,
+                player: true,
+                ..Open::default()
+            }),
+            Escape::FullScreen
+        );
         assert_eq!(
             escape_target(Open {
                 panels: true,

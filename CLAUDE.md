@@ -16,6 +16,35 @@ clippy and the tests on Linux, macOS and Windows, against the system's FFmpeg �
 `main`, `v*` tags, on demand (`make macos-remote`) and on a pull request that touches
 `packaging/`. Runtime ffmpeg binaries are not linked into Rust.
 
+
+**Current segmentation policy (2026-10-29, user request, #28):** all imported
+videos are eligible for signal segmentation, including H.264/HEVC and action-camera
+filenames. `needs_segmentation` is independent of the legacy `is_analog_dvr`
+source-label hint and `is_all_intra` export/reduction capability. The GUI import dialog defaults to Segment videos after import: only newly
+imported source IDs are analyzed, preserving previously reviewed flights and their
+numbering. Whole-file flights are provisional during copying or when the option
+is disabled; manual Segment remains available. Existing reduced pieces remain protected.
+`signal-detect-2` records the new policy and retains the true clean EOF beyond the
+sampling grid. Classifier thresholds are unchanged: the supplied Indoor MP4 already
+classifies both 115 s and 210 s as NoSignal when actually analyzed. Earlier notes
+about action-camera recordings never being segmented describe retired behavior.
+Long-GOP interior cuts require an explicit MPEG-4 re-encode; complete takes and
+MJPEG retain their lossless paths. Reduce remains limited to all-intra recordings.
+
+**Snow Split (#35):** `DetectionProfile::SnowSplit` (`snowSplit`)
+uses a separate noise-evidence classifier and interval builder. Only jointly
+confirmed local spatial/temporal static excludes footage; Black/Menu, minimum
+clip duration and whole-clip coherence do not reject clips in this mode. Four
+samples/second and three consecutive snow votes confirm a run, backdated to its
+first sample. `snow-split-2` and its thresholds are stored in `DetectionRun`.
+Frozen static requires spatial noise evidence in at least 90% of patches and
+residual correlation at least 0.98 between samples.
+Import and session settings expose the profile; Standard/Textured are unchanged.
+See `docs/snow-only-segmentation-plan.md` and `docs/benchmarks/snow-split.md` for
+the implementation, measurements and limitations. This is not a validated
+state-of-the-art FPV detector; frozen static and ambiguous interference may remain.
+
+
 ---
 
 ## 1. Goal
@@ -24,8 +53,9 @@ A desktop application — Rust + egui on macOS, Linux and Windows — that:
 
 1. **Imports** DVR recordings from an FPV goggle SD card (Fat Shark analog DVR, primary target),
    and action-cam rushes (GoPro, DJI, …) alongside them (§10, "Action-cam rushes").
-2. **Auto-segments** each DVR recording into individual clips — one per *video signal onset*
-   (see §4) — non-destructively. Action-cam takes are never segmented: one file, one take.
+2. **Segments every imported recording** into usable signal intervals (see §4),
+   non-destructively. No codec or camera name bypasses detection. A continuous
+   usable take can remain one clip. Segment is available for every session.
 3. **Organizes** the resulting clips into flying sessions, with a browsable library, a player,
    and figure tags ("split-S", "power loop") on any flight.
 
@@ -57,7 +87,8 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
 - **MJPEG is all-intra.** Every frame is a keyframe, so clips can be cut **frame-accurately with
   `ffmpeg -c copy`, losslessly and with no re-encode**. Do not re-encode analog DVR footage. This
   property does not hold for H.264/HEVC: those are stream-copied only from frame 0 (whole
-  action-cam takes); a cut elsewhere is refused rather than opened on a broken GOP.
+  recordings); precise cuts inside them require an explicit re-encode rather
+  than opening on a broken GOP. The exporter offers built-in MPEG-4 for such cuts.
   Two deliberate exceptions, both chosen, neither a default: the user-requested one-file export
   of a flight whose parts disagree on their rate (§6, Phase 3), and the optional **CLI proxy** — a
   MPEG-4/AAC MP4 derivative. The native GUI plays source files directly. A
@@ -77,8 +108,11 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   `fpv-library` is the application layer — every GUI action as a tested method.
 - **eframe/egui** for the native Rust UI (`fpv-rs/crates/fpv-app`), **rfd** for
   system dialogs, **image** for cached pictures and **cpal** for audio output.
-  Work is queued on the library's owner thread; the window never runs ffmpeg or
-  disk jobs. Decoder threads have bounded queues and kill/reap their children
+  Library jobs run on the database's owner thread; prepared immutable exports run
+  on a separate FIFO executor with one active export. Source leases protect queued
+  and running exports from conflicting mutations. Export execution owns no SQLite
+  connection, leaving playback preparation responsive. The window never runs ffmpeg
+  or disk jobs. Decoder threads have bounded queues and kill/reap their children
   on close and seek. Audio is the clock when a device is available; otherwise
   video uses the system clock. Display scaling/rate do not affect source frames.
 - **ffmpeg / ffprobe as external binaries**, invoked via `std::process`, always through the
@@ -106,6 +140,8 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   by the pilot on their Mac**: the next `make macos` rebuilt FFmpeg and went through.
 - Bundled FFmpeg must enable its internal `extract_extradata` bitstream filter:
   stream probing needs it to retain H.264/HEVC headers before indexed seeks.
+  Its `h264_mp4toannexb` filter is also required by the concat demuxer for
+  stream-copying MP4 H.264 chapters; bundled-tool export tests cover this.
   The player tries input-side seeking, with a sequential fallback if no video
   frame is emitted. See `docs/player-buffering.md` and the generated AVI fixture.
 - **Long-GOP footage is decoded by the hardware first** (2026-10-28): on the Mac the
@@ -131,12 +167,24 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   playback emits silence for their parts and exports honor that choice. Mixed
   muted/audible flights normalize audio and synthesize silence only for muted
   parts; lossless exports keep the original video packets. Reduction preserves
-  source audio and carries the policy onto its pieces.
+  source audio and carries the policy onto its pieces. MP4 exports of AVI-based
+  H.264 takes (EV300D: ADPCM audio) copy video packets and convert incompatible
+  audio to AAC; compatible AAC audio and AVI exports retain their existing copy
+  behavior. Staged exports must contain readable video packets before publication.
+- Schema `v9` adds `flightPlayback`, a per-flight persisted playback mute override.
+  Missing preferences follow Settings' initial mute default; explicit speaker/volume
+  choices survive player navigation and app restart. Import No Sound remains
+  authoritative. Playback preferences never change export audio policy, and are
+  deleted by cascade with their flight.
 - `boundary.rs` edits source-frame ranges with left/start and right/exclusive-end
   handles, and (2026-10-28, #11) the Tauri editor's nudges again: Start/End, −1 s, −¼ s,
   −1 fr, +1 fr, +¼ s, +1 s at the recording's own rate (`nudge_steps`, `nudge`), the edge's
   "x.xxx s · frame N", "start → end at fps", the 0.25 s-grid hint, and Reset to what is
-  saved while "changed — not saved". Its bounded native source preview decodes at the recording's own
+  saved while "changed — not saved". A full-source filmstrip loads cached 160px
+  images on the library worker one request at a time (`source_strip_frame`).
+  Hover/scrub changes only the preview; start/end handles change only the draft.
+  Stale strip replies from a previous source are ignored, and repeated hover on
+  the same frame never restarts its decoder. Its bounded native source preview decodes at the recording's own
   cadence without the player's normal display-rate conversion. Decoder restarts
   are coalesced while dragging; the final requested frame is retained. Only
   Save this clip persists the draft, through `Library::update_clip`.
@@ -176,6 +224,41 @@ and **recordings never segmented** (no flights is not "no flight in it"). On the
 Test (2) copy of PICT0031+0032: 829 MB → 508 MB, 7 flights of identical durations, figures at
 the same times. Doing it on real footage first exposed the rounding bug in cut boundaries
 (§6, "Cut boundaries are truncated").
+
+**Info date corrections (#37):** Info separates the session's local flying day
+from per-recording capture timestamps. Calendar and UTC hour/minute/second controls
+save only the selected field, with source-sharing scope shown. Existing
+`sourceFile.creationDate` stores a library correction; source bytes and filesystem
+mtimes are never rewritten. Capture edits survive restart and propagate to MP4
+`creation_time`, independently per separate part; AVI still uses its supported
+session-day `date` mapping. UTC avoids ambiguous/nonexistent DST clock times.
+Saving keeps Info open and refreshes it; Close discards unsaved drafts.
+
+**Capture provenance (#36):** `fpv_import::source_origin` distinguishes headset
+DVR, action camera and unknown. EV300D numeric filenames or camera metadata identify
+Eachine headset recordings even with H.264. Views use original paths (including
+transferred sources) so existing entries update without rewriting files. Unknown
+H.264/AVI inputs use a neutral Recording label. Legacy MJPEG hints remain where
+no stronger camera evidence exists. Capture labels never change all-intra
+capability, segmentation eligibility or exact-cut/reduction constraints.
+
+**Export context (#34):** `ClipExporter::with_metadata` adds library session
+`title` and calendar `date` to final staged outputs, including parts. MP4/MOV
+also use `session`/`session_date` with `use_metadata_tags`; AVI uses standard
+RIFF INAM/ICRD mappings. Flying dates are date-only strings matching the library's
+local display, not fabricated capture timestamps; existing source `creation_time`
+remains distinct. Unset session dates clear inherited generic `date` tags.
+
+**Session transfers (#33):** library `transfer_flights` prepares new immutable
+recording paths (hard links, checked copies when unsupported) and independent
+source IDs in the destination, then commits flights/clips/tags/runs together.
+Copy creates new flight/clip IDs and clones labels/playback mute; Move preserves
+flight/clip IDs. Source-level figure tags become independent copies. Originals
+still referenced by unselected flights remain indexed; unused original rows are
+removed and their paths recorded in `deletedRecording` without deleting bytes.
+No source identity is shared across sessions, so existing segmentation, reduction
+and deletion remain isolated. Keep recordings immutable: never truncate a linked
+recording in place.
 
 ### 3.3 Data model (sketch)
 

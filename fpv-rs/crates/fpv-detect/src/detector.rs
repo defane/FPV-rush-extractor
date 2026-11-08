@@ -12,6 +12,7 @@ use crate::{FrameAnalyzer, FrameMetrics};
 pub struct DetectorSettings {
     /// Analysis rate. Boundaries land on this grid: 0.25 s, about 6 frames.
     pub sample_rate: f64,
+    pub snow_split: bool,
     pub black_luma: f64,
     /// Below both of these, with no picture structure and no vertical
     /// correlation, the frame is analog snow. The pair sits *inside* the
@@ -40,6 +41,7 @@ impl Default for DetectorSettings {
     fn default() -> Self {
         Self {
             sample_rate: 4.0,
+            snow_split: false,
             black_luma: 22.0,
             snow_block_variation: 0.60,
             snow_vertical_correlation: 0.92,
@@ -66,6 +68,10 @@ impl DetectorSettings {
     pub fn for_profile(profile: fpv_core::DetectionProfile) -> Self {
         match profile {
             fpv_core::DetectionProfile::Standard => Self::default(),
+            fpv_core::DetectionProfile::SnowSplit => Self {
+                snow_split: true, minimum_gap: 0.0, minimum_clip_duration: 0.0,
+                minimum_clip_coherence: -1.0, ..Self::default()
+            },
             fpv_core::DetectionProfile::Textured => Self {
                 snow_vertical_correlation: 0.78,
                 minimum_gap: 1.0,
@@ -76,7 +82,7 @@ impl DetectorSettings {
 
     /// What a `DetectionRun` records, keyed as the Swift pipeline keys them.
     pub fn parameters(&self) -> BTreeMap<String, f64> {
-        [
+        let mut values: BTreeMap<String,f64> = [
             ("sampleRate", self.sample_rate),
             ("blackLuma", self.black_luma),
             ("snowBlockVariation", self.snow_block_variation),
@@ -91,7 +97,9 @@ impl DetectorSettings {
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))
-        .collect()
+        .collect();
+        if self.snow_split {values.extend(crate::snow_split::parameters());}
+        values
     }
 }
 
@@ -148,6 +156,9 @@ impl ClipDetector {
 
     pub fn classify(&self, m: &FrameMetrics) -> FrameState {
         let s = &self.settings;
+        if s.snow_split {
+            return if m.snow_split.is_some_and(|e| e.is_snow()) {FrameState::NoSignal} else {FrameState::Signal};
+        }
         if m.luma < s.black_luma {
             FrameState::Black
         } else if m.block_variation < s.snow_block_variation
@@ -248,6 +259,9 @@ impl ClipDetector {
     pub fn detect(&self, times: &[f64], metrics: &[FrameMetrics]) -> Vec<DetectedClip> {
         let Some(&duration) = times.last() else { return vec![] };
         let states: Vec<FrameState> = metrics.iter().map(|m| self.classify(m)).collect();
+        if self.settings.snow_split {
+            return crate::snow_split::detect(times, metrics, &states, self.settings.sample_rate, self.settings.hysteresis);
+        }
         let segments = self.segments(times, &states);
         let edge = 1.0 / self.settings.sample_rate + 0.01;
 
@@ -331,6 +345,20 @@ mod tests {
     fn detect(runs: &[(FrameMetrics, f64)]) -> Vec<DetectedClip> {
         let (times, metrics) = sequence(runs, 1.0);
         ClipDetector::default().detect(&times, &metrics)
+    }
+
+    #[test]
+    fn indoor_banded_snow_at_115_and_210_seconds_is_not_a_usable_signal() {
+        // Measured grayscale metrics from the private Indoor regression video.
+        // Both profiles already recognize this snow; codec-based bypass was the failure.
+        let samples = [
+            FrameMetrics::new(130.632959, 9562.774334, 0.053771, 0.732424, 0.0),
+            FrameMetrics::new(129.065231, 9346.220556, 0.048923, 0.730113, 0.0),
+        ];
+        for profile in [fpv_core::DetectionProfile::Standard, fpv_core::DetectionProfile::Textured] {
+            let detector = ClipDetector::new(DetectorSettings::for_profile(profile));
+            for sample in &samples { assert_eq!(detector.classify(sample), FrameState::NoSignal); }
+        }
     }
 
     #[test]

@@ -1,0 +1,6 @@
+recording	profile	split	labeled_s	unknown_s	usable_kept_s	usable_lost_s	snow_kept_s	precision	recall	raw_noise_precision	raw_noise_recall	false_cuts	boundary_mean_abs_s	missing_boundaries	decode_analyze_s	peak_process_rss_kib
+EACHINE — Flight 12.mp4	snowSplit	calibration	40.750	0.017	22.250	0.000	0.000	1.000000	1.000000	1.000000	1.000000	0	0.000000	0	0.905	30680
+Indoor — Flight 13.mp4	snowSplit	validation	47.500	552.567	23.750	0.000	0.000	1.000000	1.000000	1.000000	1.000000	0	0.000000	0	17.683	36640
+EV300D_0002.AVI	snowSplit	validation	32.000	308.500	32.000	0.000	0.000	n/a	n/a	0.000000	n/a	0	n/a	0	9.514	28828
+analog-tv-noise.avi	snowSplit	external-evaluation	10.937	0.000	0.000	0.000	10.937	n/a	0.000000	n/a	0.000000	0	n/a	0	0.529	15584
+opencv-vtest.avi	snowSplit	external-evaluation	79.500	0.000	79.500	0.000	0.000	n/a	n/a	n/a	n/a	0	n/a	0	1.367	18696
