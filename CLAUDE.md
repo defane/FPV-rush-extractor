@@ -559,8 +559,10 @@ Tauri app's (§10).
   binds the pilot's own changes too). Every change goes through a branch and a pull request,
   and merges only once `ci.yml` has passed on Linux, macOS and Windows. No direct push to
   `main`: there the CI only runs afterwards. `[skip ci]` is forbidden on a branch headed for
-  `main`. `make check` on one machine does not replace it: the Windows crash of 2026-10-30
-  (§3.1, "The tests never open the sound card") only ever showed on the Windows runner.
+  `main`, and GitHub obeys it anywhere in a commit message, even quoted: the commit adding
+  this rule skipped its own CI that way, so never write it literally in one. `make check` on
+  one machine does not replace the CI: the Windows crash of 2026-10-30 (§3.1, "The tests
+  never open the sound card") only ever showed on the Windows runner.
 
 ---
 
