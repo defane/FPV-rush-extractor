@@ -1,5 +1,7 @@
 # Unreleased
 
+- Put Info / Edit title / Edit boundaries / Export in the player menu, remove the misplaced boundary-editor menu, preserve playback for Info/Export and handle editor transitions plus modal/fullscreen keyboard focus correctly (#43).
+
 - Allow opening/switching flights during exports using immutable export snapshots and a separate serial encoder queue; protect export sources, preserve current playback during preparation and ignore stale open replies (#42).
 
 - Resize the integrated Tasks / Notifications panel by dragging its top edge, retain its expanded size and share usable space between independently scrolling lists, including on small displays (#41).

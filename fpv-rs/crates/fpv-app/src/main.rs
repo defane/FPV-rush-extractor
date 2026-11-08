@@ -80,14 +80,14 @@ struct Open {
 fn escape_target(open: Open) -> Escape {
     if open.menu {
         Escape::Menu
-    } else if open.full_screen {
-        Escape::FullScreen
     } else if open.cloud_wait {
         Escape::CloudWait
     } else if open.dialog {
         Escape::Dialog
     } else if open.about {
         Escape::About
+    } else if open.full_screen {
+        Escape::FullScreen
     } else if open.player {
         Escape::Player
     } else if open.panels {
@@ -638,6 +638,9 @@ impl App {
             player: self.viewer.is_some(),
             panels: self.show_tasks || self.show_notices,
         });
+        if !matches!(target, Escape::Menu | Escape::FullScreen | Escape::Nothing) {
+            ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        }
         match target {
             Escape::CloudWait => {
                 if let Some(wait) = self.cloud_wait.take() {
@@ -685,9 +688,6 @@ impl App {
     }
 
     fn cancel_playback_request(&mut self) {
-        if let Some(id) = self.playback_request {
-            self.detached.insert(id);
-        }
         self.playback_request = Some(0);
     }
 
@@ -945,7 +945,7 @@ mod escape_tests {
                 menu: false,
                 ..all()
             }),
-            Escape::FullScreen
+            Escape::CloudWait
         );
         let windowed = || Open {
             menu: false,
@@ -975,6 +975,14 @@ mod escape_tests {
             ..windowed()
         };
         assert_eq!(escape_target(player), Escape::Player);
+        assert_eq!(
+            escape_target(Open {
+                full_screen: true,
+                player: true,
+                ..Open::default()
+            }),
+            Escape::FullScreen
+        );
         assert_eq!(
             escape_target(Open {
                 panels: true,

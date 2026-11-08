@@ -605,10 +605,7 @@ impl App {
                             Ok(Reply::Done("Boundaries saved".into()))
                         }));
                 }
-                if matches!(
-                    dialog.kind,
-                    Kind::Info | Kind::Editor | Kind::Title | Kind::Export
-                ) {
+                if matches!(dialog.kind, Kind::Info | Kind::Title | Kind::Export) {
                     let context = self.sessions.iter().find_map(|session| {
                         session
                             .flights

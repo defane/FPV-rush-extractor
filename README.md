@@ -156,9 +156,12 @@ Click **Start** or **End** to inspect that boundary; End previews the last inclu
 the source clip to edit. **Save this clip** applies the range; closing without
 saving discards the draft. Editing boundaries does not change source files.
 
-When editing dates or clip boundaries, the original recording filename stays visible.
-Use the **…** menu to open the usual flight actions. **Back** returns to your unsaved
-form; exports use saved boundaries until you explicitly save your changes.
+The player's **…** menu opens **Info**, **Edit title**, **Edit boundaries**,
+**Export** and other flight actions directly, including in maximized/fullscreen
+views. **Escape** closes an open menu or dialog before leaving fullscreen.
+When editing dates or boundaries, the original recording filename stays visible;
+**Back** returns to a previous unsaved form. Exports use saved boundaries until
+you explicitly save your changes.
 
 Choose **Export** from a flight's menu or select several flights for batch
 export. Exports continue in the bottom **Tasks** panel after the form closes.

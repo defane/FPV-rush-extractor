@@ -1655,8 +1655,15 @@ impl App {
         });
     }
 
-    /// A card's actions: behind its "…" and on a right-click alike.
-    pub(crate) fn flight_menu(&mut self, ui: &mut egui::Ui, session: &str, flight: &FlightView) {
+    /// Shared actions for thumbnails, dialogs and the player. Returns whether
+    /// navigation must close the current player after rendering.
+    pub(crate) fn flight_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &str,
+        flight: &FlightView,
+    ) -> bool {
+        let mut close_player = false;
         if ui
             .add_enabled(flight.cloud, egui::Button::new("Download recordings"))
             .clicked()
@@ -1687,6 +1694,10 @@ impl App {
         }
         if ui.button("Edit boundaries…").clicked() {
             self.viewer = None;
+            self.cancel_playback_request();
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            close_player = true;
             self.dialog = Some(Dialog::editor(flight));
             ui.close();
         }
@@ -1709,6 +1720,7 @@ impl App {
             ));
             ui.close();
         }
+        close_player
     }
 
     pub(crate) fn player_window(&mut self, ctx: &egui::Context) {
@@ -1725,6 +1737,7 @@ impl App {
                     Some(ctx.load_texture("video", image, egui::TextureOptions::LINEAR));
             }
         }
+        let shortcuts_allowed = self.dialog.is_none() && !egui::Popup::is_any_open(ctx);
         let previous_mute = viewer.playback_muted || viewer.volume <= 0.001;
         let mut open = true;
         let fullscreen = viewer.fullscreen;
@@ -1809,6 +1822,12 @@ impl App {
                 },
             )
         });
+        if shown
+            .as_ref()
+            .is_some_and(|shown| shown.inner == Some(true))
+        {
+            open = false;
+        }
         if !expanded && let Some(shown) = shown {
             viewer.window.normal_rect = Some(shown.response.rect);
         }
@@ -1821,7 +1840,10 @@ impl App {
                 Ok(Reply::Done("Playback mute saved".into()))
             });
         }
-        if viewer.fullscreen && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        if shortcuts_allowed
+            && viewer.fullscreen
+            && ctx.input(|input| input.key_pressed(egui::Key::Escape))
+        {
             viewer.fullscreen = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         }
@@ -1842,7 +1864,8 @@ impl App {
         viewer: &mut Viewer,
         ctx: &egui::Context,
         content_height: f32,
-    ) {
+    ) -> bool {
+        let mut close_player = false;
         let header = ui.horizontal_wrapped(|ui| {
             if !viewer.fullscreen
                 && ui
@@ -1865,6 +1888,20 @@ impl App {
             {
                 viewer.fullscreen = !viewer.fullscreen;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(viewer.fullscreen));
+            }
+            let context = self.sessions.iter().find_map(|session| {
+                session
+                    .flights
+                    .iter()
+                    .find(|flight| flight.id == viewer.flight.id)
+                    .map(|flight| (session.id.clone(), flight.clone()))
+            });
+            if let Some((session, flight)) = context {
+                ui.add_enabled_ui(!self.session_busy(&session), |ui| {
+                    ui.menu_button("…", |ui| {
+                        close_player = self.flight_menu(ui, &session, &flight);
+                    });
+                });
             }
             ui.label(flight_name(&viewer.flight));
         });
@@ -2154,7 +2191,10 @@ impl App {
                 );
             });
         }
-        if !ui.ctx().wants_keyboard_input() {
+        if self.dialog.is_none()
+            && !egui::Popup::is_any_open(ctx)
+            && !ui.ctx().wants_keyboard_input()
+        {
             if ui.input(|input| input.key_pressed(egui::Key::Space)) {
                 viewer.player.pause(!viewer.player.paused());
             }
@@ -2170,6 +2210,7 @@ impl App {
                 viewer.player.seek(viewer.player.position() + 5.0);
             }
         }
+        close_player
     }
 
     pub(crate) fn task_bar(&mut self, ctx: &egui::Context) {

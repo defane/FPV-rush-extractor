@@ -4388,3 +4388,174 @@ fn opening_another_flight_keeps_current_playback_and_ignores_stale_results() {
         "a failed open keeps current playback"
     );
 }
+
+#[test]
+fn player_actions_open_info_for_the_viewed_flight_and_keep_playback() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, _) = app_with_worker(&ctx);
+    let mut wanted = flight();
+    wanted.title = Some("Viewed flight".into());
+    let other = FlightView {
+        id: "other".into(),
+        title: Some("Other flight".into()),
+        ..flight()
+    };
+    let viewed_session = session_of(vec![wanted.clone()]);
+    let mut other_session = session_of(vec![other]);
+    other_session.id = "other-session".into();
+    app.browse.session = Some(other_session.id.clone());
+    app.sessions = vec![viewed_session, other_session];
+    let mut viewer = test_viewer(&ctx);
+    viewer.flight = wanted;
+    viewer.player.pause(true);
+    viewer.playback_muted = true;
+    app.viewer = Some(viewer);
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| {
+        app.player_window(ctx);
+        app.dialog_window(ctx);
+    };
+    click_text(&ctx, &mut app, "…", draw);
+    click_text(&ctx, &mut app, "Info", draw);
+    assert!(app.viewer.as_ref().unwrap().playback_muted);
+    assert!(app.viewer.as_ref().unwrap().player.paused());
+    let texts = shown_texts(&ctx, &mut app, draw);
+    assert!(
+        texts.iter().any(|s| s == "Info — Viewed flight"),
+        "{texts:?}"
+    );
+    assert!(jobs.try_recv().is_ok(), "Info preparation is submitted");
+    click_text(&ctx, &mut app, "Close", draw);
+    assert!(app.dialog.is_none());
+    assert!(app.viewer.is_some());
+}
+
+#[test]
+fn player_boundary_action_closes_the_player_instead_of_restoring_it() {
+    for (fullscreen, maximized) in [(false, false), (true, false), (false, true)] {
+        let ctx = egui::Context::default();
+        let (mut app, _, _) = app_with_worker(&ctx);
+        app.sessions = vec![session_of(vec![flight()])];
+        let mut viewer = test_viewer(&ctx);
+        viewer.fullscreen = fullscreen;
+        viewer.window.maximized = maximized;
+        app.viewer = Some(viewer);
+        let draw: fn(&mut App, &egui::Context) = |app, ctx| {
+            app.player_window(ctx);
+            app.dialog_window(ctx);
+        };
+        click_text(&ctx, &mut app, "…", draw);
+        click_text(&ctx, &mut app, "Edit boundaries…", draw);
+        assert!(
+            app.viewer.is_none(),
+            "the local Viewer must not be restored"
+        );
+        let texts = shown_texts(&ctx, &mut app, draw);
+        assert!(
+            texts
+                .iter()
+                .any(|s| s.starts_with("Edit source boundaries —")),
+            "{texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|s| s == "…"),
+            "the misplaced boundary-editor menu is removed"
+        );
+    }
+}
+
+#[test]
+fn player_action_menu_stays_accessible_in_small_normal_maximized_and_fullscreen_views() {
+    for (fullscreen, maximized) in [(false, false), (true, false), (false, true)] {
+        for size in [egui::vec2(1280.0, 820.0), egui::vec2(640.0, 480.0)] {
+            let ctx = egui::Context::default();
+            let mut app = app(&ctx);
+            app.sessions = vec![session_of(vec![flight()])];
+            let mut viewer = test_viewer(&ctx);
+            viewer.fullscreen = fullscreen;
+            viewer.window.maximized = maximized;
+            app.viewer = Some(viewer);
+            let mut output = ctx.run(input(size), |ctx| app.player_window(ctx));
+            for _ in 0..7 {
+                output = ctx.run(input(size), |ctx| app.player_window(ctx));
+            }
+            let point = text_positions(&output.shapes)
+                .into_iter()
+                .find(|(text, _)| text == "…")
+                .unwrap()
+                .1
+                + egui::vec2(4.0, 4.0);
+            assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains(point));
+            for pressed in [true, false] {
+                let mut raw = input(size);
+                raw.events = vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ];
+                output = ctx.run(raw, |ctx| app.player_window(ctx));
+            }
+            for _ in 0..7 {
+                output = ctx.run(input(size), |ctx| app.player_window(ctx));
+            }
+            for label in ["Info", "Edit title…", "Edit boundaries…", "Export…"] {
+                assert!(output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == label && s.clip_rect.contains(t.pos) && t.pos.x < size.x && t.pos.y < size.y)), "{label}: fullscreen={fullscreen}, maximized={maximized}, size={size:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn player_menu_and_dialog_receive_escape_before_fullscreen_and_block_space_shortcuts() {
+    let ctx = egui::Context::default();
+    let (mut app, _, _) = app_with_worker(&ctx);
+    app.sessions = vec![session_of(vec![flight()])];
+    let mut viewer = test_viewer(&ctx);
+    viewer.fullscreen = true;
+    viewer.player.pause(true);
+    app.viewer = Some(viewer);
+    let draw: fn(&mut App, &egui::Context) = |app, ctx| {
+        app.escape(ctx);
+        app.player_window(ctx);
+        app.dialog_window(ctx);
+    };
+    let key = |app: &mut App, key| {
+        for pressed in [true, false] {
+            let mut raw = input(egui::vec2(1280.0, 820.0));
+            raw.events = vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Default::default(),
+            }];
+            let _ = ctx.run(raw, |ctx| draw(app, ctx));
+        }
+    };
+    click_text(&ctx, &mut app, "…", draw);
+    assert!(egui::Popup::is_any_open(&ctx));
+    key(&mut app, egui::Key::Escape);
+    assert!(!egui::Popup::is_any_open(&ctx));
+    assert!(
+        app.viewer.as_ref().unwrap().fullscreen,
+        "Escape first closes only the menu"
+    );
+    click_text(&ctx, &mut app, "…", draw);
+    click_text(&ctx, &mut app, "Info", draw);
+    key(&mut app, egui::Key::Space);
+    assert!(
+        app.viewer.as_ref().unwrap().player.paused(),
+        "a modal must not toggle playback behind it"
+    );
+    key(&mut app, egui::Key::Escape);
+    assert!(app.dialog.is_none());
+    assert!(
+        app.viewer.as_ref().unwrap().fullscreen,
+        "closing Info must not also exit fullscreen"
+    );
+    key(&mut app, egui::Key::Escape);
+    assert!(!app.viewer.as_ref().unwrap().fullscreen);
+}
