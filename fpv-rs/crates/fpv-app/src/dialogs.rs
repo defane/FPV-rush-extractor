@@ -1721,25 +1721,29 @@ impl App {
                         dialog.kind == Kind::Bulk,
                     );
                     dialog.saving =
-                        Some(
-                            self.submit("Export flights", false, move |library, progress| {
-                                if bulk {
-                                    let report = library.export_flights_encoded(
-                                        &ids,
-                                        &path,
-                                        mode,
-                                        encoding,
-                                        |done, total, line| progress.count(done, total, line),
-                                    )?;
-                                    bulk_summary(&report)
-                                        .map(Reply::Done)
-                                        .map_err(fpv_library::LibraryError::Invalid)
-                                } else {
-                                    // Library::export also refuses overwrite, for all modes.
-                                    export_reply(library.export_encoded(&id, &path, mode, encoding))
-                                }
-                            }),
-                        );
+                        Some(self.submit("Export flights", false, move |library, _| {
+                            if bulk {
+                                let prepared = library.prepare_exports(&ids)?;
+                                Ok(Reply::Export(crate::worker::BackgroundWork(Box::new(
+                                    move |progress| {
+                                        let report = prepared.write(
+                                            &path,
+                                            mode,
+                                            encoding,
+                                            |done, total, line| progress.count(done, total, line),
+                                        )?;
+                                        bulk_summary(&report)
+                                            .map(Reply::Done)
+                                            .map_err(fpv_library::LibraryError::Invalid)
+                                    },
+                                ))))
+                            } else {
+                                let prepared = library.prepare_export(&id)?;
+                                Ok(Reply::Export(crate::worker::BackgroundWork(Box::new(
+                                    move |_| export_reply(prepared.write(&path, mode, encoding)),
+                                ))))
+                            }
+                        }));
                 }
             }
             Kind::FreeSpace => {

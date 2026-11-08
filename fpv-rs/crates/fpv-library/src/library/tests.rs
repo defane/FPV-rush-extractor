@@ -1962,3 +1962,52 @@ fn prores_preset_exports_exact_cuts_parts_and_batches_with_metadata_and_mute() {
         library.config.mute_videos = false;
     }
 }
+
+#[test]
+fn export_snapshots_protect_sources_until_the_last_plan_is_dropped() {
+    let (fixture, session) = imported();
+    let library = &fixture.library;
+    let id = &session.flights[0].id;
+    let (_, mut clips) = library.store.flight(parse(id).unwrap()).unwrap().unwrap();
+    let source = clips[0].source_file_id;
+    clips.retain(|clip| clip.source_file_id == source);
+    let shared = Flight::new(parse(&session.id).unwrap(), 3);
+    clips.push(Clip::new(shared.id, source, 0, 30));
+    library.store.replace_clips(source, &clips, std::slice::from_ref(&shared), &DetectionRun::new(source, "test", Default::default())).unwrap();
+    let first = library.prepare_export(id).unwrap();
+    let cloned = first.clone();
+    let second = library.prepare_export(id).unwrap();
+    assert!(library.native_playback(id).is_ok(), "reading an exported source stays available");
+    assert!(library.delete_flight(id).unwrap_err().to_string().contains("being exported"));
+    assert!(library.delete_flight(&uuid_string(shared.id)).is_err(), "another flight sharing exported sources is also protected");
+    assert!(library.delete_flights(std::slice::from_ref(id)).is_err());
+    assert!(library.delete_session(&session.id, false).is_err());
+    assert!(library.reduce_session(&session.id, |_, _, _| {}).is_err());
+    assert!(library.move_session_into_import_folder(&session.id, |_, _, _| {}).is_err());
+    assert!(library.segment(&session.id, |_| {}).is_err());
+    assert!(library.free_up_flight(id, |_, _, _| {}).is_err());
+    drop(first);
+    drop(second);
+    assert!(library.delete_flight(id).is_err(), "a cloned snapshot still holds its lease");
+    drop(cloned);
+    assert!(library.delete_flight(id).is_ok(), "completion/failure/drop releases protection");
+}
+
+#[test]
+fn prepared_exports_use_captured_ranges_metadata_and_audio_without_the_database() {
+    let (fixture, session) = imported();
+    let plan = fixture.library.prepare_export(&session.flights[0].id).unwrap();
+    let output = fixture._root.path().join("captured.mp4");
+    fixture.library.update_session(&session.id, &SessionEdit { name: "Changed later".into(), ..Default::default() }).unwrap();
+    fixture.library.update_clip(&session.flights[0].clips[0].id, 5, 30).unwrap();
+    let (destination, result) = std::thread::spawn(move || {
+        let result = plan.write(&output, ExportMode::Lossless, ExportEncoding::AsIs);
+        (output, result)
+    }).join().unwrap();
+    result.unwrap();
+    let info = MediaProbe::new(&fixture.library.ffmpeg()).probe(&destination).unwrap();
+    assert!((info.duration - 3.0).abs() < 0.05, "uses the original ranges");
+    let tags = Command::new("ffprobe").args(["-v", "error", "-show_entries", "format_tags=title", "-of", "json"]).arg(destination).output().unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&tags.stdout).unwrap();
+    assert_eq!(value["format"]["tags"]["title"], "Letz Kwad");
+}

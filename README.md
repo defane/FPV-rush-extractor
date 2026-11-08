@@ -205,7 +205,12 @@ Drag the top edge of the expanded **Tasks / Notifications** panel to resize it.
 The lists use the added space and retain the expanded size when collapsed and reopened.
 
 The collapsible **Tasks** panel shows operation progress, completed work and
-errors. Imports and exports continue while you browse the library.
+errors. Imports and exports continue while you browse the library. During export,
+you can open other flights, switch videos and use playback controls. Exported
+sources are protected from deletion, reduction, relocation and re-segmentation
+until their queued/running exports finish; conflicting actions explain why they
+cannot proceed. Opening another video keeps the current player until preparation
+succeeds.
 
 On supported macOS cloud drives, online-only recordings are marked without
 being downloaded for thumbnails. Playing them downloads the missing files with

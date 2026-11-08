@@ -108,8 +108,11 @@ Non-goals (explicitly out of scope for v1): video editing, colour grading, stabi
   `fpv-library` is the application layer — every GUI action as a tested method.
 - **eframe/egui** for the native Rust UI (`fpv-rs/crates/fpv-app`), **rfd** for
   system dialogs, **image** for cached pictures and **cpal** for audio output.
-  Work is queued on the library's owner thread; the window never runs ffmpeg or
-  disk jobs. Decoder threads have bounded queues and kill/reap their children
+  Library jobs run on the database's owner thread; prepared immutable exports run
+  on a separate FIFO executor with one active export. Source leases protect queued
+  and running exports from conflicting mutations. Export execution owns no SQLite
+  connection, leaving playback preparation responsive. The window never runs ffmpeg
+  or disk jobs. Decoder threads have bounded queues and kill/reap their children
   on close and seek. Audio is the clock when a device is available; otherwise
   video uses the system clock. Display scaling/rate do not affect source frames.
 - **ffmpeg / ffprobe as external binaries**, invoked via `std::process`, always through the

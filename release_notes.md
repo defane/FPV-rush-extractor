@@ -1,5 +1,7 @@
 # Unreleased
 
+- Allow opening/switching flights during exports using immutable export snapshots and a separate serial encoder queue; protect export sources, preserve current playback during preparation and ignore stale open replies (#42).
+
 - Resize the integrated Tasks / Notifications panel by dragging its top edge, retain its expanded size and share usable space between independently scrolling lists, including on small displays (#41).
 
 - Synchronize boundary preview on every Start/End click, including reselecting the active edge; End previews the final included frame without altering the draft (#40).

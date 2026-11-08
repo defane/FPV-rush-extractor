@@ -152,6 +152,7 @@ pub(crate) struct App {
     dialog_request: Option<u64>,
     export_dialogs: std::collections::BTreeMap<u64, Dialog>,
     viewer: Option<Viewer>,
+    playback_request: Option<u64>,
     /// A flight waiting for its recordings to come down before it plays.
     cloud_wait: Option<cloudwait::CloudWait>,
     /// Downloads left to finish in the background: their flight does not open.
@@ -296,6 +297,7 @@ impl App {
             export_dialogs: Default::default(),
             dialog_request: None,
             viewer: None,
+            playback_request: None,
             cloud_wait: None,
             detached: HashSet::new(),
             strips: strips::Strips::default(),
@@ -520,7 +522,9 @@ impl App {
                             self.config.do_not_show_splash = do_not_show_splash;
                         }
                         // Downloaded in the background, as asked: nothing opens.
-                        Ok(Reply::Playback { .. }) if detached => {}
+                        Ok(Reply::Playback { .. })
+                            if detached
+                                || self.playback_request.is_some_and(|latest| latest != id) => {}
                         Ok(Reply::Playback {
                             flight,
                             at,
@@ -546,6 +550,9 @@ impl App {
                                     ctx.clone(),
                                     if muted { 0.0 } else { 1.0 },
                                 );
+                                if self.viewer.as_ref().is_some_and(|viewer| viewer.fullscreen) {
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                                }
                                 self.viewer = Some(Viewer {
                                     flight: flight.clone(),
                                     player,
@@ -642,7 +649,10 @@ impl App {
                 self.close_dialog();
             }
             Escape::About => self.show_about = false,
-            Escape::Player => self.viewer = None,
+            Escape::Player => {
+                self.viewer = None;
+                self.cancel_playback_request();
+            }
             Escape::Panels => {
                 self.show_tasks = false;
                 self.show_notices = false;
@@ -674,8 +684,17 @@ impl App {
         self.strip_batch = Some(id);
     }
 
+    fn cancel_playback_request(&mut self) {
+        if let Some(id) = self.playback_request {
+            self.detached.insert(id);
+        }
+        self.playback_request = Some(0);
+    }
+
     fn play(&mut self, flight: &FlightView, at: f64) {
-        self.viewer = None;
+        if let Some(wait) = self.cloud_wait.take() {
+            self.detached.insert(wait.task);
+        }
         let id = flight.id.clone();
         let task = self.submit(
             format!("Open {}", flight_name(flight)),
@@ -706,6 +725,7 @@ impl App {
                 })
             },
         );
+        self.playback_request = Some(task);
         if flight.cloud {
             self.cloud_wait = Some(cloudwait::CloudWait {
                 task,

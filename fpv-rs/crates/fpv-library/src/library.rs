@@ -13,6 +13,9 @@ use fpv_proxy::{ProxyCache, ProxyGenerator};
 use fpv_store::{LibraryStore, StoreError};
 use uuid::Uuid;
 
+mod exports;
+pub use exports::{PreparedExport, PreparedExports};
+
 use crate::Config;
 use crate::reduce::{MARGIN_SECONDS, into_piece, kept_ranges};
 use crate::views::{self, SessionView, TagView, file_name};
@@ -391,6 +394,7 @@ pub struct Library {
     pub store: LibraryStore,
     config: Config,
     tools: Option<PathBuf>,
+    export_leases: exports::ExportLeases,
     /// The cloud drive the import folder may sit in; the tests stand in their
     /// own, there being no File Provider on Linux.
     cloud: CloudDrive,
@@ -461,7 +465,7 @@ impl Library {
         let library = Self {
             root: config.media_root.clone(), config_directory: config_directory.to_path_buf(),
             cache_directory: cache_directory.to_path_buf(), store, config, tools,
-            cloud: CloudDrive::default(),
+            cloud: CloudDrive::default(), export_leases: Default::default(),
         };
         library.move_posters_into_cache()?;
         library.sweep_orphaned_thumbnails()?;
@@ -940,6 +944,7 @@ impl Library {
     pub fn reduce_session(&self, session: &str, mut progress: impl FnMut(usize, usize, String))
         -> Result<ReduceSummary> {
         let session = self.session(session)?;
+        self.ensure_export_sources_idle(self.store.source_files(session.id)?.iter().map(|f| f.id))?;
         let (plans, _) = self.reduce_plans(session.id)?;
         let mut summary = ReduceSummary::default();
         let total = plans.len();
@@ -1064,6 +1069,7 @@ impl Library {
     pub fn segment(&self, session: &str, progress: impl FnMut(SegmentationEvent))
         -> Result<SegmentationReport> {
         let session = self.session(session)?;
+        self.ensure_export_sources_idle(self.store.source_files(session.id)?.iter().map(|f| f.id))?;
         // The session's own thresholds; the run records them, so a clip set
         // stays explainable whichever profile produced it.
         let settings = DetectorSettings::for_profile(session.detection_profile);
@@ -1093,6 +1099,7 @@ impl Library {
 
     fn segment_imported_using(&self, ids: &[Uuid], profile: Option<&str>, mut progress: impl FnMut(SegmentationEvent))
         -> Result<SegmentationReport> {
+        self.ensure_export_sources_idle(ids.iter().copied())?;
         let mut sessions: Vec<(Uuid, Vec<Uuid>)> = Vec::new();
         for id in ids {
             let file = self.store.source_file(*id)?
@@ -1141,11 +1148,19 @@ impl Library {
     /// later takes them back without copying them again.
     pub fn delete_session(&self, id: &str, keep_recordings: bool) -> Result<()> {
         let session = self.session(id)?;
+        self.ensure_export_sources_idle(self.store.source_files(session.id)?.iter().map(|f| f.id))?;
         // The media folders, recovered from the files rather than recomputed
         // from a name the user may have changed since.
         let folders: HashSet<PathBuf> = self.store.source_files(session.id)?.iter()
             .filter_map(|f| Path::new(&f.imported_path).parent().map(Path::to_path_buf))
             .collect();
+        if !keep_recordings {
+            // A destination folder can contain another session's transferred recordings.
+            for other in self.store.sessions()? {
+                let files = self.store.source_files(other.id)?;
+                self.ensure_export_sources_idle(files.iter().filter(|file| folders.iter().any(|folder| Path::new(&file.imported_path).starts_with(folder))).map(|file| file.id))?;
+            }
+        }
         self.store.delete_session(session.id)?;
         for folder in folders.iter().filter(|f| !keep_recordings && f.exists()) {
             if let Err(error) = trash::delete(folder) {
@@ -1172,6 +1187,7 @@ impl Library {
             let id = parse(id)?;
             if selected.contains(&id) { continue; }
             let (flight,clips) = self.store.flight(id)?.ok_or_else(||LibraryError::NotFound(format!("flight {id}")))?;
+            if !copy { self.ensure_export_sources_idle(clips.iter().map(|c| c.source_file_id))?; }
             if flight.session_id == destination.id { return Err(LibraryError::Invalid("choose another session".into())); }
             for clip in clips {
                 let source = self.store.source_file(clip.source_file_id)?.ok_or_else(||LibraryError::NotFound("recording".into()))?;
@@ -1381,6 +1397,7 @@ impl Library {
     pub fn move_session_into_import_folder(&self, session: &str, mut progress: impl FnMut(usize, usize, String))
         -> Result<RelocationSummary> {
         let session = self.session(session)?;
+        self.ensure_export_sources_idle(self.store.source_files(session.id)?.iter().map(|f| f.id))?;
         let plan = self.relocation_plan(&session)?;
         let total = plan.len();
         let mut summary = RelocationSummary::default();
@@ -1480,6 +1497,7 @@ impl Library {
     /// flight stays for that one. The library changes in one transaction;
     /// the files follow.
     pub fn delete_flight(&self, id: &str) -> Result<FlightDeletion> {
+        self.ensure_export_sources_idle(self.flight_files(id)?.iter().map(|f| f.id))?;
         let (plan, flight, going) = self.plan_flight_deletion(id)?;
         self.store.delete_flight(flight, &going.iter().map(|f| f.id).collect::<Vec<_>>())?;
         for file in &going {
@@ -1542,6 +1560,7 @@ impl Library {
     }
 
     fn delete_flights_with_trash(&self, ids: &[String], mut dispose: impl FnMut(&str) -> std::result::Result<(), String>) -> Result<FlightDeletion> {
+        for id in ids { self.ensure_export_sources_idle(self.flight_files(id)?.iter().map(|f| f.id))?; }
         let (plan, flights, going) = self.plan_flights_deletion(ids)?;
         self.store.delete_flights(&flights, &going.iter().map(|f| f.id).collect::<Vec<_>>())?;
         let mut failed = Vec::new();
@@ -1726,13 +1745,16 @@ impl Library {
     pub fn free_up_session(&self, session: &str, progress: impl FnMut(usize, usize, String))
         -> Result<FreeUpSummary> {
         let session = self.session(session)?;
+        self.ensure_export_sources_idle(self.store.source_files(session.id)?.iter().map(|f| f.id))?;
         Ok(self.free_up_space(self.store.source_files(session.id)?, progress))
     }
 
     /// Makes a flight's recordings Online Only again (`free_up_space`).
     pub fn free_up_flight(&self, flight: &str, progress: impl FnMut(usize, usize, String))
         -> Result<FreeUpSummary> {
-        Ok(self.free_up_space(self.flight_files(flight)?, progress))
+        let files = self.flight_files(flight)?;
+        self.ensure_export_sources_idle(files.iter().map(|f| f.id))?;
+        Ok(self.free_up_space(files, progress))
     }
 
     /// Asks the cloud drive to take each of `files` that is on this disk back
@@ -1916,66 +1938,7 @@ impl Library {
     }
 
     pub fn export_encoded(&self, flight: &str, destination: &Path, mode: ExportMode, encoding: ExportEncoding) -> Result<Vec<PathBuf>> {
-        let (flight, _, timeline) = self.flight(flight)?;
-        let session = self.session(&uuid_string(flight.session_id))?;
-        let metadata = ExportMetadata {
-            session_name: session.name,
-            flying_day: session.date.map(|date| date.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string()),
-            capture_time: timeline.parts.first().and_then(|(_,file)|file.media.creation_date).map(|date|date.to_rfc3339()),
-        };
-        // Text-entry destinations in the native UI have no OS overwrite
-        // prompt. Check every part before writing any of them.
-        let destinations = if mode == ExportMode::Parts {
-            let stem = destination.file_stem().unwrap_or_default().to_string_lossy();
-            let extension = destination.extension().and_then(|s| s.to_str()).unwrap_or("avi");
-            (1..=timeline.parts.len()).map(|index|
-                destination.with_file_name(format!("{stem} - part{index}.{extension}"))).collect()
-        } else { vec![destination.to_path_buf()] };
-        if let Some(path) = destinations.iter().find(|path| path.exists()) {
-            return Err(LibraryError::Invalid(format!("destination already exists: {}", path.display())));
-        }
-        let ffmpeg = self.ffmpeg();
-        let exporter = ClipExporter::new(&ffmpeg).with_metadata(metadata.clone());
-        if encoding == ExportEncoding::ProRes422Hq && mode != ExportMode::Parts {
-            return Ok(vec![exporter.export_prores(&timeline.parts, destination, self.config.mute_videos)?]);
-        }
-        Ok(match mode {
-            ExportMode::Lossless => vec![exporter.export_flight_with_mute(
-                &timeline.parts,
-                destination,
-                self.config.mute_videos,
-            )?],
-            ExportMode::Reencode => vec![exporter.export_flight_reencoded_with_mute(
-                &timeline.parts,
-                destination,
-                None,
-                self.config.mute_videos,
-            )?],
-            ExportMode::Parts => {
-                let stem = destination.file_stem().map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "flight".into());
-                let extension = destination.extension().and_then(|e| e.to_str()).unwrap_or("avi");
-                timeline.parts.iter().enumerate()
-                    .map(|(index, (clip, file))| {
-                        let path = destination.with_file_name(
-                            format!("{stem} - part{}.{extension}", index + 1));
-                        let part_metadata=ExportMetadata {
-                            capture_time:file.media.creation_date.map(|date|date.to_rfc3339()), ..metadata.clone()
-                        };
-                        let exporter = ClipExporter::new(&ffmpeg).with_metadata(part_metadata);
-                        if encoding == ExportEncoding::ProRes422Hq {
-                            return Ok(exporter.export_prores(&[(clip.clone(), file.clone())], &path, self.config.mute_videos)?);
-                        }
-                        Ok(exporter.export_clip_with_mute(
-                            clip,
-                            file,
-                            &path,
-                            self.config.mute_videos,
-                        )?)
-                    })
-                    .collect::<Result<_>>()?
-            }
-        })
+        self.prepare_export(flight)?.write(destination, mode, encoding)
     }
 
     /// Exports several flights into `folder`, one after the other, each under
@@ -1994,47 +1957,7 @@ impl Library {
 
     pub fn export_flights_encoded(&self, flights: &[String], folder: &Path, on_mismatch: ExportMode,
                           encoding: ExportEncoding, mut progress: impl FnMut(usize, usize, &str)) -> Result<BulkExport> {
-        std::fs::create_dir_all(folder)?;
-        let sessions = self.store.sessions()?;
-        let mut outcome = BulkExport::default();
-        for (index, id) in flights.iter().enumerate() {
-            let label = match self.flight(id) {
-                Ok((flight, _, timeline)) => {
-                    let session = sessions.iter().find(|s| s.id == flight.session_id)
-                        .map(|s| s.name.as_str()).unwrap_or("Session");
-                    let title = flight.title.clone()
-                        .unwrap_or_else(|| format!("Flight {}", flight.order_in_session));
-                    let dvr = timeline.parts.iter().any(|(_, f)| f.media.is_all_intra());
-                    let (name, extension) = export_name(session, &title, dvr);
-                    Some((name, extension))
-                }
-                Err(_) => None,
-            };
-            let Some((name, extension)) = label else {
-                outcome.failed.push((id.clone(), "not in the library".into()));
-                continue;
-            };
-            progress(index, flights.len(), &name);
-            let extension = if encoding == ExportEncoding::ProRes422Hq { "mov" } else { extension };
-            let destination = free_name(folder, &name, extension);
-            let initial = if encoding == ExportEncoding::ProRes422Hq { on_mismatch } else { ExportMode::Lossless };
-            let written = match self.export_encoded(id, &destination, initial, encoding) {
-                // A batch's explicit choice applies to all source codecs.
-                Err(LibraryError::Export(ExportError::MismatchedFrameRates(..))) => {
-                    self.export(id, &destination, on_mismatch)
-                }
-                Err(LibraryError::Export(ExportError::NotAllIntra(_))) if on_mismatch == ExportMode::Reencode => {
-                    self.export(id, &destination, ExportMode::Reencode)
-                }
-                other => other,
-            };
-            match written {
-                Ok(files) => outcome.written.extend(files),
-                Err(error) => outcome.failed.push((name, error.to_string())),
-            }
-        }
-        progress(flights.len(), flights.len(), "");
-        Ok(outcome)
+        self.prepare_exports(flights)?.write(folder, on_mismatch, encoding, &mut progress)
     }
 
     /// The session's clips as ground-truth rows for the detector's tuning

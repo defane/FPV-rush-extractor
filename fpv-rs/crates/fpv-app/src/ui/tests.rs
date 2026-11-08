@@ -24,6 +24,7 @@ fn app(ctx: &egui::Context) -> App {
         export_dialogs: Default::default(),
         dialog_request: None,
         viewer: None,
+        playback_request: None,
         cloud_wait: None,
         detached: HashSet::new(),
         strips: crate::strips::Strips::default(),
@@ -4325,4 +4326,65 @@ fn task_and_notification_panel_drag_resizes_content_and_remembers_expanded_heigh
         assert_eq!(app.notices.items().len(), 30);
         assert_eq!(app.notices.unread(), unread);
     }
+}
+
+#[test]
+fn opening_another_flight_keeps_current_playback_and_ignores_stale_results() {
+    let ctx = egui::Context::default();
+    let (mut app, jobs, events) = app_with_worker(&ctx);
+    app.viewer = Some(test_viewer(&ctx));
+    let a = flight();
+    let b = FlightView {
+        id: "next".into(),
+        ..flight()
+    };
+    app.sessions = vec![session_of(vec![a.clone(), b.clone()])];
+    app.play(&a, 0.0);
+    let old = jobs.try_recv().unwrap();
+    app.play(&b, 0.0);
+    let latest = jobs.try_recv().unwrap();
+    assert!(
+        app.viewer.is_some(),
+        "preparation must not clear existing playback"
+    );
+    let playback = |flight: String| Reply::Playback {
+        flight,
+        at: 0.0,
+        parts: vec![],
+        playback_mute: Some(true),
+    };
+    events
+        .send(crate::worker::Event::Finished {
+            id: latest.id,
+            result: Ok(playback(b.id.clone())),
+        })
+        .unwrap();
+    app.receive(&ctx);
+    assert_eq!(app.viewer.as_ref().unwrap().flight.id, b.id);
+    events
+        .send(crate::worker::Event::Finished {
+            id: old.id,
+            result: Ok(playback(a.id)),
+        })
+        .unwrap();
+    app.receive(&ctx);
+    assert_eq!(
+        app.viewer.as_ref().unwrap().flight.id,
+        b.id,
+        "late requests cannot reopen an older flight"
+    );
+    app.play(&b, 0.0);
+    let failed = app.playback_request.unwrap();
+    events
+        .send(crate::worker::Event::Finished {
+            id: failed,
+            result: Err("Source unavailable".into()),
+        })
+        .unwrap();
+    app.receive(&ctx);
+    assert_eq!(
+        app.viewer.as_ref().unwrap().flight.id,
+        b.id,
+        "a failed open keeps current playback"
+    );
 }

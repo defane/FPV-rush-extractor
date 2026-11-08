@@ -1831,6 +1831,7 @@ impl App {
             }
             self.viewer = Some(viewer);
         } else {
+            self.cancel_playback_request();
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         }
     }
